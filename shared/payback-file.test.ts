@@ -4,7 +4,7 @@ import { removalFingerprint } from './tx-remove.js';
 import { addonPaybackGate, filePayback, paybackRowOf, type PaybackChoice, type PaybackIo } from './payback.js';
 import type { PaybackRow } from './payback-row.js';
 import {
-  PAYBACK_CHANGED, PAYBACK_GONE, PAYBACK_GONE_STUCK, PAYBACK_LINKED, PAYBACK_NO_UNDO, PAYBACK_NO_UNDO_SETTING, PAYBACK_SETTING_HINT, PAYBACK_NOT_CASH, PAYBACK_OVERRIDE_FAILED, PAYBACK_PENDING, PAYBACK_RUNNING, PAYBACK_UNREACHABLE,
+  PAYBACK_CHANGED, PAYBACK_GONE, PAYBACK_GONE_STUCK, PAYBACK_LINKED, PAYBACK_NO_UNDO, PAYBACK_NO_UNDO_SETTING, PAYBACK_SETTING_HINT, PAYBACK_NOT_CASH, PAYBACK_OVERRIDE_FAILED, PAYBACK_OVERRIDE_UNSURE, PAYBACK_PENDING, PAYBACK_RUNNING, PAYBACK_UNREACHABLE,
   PAYBACK_UPDATE_ADDON, PAYBACK_UPDATE_REFUSED, PAYBACK_UPDATE_STUCK, PAYBACK_UPDATE_UNSURE,
 } from './payback-copy.js';
 import {
@@ -379,5 +379,32 @@ describe('filePayback — fix wave B', () => {
       kind: 'filed',
       message: `Filed as a payback under Restaurants — it takes $14 off your Food & Dining spending.\n${PAYBACK_NO_UNDO}`,
     });
+  });
+});
+
+describe('filePayback — fix round B (W11-B)', () => {
+  it('m1: a lost override answer whose re-read also fails is taken back; nothing was changed', async () => {
+    const w = world();
+    const set = w.io.secrets.set;
+    w.io.secrets.set = vi.fn(async (k: string, v: string) => { await set(k, v); if ((w.io.secrets.set as any).mock.calls.length === 1) throw new Error('response lost'); });
+    let gets = 0;
+    const get = w.io.secrets.get;
+    w.io.secrets.get = async (k: string) => { if (k === SYNC_OVERRIDES_SECRET_KEY && ++gets === 3) throw new Error(RAW); return get(k); };
+    expect(await filePayback(RESTAURANTS, w.io, NOW)).toEqual({ kind: 'refused', message: PAYBACK_OVERRIDE_FAILED });
+    expect(hasTxOverride(w.overrides()!, KEY, 'asReimbursement')).toBe(false);
+    expect(w.io.update).not.toHaveBeenCalled();
+  });
+
+  it('m1: when the take-back fails too, a partial outcome says the setting may be on, logged with no category', async () => {
+    const w = world();
+    const set = w.io.secrets.set;
+    w.io.secrets.set = vi.fn(async (k: string, v: string) => { await set(k, v); throw new Error('response lost'); });
+    let gets = 0;
+    const get = w.io.secrets.get;
+    w.io.secrets.get = async (k: string) => { if (k === SYNC_OVERRIDES_SECRET_KEY && ++gets > 2) throw new Error(RAW); return get(k); };
+    expect(await filePayback(RESTAURANTS, w.io, NOW)).toEqual({ kind: 'partial', message: `${PAYBACK_OVERRIDE_UNSURE}\n${PAYBACK_SETTING_HINT}` });
+    expect(hasTxOverride(w.overrides()!, KEY, 'asReimbursement')).toBe(true);
+    expect(w.logged[0]).toMatchObject({ kind: 'payback-filed', after: { categoryId: null, categoryName: null } });
+    expect(w.io.update).not.toHaveBeenCalled();
   });
 });
