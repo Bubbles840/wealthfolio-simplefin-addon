@@ -37,7 +37,10 @@ The addon has three tabs: **Home**, **Reports** and **Settings**.
   filed it and every change made to it, with Undo. Then a status strip (last
   sync, accounts, anything that needs you; a needs-a-category row opens its
   story, and shows the category you probably meant when you filed the same
-  merchant that way before; with the companion, **Next 30 days** — your cash
+  merchant that way before; a deposit there that pays you back — a friend's
+  Venmo for dinner — offers **It's a payback…** (Wealthfolio 3.9 or newer,
+  with the companion): pick the spending it pays back and it comes off that
+  spending, with Undo in Telegram's `/changes`; with the companion, **Next 30 days** — your cash
   if nothing comes in: cash today, minus your known bills on their dates and a
   typical day of other spending — which opens what it counted),
   then your budget: six reports to start (headline numbers, cash flow or the

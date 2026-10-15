@@ -1249,11 +1249,30 @@ Designed overnight under Nick's standing instruction; approved by Nick on
 Lining up (W1–W5) and the platform work (U1–U4) are planned on their own
 branches.
 
-- **W11 (paybacks in the app) is next**, its own small plan. It consumes the
-  fixed interface this part ships: the `asReimbursement` override, the
-  `payback-filed` change kind (`paybackFiledChange`), `PAYBACK_SINCE` /
-  `companionUnderstandsPaybacks`, and the pure `planPayback`. Nothing of W11
-  is in this part: the app cannot file or undo a payback yet.
+- **W11 (paybacks in the app) shipped in this release** (plan
+  `2026-10-14-w11-app-paybacks.md`): **It's a payback…** on the
+  needs-a-category list and on a story, on Wealthfolio 3.9+ with a companion
+  of 1.62.0+. What it leaves open:
+  - **The filing is a rule's in Wealthfolio** (`source: rule`): the add-on
+    SDK has no call that files one row, so a one-off rule (CREDIT only, the
+    exact note, the account, priority 1,000,000, key
+    `payback-once:<accountId>:<txId>`) files it and is deleted after. The
+    stories tell "by you, as a payback" from the change log.
+  - **A one-off rule left behind** is named in the reply and swept by the
+    next payback from the app, its key rebuilt from the account and the tx
+    id in its pattern. One edited in Wealthfolio to another priority, type or
+    pattern is no longer recognised; delete it there.
+  - **Two app windows filing at once**: one window's sweep can delete the
+    other's rule before its rule run; that one then says Wealthfolio did not
+    file it, and the row is a payback with no category — file it in
+    Wealthfolio.
+  - **Couldn't tell what it was filed under** (the read-back failed): the
+    entry is logged with no category, so if Wealthfolio did file it,
+    Telegram's Undo turns it back into a deposit but leaves that filing on —
+    take it off in Wealthfolio.
+  - **The list offers it only on rows a 1.62 companion marks**
+    (`paybackEligible`): until the companion's first 1.62 publish, only the
+    story offers it.
 - **Telegram's paybacks wait for an installed add-on of 1.62.0.** A companion
   that cannot see the add-ons directory reads it as unknown and refuses, as
   the Venmo note's Undo does; W11 then offers paybacks from the app.
