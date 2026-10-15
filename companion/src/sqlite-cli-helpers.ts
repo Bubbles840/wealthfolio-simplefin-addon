@@ -37,7 +37,9 @@ export const shiftDay = (day: string, days: number) => new Date(Date.parse(`${da
  *  target, a group buffer or an excluded category's target is no part of
  *  "left this month". Append to a WHERE on `budget_targets`. */
 export const SPENDING_BUDGET_TARGET_FILTER = `target_type = 'category' AND taxonomy_id = 'spending_categories'
-    AND category_id NOT IN (SELECT value FROM json_each(COALESCE((SELECT setting_value FROM app_settings WHERE setting_key = 'spending.excluded_category_ids'), '[]')))`;
+    AND category_id NOT IN (SELECT value FROM json_each(COALESCE((
+      SELECT CASE WHEN json_valid(setting_value) THEN setting_value ELSE '[]' END
+      FROM app_settings WHERE setting_key = 'spending.excluded_category_ids'), '[]')))`;
 
 export const TOP_CATEGORY_CTE = `up(start_id, parent_id, name, depth) AS (
     SELECT id, parent_id, name, 0 FROM taxonomy_categories

@@ -23,8 +23,9 @@
  * `substr(activity_date, 1, 10)`, SQLite `date()`), which is the bank's date
  * for both instants, so no comparison changes.
  *
- * A write replayed from what the change log RECORDED keeps its recorded date
- * string: it is put back as it was, not re-dated.
+ * A write replayed from what the change log RECORDED keeps a recorded
+ * timestamp as it was; a recorded bare day is written at noon UTC through
+ * `bankDayInstant`, like any other bank day.
  */
 
 /** The hour, UTC, a bank-dated row is written at. */
