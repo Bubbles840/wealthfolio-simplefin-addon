@@ -363,6 +363,18 @@ export class WealthfolioClient {
     }
   }
 
+  /** Wealthfolio's own `spending.excluded_category_ids` (`GET /spending/settings`,
+   *  3.9+). Throws when it cannot be read: a writer that replaces the list whole
+   *  must not guess. */
+  async getExcludedSpendingCategories(): Promise<string[]> {
+    const res = await fetch(`${this.baseUrl}/api/v1/spending/settings`, { headers: this.authHeaders() });
+    if (!res.ok) throw await this.httpError('getExcludedSpendingCategories', res);
+    const body = (await res.json()) as { excludedCategoryIds?: unknown };
+    const ids = body?.excludedCategoryIds;
+    if (!Array.isArray(ids) || !ids.every((x) => typeof x === 'string')) throw new Error('getExcludedSpendingCategories: no excludedCategoryIds list');
+    return ids as string[];
+  }
+
   /** Sets `spending.excluded_category_ids`. The route is a patch: omitted
    *  fields (the account list, the enabled flag) are left as they are. */
   async setExcludedSpendingCategories(categoryIds: string[]): Promise<void> {

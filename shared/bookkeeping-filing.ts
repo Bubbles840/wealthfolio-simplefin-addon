@@ -28,7 +28,7 @@
  *
  * Filed: a spending-bucket bookkeeping row with NO spending filing. A row the
  * person (or a rule, or the opening-balance filing) already filed is theirs.
- * Taken out: a row under "Sync bookkeeping" that is no longer bookkeeping — a
+ * Taken out: a row THIS PASS filed under "Sync bookkeeping" that is no longer bookkeeping — a
  * placeholder that expired into an ordinary deposit or withdrawal loses its
  * marker, and must be uncategorized like any real row.
  *
@@ -65,6 +65,30 @@ export interface BookkeepingRow {
   notes: string;
   /** Its spending-taxonomy filings' categories. */
   spendingCategoryIds: string[];
+  /** True when the person split it across categories (`spending_activity_splits`):
+   *  that counts as filed, and assigning a category would clear the split. */
+  hasSplits?: boolean;
+}
+
+/** What the pass remembers between syncs: the category it filed under and the
+ *  rows it filed there. Only these are ever taken back out. */
+export interface FiledState { categoryId: string | null; ids: string[] }
+
+/** The remembered state from its secret: absent is empty; anything that is not
+ *  the expected shape is 'corrupt' — the pass then does nothing and never
+ *  overwrites it. */
+export function parseFiledState(raw: string | null): FiledState | 'corrupt' {
+  if (raw === null) return { categoryId: null, ids: [] };
+  try {
+    const v: unknown = JSON.parse(raw);
+    if (typeof v !== 'object' || v === null || Array.isArray(v)) return 'corrupt';
+    const { categoryId, ids } = v as { categoryId?: unknown; ids?: unknown };
+    if (!(categoryId === null || typeof categoryId === 'string')) return 'corrupt';
+    if (!Array.isArray(ids) || !ids.every((x) => typeof x === 'string')) return 'corrupt';
+    return { categoryId, ids: ids as string[] };
+  } catch {
+    return 'corrupt';
+  }
 }
 
 export interface BookkeepingPlan {
@@ -79,6 +103,9 @@ export function planBookkeepingFiling(
   opts: {
     /** "Sync bookkeeping"'s id, when it exists. */
     categoryId: string | null;
+    /** The rows this pass filed under it (the remembered ids): the only ones
+     *  it takes back out. A filing by hand or by a rule is the person's. */
+    filedByPass: ReadonlySet<string>;
     /** True for a SimpleFin account whose opening-balance filing the person
      *  undid (`noOpeningFile`): its starting balance stays unfiled. */
     noOpeningFile?: (sfinAccountId: string) => boolean;
@@ -88,10 +115,10 @@ export function planBookkeepingFiling(
   for (const row of rows) {
     const bookkeeping = isSyncBookkeepingNote(row.notes);
     if (!bookkeeping) {
-      if (opts.categoryId && row.spendingCategoryIds.includes(opts.categoryId)) plan.unfile.push(row.id);
+      if (opts.categoryId && opts.filedByPass.has(row.id) && row.spendingCategoryIds.includes(opts.categoryId)) plan.unfile.push(row.id);
       continue;
     }
-    if (row.spendingCategoryIds.length > 0 || !isSpendingBucket(row)) continue;
+    if (row.spendingCategoryIds.length > 0 || row.hasSplits || !isSpendingBucket(row)) continue;
     if (isStartingBalanceNote(row.notes) && opts.noOpeningFile?.(row.notes.slice(STARTING_BALANCE_COMMENT_PREFIX.length))) continue;
     plan.file.push(row.id);
   }

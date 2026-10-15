@@ -13,7 +13,8 @@ import {
 } from '../../shared/reports-archive.js';
 import { fileCardOpeningDebts } from './opening-balance-category.js';
 import { runDateRepair, type DateRepairDeps } from './date-repair.js';
-import { fileSyncBookkeeping } from './bookkeeping-category.js';
+import { BOOKKEEPING_FILED_SECRET_KEY, fileSyncBookkeeping } from './bookkeeping-category.js';
+import { parseFiledState, SYNC_BOOKKEEPING_CATEGORY } from '../../shared/bookkeeping-filing.js';
 import cron from 'node-cron';
 import { readFileSync, existsSync } from 'fs';
 import { runSyncCore, descriptionFromComment, txIdFromComment } from '../../shared/sync-core.js';
@@ -1079,6 +1080,7 @@ export async function runCompanionSync(opts: { force?: boolean } = {}): Promise<
       createCategory: (name) => wfClient.createSpendingCategory(name),
       setExcluded: (ids) => wfClient.setExcludedSpendingCategories(ids),
       appVersion: () => wfClient.getAppVersion(),
+      readExcluded: () => wfClient.getExcludedSpendingCategories(),
       assign: (activityId, categoryId) => wfClient.assignActivityCategory(activityId, SPENDING_TAXONOMY_ID, categoryId),
       log,
       record: (draft) => openingChanges.push(draft),
@@ -1101,6 +1103,9 @@ export async function runCompanionSync(opts: { force?: boolean } = {}): Promise<
       assign: (activityId, categoryId) => wfClient.assignActivityCategory(activityId, SPENDING_TAXONOMY_ID, categoryId),
       unassign: (activityId) => wfClient.unassignActivityCategory(activityId, SPENDING_TAXONOMY_ID),
       appVersion: () => wfClient.getAppVersion(),
+      readExcluded: () => wfClient.getExcludedSpendingCategories(),
+      loadFiled: async () => parseFiledState(await wfClient.getAddonSecret('simplefin-sync', BOOKKEEPING_FILED_SECRET_KEY)),
+      saveFiled: (state) => wfClient.setAddonSecret('simplefin-sync', BOOKKEEPING_FILED_SECRET_KEY, JSON.stringify(state)),
       noOpeningFile: (sfinId) => hasAccountOverride(overrides, sfinId, 'noOpeningFile'),
       record: (draft) => bookkeepingChanges.push(draft),
       log,
@@ -3060,7 +3065,8 @@ export function buildCategorizeDeps(wfClient: WealthfolioClient): CategorizeDeps
     // is this row filed under right now", which is what both menus' Undo checks
     // before they un-file anything.
     readCategorized: getNativeCategorizedSpending,
-    readCategories: getNativeSpendingCategories,
+    // Not "Sync bookkeeping": a category the sync files its own rows under is not one to pick (by name; the id lives in a secret).
+    readCategories: (path) => getNativeSpendingCategories(path).filter((c) => c.name !== SYNC_BOOKKEEPING_CATEGORY),
     // The income taxonomy, for money-in rows' first filings (a grant check is
     // not spending, and upstream refuses a spending category on it).
     readIncomeCategories: getNativeIncomeCategories,
