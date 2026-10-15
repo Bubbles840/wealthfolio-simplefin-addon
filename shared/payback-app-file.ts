@@ -283,7 +283,7 @@ async function fileOnce(choice: AppPaybackChoice, io: AppPaybackIo, now: Date): 
     }
   }
 
-  // 6. Wealthfolio's rule run, now. A failure is not final: the background runs may have filed it.
+  // 6. Wealthfolio's rule run, now, retried once after a pause; the filing is then read back either way (the activity write's own run is debounced and usually lands after this).
   let ruleRunOk = false;
   for (let attempt = 1; attempt <= 2 && !ruleRunOk; attempt += 1) {
     try {

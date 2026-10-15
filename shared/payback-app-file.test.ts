@@ -179,7 +179,7 @@ describe('filePaybackInApp: filing', () => {
     expect(w.io.deleteRule).toHaveBeenCalledWith(ONCE);
   });
 
-  it("goes on to read the filing back when the rule run fails: the background runs may have filed it", async () => {
+  it("goes on to read the filing back when the rule run fails twice", async () => {
     const w = world();
     w.io.rerunRules = vi.fn(async () => { throw new Error(RAW); });
     const out = await filePaybackInApp(RESTAURANTS, w.io, NOW);
