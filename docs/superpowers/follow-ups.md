@@ -1466,6 +1466,17 @@ branches.
   new host on an earlier host's activities can collide ids. Run repeated syncs
   on one host.
 - **A degraded run can un-hold a payment for one sync.** A's decision depends on the whole run: when `listAccounts` fails (every account type unknown) or a mapped account is missing from the SimpleFin fetch (its words missing), a stored in-transit TRANSFER_OUT still inside the 10 days is retyped WITHDRAWAL for that run and back on the next. The mapper already degrades the same way on unknown types. Option: keep a stored in-transit row as stored when the account types are unknown.
+- **Sibling accounts share institution words (R2).** "The row's own account
+  never counts" leaves out the row's own entry, not its institution: 360
+  Checking sees `capital` through 360 Performance Savings' org "Capital One",
+  so any 360 outflow that mentions Capital One in payment words is held as a
+  transfer. Almost always right (it IS a transfer between them), but not by
+  design.
+- **The dead-feed hold stretches R2's cost.** A bill that names an account
+  whose feed is dead is held for as long as the feed stays dead, not 10 days
+  at most. And the first heal or deep scan after deploy turns older unpaired
+  payments that name such an account (a dead Discover feed) from WITHDRAWAL
+  into held placeholders, so past spending drops. Intended for card payments.
 
 ## Reference: name mismatches between the database, the REST API, and the SDK
 

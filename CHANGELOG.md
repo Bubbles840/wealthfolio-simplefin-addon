@@ -24,7 +24,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   confirmed, linked or said No to under the old name still applies.
 - **A subscription survives a rename and a plan change.** When a merchant
   renames its charge on the same account, at the same price, a month after the
-  last one, it stays one subscription under its old name. A price that steps
+  last one, it stays one subscription under its old name, in the forecast, link
+  suggestions and the watch list too. A price that steps
   once and then holds is a subscription at the new price, shown as a rise in
   the month it changes, instead of a bill priced at the old one.
 
