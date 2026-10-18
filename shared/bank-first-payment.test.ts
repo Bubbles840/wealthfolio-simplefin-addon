@@ -76,4 +76,13 @@ describe('MONEY_MOVEMENT_WORDS (R3)', () => {
       expect(MONEY_MOVEMENT_WORDS.test(text)).toBe(false);
     }
   });
+
+  it('loads on Safari before 16.4: no lookbehind, and no g flag to make .test stateful (F3)', () => {
+    expect(MONEY_MOVEMENT_WORDS.source).not.toContain('(?<');
+    expect(MONEY_MOVEMENT_WORDS.flags).not.toContain('g');
+    // A word at the very start still counts, and a letter before it still blocks it.
+    expect(MONEY_MOVEMENT_WORDS.test('ACH DEBIT ROBINHOOD CCB')).toBe(true);
+    expect(MONEY_MOVEMENT_WORDS.test('XPAYMENT')).toBe(false);
+    expect(MONEY_MOVEMENT_WORDS.test('9ACH')).toBe(false);
+  });
 });

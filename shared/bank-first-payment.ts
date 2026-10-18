@@ -24,9 +24,16 @@ import type { MappedType } from './mapper.js';
 /**
  * R3: the phrasings that say money moved, each as a whole word. `ach` is here
  * for PNC's pending `ACH DEBIT ROBINHOOD CCB`, which has no "payment" in it.
- * The lookarounds keep `ACHIEVE`, `PAYMENTUS`, `TRANSFERWISE` and `REPAY` out.
+ * The guards on both sides keep `ACHIEVE`, `PAYMENTUS`, `TRANSFERWISE` and
+ * `REPAY` out.
+ *
+ * No lookbehind: this module is in the add-on bundle, and Safari/iOS before
+ * 16.4 reject `(?<!` when the module loads, taking the whole add-on with it.
+ * The leading `(?:^|[^a-z0-9])` consumes the character before the word
+ * instead, which `.test` cannot tell apart. Never give this regex a `g` flag:
+ * `.test` would then keep `lastIndex` between calls and skip matches.
  */
-export const MONEY_MOVEMENT_WORDS = /(?<![a-z0-9])(?:payment|pmt|autopay|auto-pmt|e-?pay|e-payment|transfer|ach)(?![a-z0-9])/i;
+export const MONEY_MOVEMENT_WORDS = /(?:^|[^a-z0-9])(?:payment|pmt|autopay|auto-pmt|e-?pay|e-payment|transfer|ach)(?![a-z0-9])/i;
 
 /**
  * R2: does the text contain, as a whole word, any word of any other connected
