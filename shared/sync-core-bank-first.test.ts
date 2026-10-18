@@ -39,25 +39,30 @@ describe('runSyncCore — a payment naming a connected account is a transfer fro
 
   it("holds PNC's Citi autopay as an in-transit placeholder, then links it when Citi's half posts", async () => {
     // Live, 2026-10-17: PNC posted first and the $42.40 asked for a category.
-    const first = createFakeHost(pncAndCiti([tx('pnc-1', '2026-10-17T12:00:00Z', '-42.40', CITI_PAYMENT)]));
-    await runSyncCore(first.host, first.store, {});
-    const held = rowOf(first.activities.get('wf-spend'), 'pnc-1');
+    // Both syncs run on ONE fake host (a second host restarts its ids at fh-1 and
+    // would give the two linked legs the same id); the fake serves the seed's
+    // accountSet by reference, so Citi's half is pushed into it between runs.
+    const seed = pncAndCiti([tx('pnc-1', '2026-10-17T12:00:00Z', '-42.40', CITI_PAYMENT)]);
+    const fh = createFakeHost(seed);
+    await runSyncCore(fh.host, fh.store, {});
+    const held = rowOf(fh.activities.get('wf-spend'), 'pnc-1');
     expect(held).toMatchObject({ activityType: 'TRANSFER_OUT', amount: 42.4 });
     expect(inTransit(held)).toBe(true);
-    expect(first.links).toEqual([]);
+    expect(fh.links).toEqual([]);
 
     vi.setSystemTime(new Date('2026-10-19T15:00:00Z'));
-    const second = createFakeHost(pncAndCiti(
-      [tx('pnc-1', '2026-10-17T12:00:00Z', '-42.40', CITI_PAYMENT)],
-      [tx('citi-1', '2026-10-19T12:00:00Z', '42.40', 'AUTOPAY 000000000000000RAUTOPAY AUTO-PMT')],
-      { existing: first.activities },
-    ));
-    await runSyncCore(second.host, second.store, { force: true });
-    expect(second.links).toHaveLength(1);
-    const out = rowOf(second.activities.get('wf-spend'), 'pnc-1');
-    const into = rowOf(second.activities.get('wf-citi'), 'citi-1');
+    const citi = seed.accountSet!.accounts.find((a) => a.id === 'sfin-citi')!;
+    citi.transactions!.push(tx('citi-1', '2026-10-19T12:00:00Z', '42.40', 'AUTOPAY 000000000000000RAUTOPAY AUTO-PMT'));
+    citi['balance-date'] = epoch('2026-10-19T12:00:00Z');
+    await runSyncCore(fh.host, fh.store, { force: true });
+    expect(fh.links).toHaveLength(1);
+    const out = rowOf(fh.activities.get('wf-spend'), 'pnc-1');
+    const into = rowOf(fh.activities.get('wf-citi'), 'citi-1');
     expect([out?.activityType, into?.activityType]).toEqual(['TRANSFER_OUT', 'TRANSFER_IN']);
     expect(inTransit(out)).toBe(false);
+    expect(fh.activities.get('wf-spend')).toHaveLength(1);
+    expect(fh.activities.get('wf-citi')).toHaveLength(1);
+    expect(out!.id).not.toBe(into!.id);
   });
 
   it("holds PNC's pending wording too: a pending row never pairs, but it is a placeholder", async () => {
