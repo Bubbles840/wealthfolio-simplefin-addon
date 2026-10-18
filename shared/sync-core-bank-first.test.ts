@@ -84,6 +84,10 @@ describe('runSyncCore — a payment naming a connected account is a transfer fro
       tx('venmo', '2026-10-15T12:00:00Z', '-25.00', '*8768 PAYMENT VENMO ACH WEB'),
       tx('ruled', '2026-10-16T12:00:00Z', '-42.40', CITI_PAYMENT),
       tx('undone', '2026-10-16T12:00:00Z', '-77.00', 'PAYMENT ROBINHOOD CCB ACH DEBIT'),
+      // Money IN that names a connected account (360's org, Capital One) in
+      // payment words, with nothing to pair with: R1 alone keeps it a deposit.
+      // (The cashback below never reaches R1 — "transferred" is not R3's word.)
+      tx('cap-in', '2026-10-16T12:00:00Z', '600.00', 'RT08C248B2E7C8B TRANSFER CAPITAL ONE ACH WEB PAYMENT'),
     ], [tx('card-neg', '2026-10-16T12:00:00Z', '-19.99', 'ROBINHOOD PAYMENT')], {
       mappingRules: [{ pattern: 'PAYMENT CITI AUTOPAY', matchType: 'contains', activityType: 'WITHDRAWAL' }],
       syncOverrides: setTxOverride(emptySyncOverrides(), accountTxKey('sfin-spend', 'undone'), 'notTransfer', NOW),
@@ -108,6 +112,7 @@ describe('runSyncCore — a payment naming a connected account is a transfer fro
     expect(typed('wf-spend', 'venmo')).toEqual(['WITHDRAWAL', false]);
     expect(typed('wf-spend', 'ruled')).toEqual(['WITHDRAWAL', false]);
     expect(typed('wf-spend', 'undone')).toEqual(['WITHDRAWAL', false]);
+    expect(typed('wf-spend', 'cap-in')).toEqual(['DEPOSIT', false]);
     expect(typed('wf-citi', 'card-neg')).toEqual(['WITHDRAWAL', false]);
     expect(typed('wf-rhi', 'cashback')).toEqual(['DEPOSIT', false]);
     expect(typed('wf-360', 'own')).toEqual(['WITHDRAWAL', false]);
