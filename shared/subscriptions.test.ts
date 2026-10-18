@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { brandWord, detectSubscriptions, subscriptionKey, type SubscriptionCharge } from './subscriptions.js';
+import { aliasNames, brandWord, detectionKeys, detectSubscriptions, subscriptionKey, type SubscriptionCharge } from './subscriptions.js';
 
 const NOW = new Date('2026-09-02T12:00:00Z');
 const charge = (date: string, merchant: string, cents: number) => ({ date, merchant, cents });
@@ -375,6 +375,19 @@ describe('a renamed charge is the same subscription (C1, 1.63)', () => {
     })]);
   });
 
+  it('names the key it joined as an alias — only on a joined entry, never its own name (F1)', () => {
+    const [google] = detectSubscriptions(GOOGLE(), OCT_22);
+    expect(google.aliases).toEqual(['GOOGLE *G1AI101M MOUNTAIN VIEW CA']);
+    const [apart] = detectSubscriptions(withOct({ accountId: 'wf-chase' }), new Date('2026-10-18T12:00:00Z'));
+    expect(apart.name).toBe('GOOGLE *Google One MOUNTAIN VIEW CA');
+    expect(apart).not.toHaveProperty('aliases');
+    expect(aliasNames([google, apart])).toEqual(new Map([['GOOGLE *G1AI101M MOUNTAIN VIEW CA', 'GOOGLE *Google One MOUNTAIN VIEW CA']]));
+    expect(detectionKeys(google)).toEqual(['GOOGLE *Google One MOUNTAIN VIEW CA', 'GOOGLE *G1AI101M MOUNTAIN VIEW CA']);
+    // An older cube has no aliases; a malformed one is ignored, not trusted.
+    expect(aliasNames(null)).toEqual(new Map());
+    expect(detectionKeys({ ...apart, aliases: [42, ''] as unknown as string[] })).toEqual(['GOOGLE *Google One MOUNTAIN VIEW CA']);
+  });
+
   it('never joins charges on different accounts', () => {
     const moved = withOct({ accountId: 'wf-chase' });
     expect(detectSubscriptions(moved, new Date('2026-10-18T12:00:00Z'))).toEqual([expect.objectContaining({ count: 4, lastDate: '2026-09-06' })]);
@@ -419,6 +432,7 @@ describe('a renamed charge is the same subscription (C1, 1.63)', () => {
     ];
     expect(detectSubscriptions(chain, OCT_22)).toEqual([expect.objectContaining({
       name: 'GOOGLE *Google One MOUNTAIN VIEW CA', kind: 'subscription', count: 5, monthlyCents: 999,
+      aliases: ['GOOGLE STORAGE', 'GOOGLE *G1AI101M MOUNTAIN VIEW CA'],
     })]);
   });
 

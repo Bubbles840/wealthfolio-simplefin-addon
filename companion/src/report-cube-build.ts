@@ -31,7 +31,7 @@ import {
   type CubeMerchant, type ReportCube,
 } from '../../shared/report-cube.js';
 import type { SemesterPoolConfig } from '../../shared/pool.js';
-import { detectSubscriptions, type SubscriptionCharge } from '../../shared/subscriptions.js';
+import { aliasNames, detectSubscriptions, type SubscriptionCharge } from '../../shared/subscriptions.js';
 import { findLinkSuggestions } from '../../shared/subscription-links.js';
 import type { SubscriptionPrefs } from '../../shared/subscription-prefs.js';
 
@@ -231,11 +231,12 @@ export async function buildReportCube(
   }
   const subscriptions = datedCharges.length > 0 ? detectSubscriptions(datedCharges, now) : null;
   // Link suggestions ride the same dated charges. A failed read costs the
-  // suggestions, never the cube.
+  // suggestions, never the cube. A renamed charge is offered under the entry
+  // it was joined into, so accepting it absorbs that row (F1).
   let subscriptionLinks: ReportCube['subscriptionLinks'] = null;
   if (deps.subscriptionPrefs && datedCharges.length > 0) {
     const prefs = await deps.subscriptionPrefs().catch(() => null);
-    if (prefs) subscriptionLinks = findLinkSuggestions(datedCharges, prefs, now);
+    if (prefs) subscriptionLinks = findLinkSuggestions(datedCharges, prefs, now, aliasNames(subscriptions));
   }
 
   // Drill-down: the newest month only, per category, newest first, capped.

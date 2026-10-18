@@ -236,6 +236,13 @@ export function unhideKey(p: SubscriptionPrefs, key: string): SubscriptionPrefs 
   return { ...p, hidden: without(p.hidden, key) };
 }
 
+/** Restores a roster row: its key, and each alias a hide may be stored under
+ *  (F1). A renamed charge's key (`GOOGLE *G1AI101M …`) hides the entry it was
+ *  joined into, so unhiding only the entry's own key left it hidden for good. */
+export function unhideEntry(p: SubscriptionPrefs, entry: { key: string; aliases?: readonly string[] }): SubscriptionPrefs {
+  return [entry.key, ...(entry.aliases ?? [])].reduce((acc, key) => unhideKey(acc, key), p);
+}
+
 export function confirmKey(p: SubscriptionPrefs, key: string): SubscriptionPrefs {
   return { ...p, confirmed: withKey(p.confirmed, key) };
 }

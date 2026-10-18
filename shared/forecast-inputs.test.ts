@@ -175,6 +175,22 @@ describe('the bills’ past charges', () => {
     expect(detectorKey('*0937 PAYMENT LOUISVILLE GAS & ACH DEBIT · TRN-5')).toBe('PAYMENT LOUISVILLE GAS & ACH');
   });
 
+  it("a renamed charge's key is the bill's too, for a detected entry and a hand-added one linked under either name (F1)", () => {
+    // Google renamed the charge on Oct 6; the detector joined it under the old
+    // name, but the forecast's rows still carry each charge's own key.
+    const OLD = 'GOOGLE *Google One MOUNTAIN VIEW CA';
+    const NEW = 'GOOGLE *G1AI101M MOUNTAIN VIEW CA';
+    const detected = [{ name: OLD, monthlyCents: 2119, count: 5, lastDate: '2026-10-06', lastCents: 2119, creep: false, aliases: [NEW] }];
+    const google = entry({ key: OLD, displayName: 'Google One', cents: 2119 });
+    expect([...billKeys([google], [], detected)]).toEqual([OLD, NEW]);
+    const linked = entry({ key: 'm:abc12345', source: 'manual', displayName: 'Google One' });
+    for (const merchant of [OLD, NEW]) {
+      expect(new Set(billKeys([linked], [manual({ merchant })], detected))).toEqual(new Set([OLD, NEW]));
+    }
+    // An older cube has no aliases: only the entry's own key, as before.
+    expect([...billKeys([google], [], [{ ...detected[0], aliases: undefined }])]).toEqual([OLD]);
+  });
+
   it('sums what they charged in the history months, refunds subtracting', () => {
     const keys = new Set(['NETFLIX.COM', 'RENT LLC']);
     expect(billChargesCents(ROWS, keys, HISTORY)).toBe(364647);
@@ -215,6 +231,19 @@ describe('buildCashForecast', () => {
       accounts: CASH.accounts,
       bills: [{ name: 'Netflix', date: '2026-10-20', cents: 1549 }, { name: 'Rent', date: '2026-11-01', cents: 120000 }],
     });
+  });
+
+  it("leaves a renamed charge out of daily spending: the bill is scheduled once, never counted twice (F1)", () => {
+    const OLD = 'GOOGLE *Google One MOUNTAIN VIEW CA';
+    const NEW = 'GOOGLE *G1AI101M MOUNTAIN VIEW CA';
+    const cube = { ...CUBE, subscriptions: [{ name: OLD, monthlyCents: 2119, count: 5, lastDate: '2026-09-06', lastCents: 2119, creep: false, aliases: [NEW] }] };
+    const google = entry({ key: OLD, displayName: 'Google One', cents: 2119, nextDate: '2026-10-06' });
+    const f = build({
+      cube, roster: roster({ subscriptions: [entry(), google] }),
+      merchantRows: [...ROWS, { month: '2026-09', notes: `${NEW} · TRN-10`, amount: 21.19 }],
+    });
+    // (751,967 − 364,647 − 2,119) ÷ 92 days, rounded: the Sep charge is the bill's.
+    expect(f).toMatchObject({ ok: true, dailySpendCents: 4187 });
   });
 
   it('names the first short day, and the cash accounts it had to leave out', () => {

@@ -108,6 +108,18 @@ describe('subscriptions menu', () => {
     expect(h.stored().confirmed).toEqual([]);
   });
 
+  it('Restore clears a hide stored under a renamed charge\'s key, joined into the entry (F1)', async () => {
+    const OLD = 'GOOGLE *Google One MOUNTAIN VIEW CA';
+    const NEW = 'GOOGLE *G1AI101M MOUNTAIN VIEW CA';
+    const h = harness({
+      report_cube: cubeJson([det('SPOTIFY'), det(OLD, { monthlyCents: 2119, lastCents: 2119, aliases: [NEW] })]),
+      subscription_prefs: doc({ hidden: [NEW] }),
+    });
+    await h.tap(`cz:sb:u:${H(OLD)}`);
+    expect(h.stored().hidden).toEqual([]);
+    expect(h.ui.answer).toHaveBeenLastCalledWith(`Restored ${OLD}`);
+  });
+
   it('a maybe answered Yes counts from then on; Undo takes it back', async () => {
     const h = harness(BASE());
     await h.tap('cz:sb:mb');

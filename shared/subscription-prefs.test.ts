@@ -3,7 +3,7 @@ import {
   acceptLink, addManual, confirmKey, declineLink, deleteManual, editSubscriptionPrefs, emptySubscriptionPrefs,
   hideKey, isUnreadablePrefsError, loadSubscriptionPrefs, newManualId, parseSubscriptionPrefs, pruneDeleted,
   renameKey, restoreDeleted, setRemind, SubscriptionPrefsUnreadableError, SubscriptionPrefsInvalidError,
-  SUBSCRIPTION_PREFS_SECRET_KEY, unconfirmKey, undoRename, unhideKey, updateManual, type ManualSubscription,
+  SUBSCRIPTION_PREFS_SECRET_KEY, unconfirmKey, undoRename, unhideEntry, unhideKey, updateManual, type ManualSubscription,
   type SubscriptionPrefs,
 } from './subscription-prefs.js';
 import { CONFIRMED_SUBSCRIPTIONS_SECRET_KEY, HIDDEN_SUBSCRIPTIONS_SECRET_KEY } from './subscriptions.js';
@@ -329,5 +329,16 @@ describe('edits on a key stored before 1.63 (R6)', () => {
 
   it('compares hand-added keys exactly', () => {
     expect(unhideKey(prefs({ hidden: ['m:hulu0001'] }), 'm:hulu0002').hidden).toEqual(['m:hulu0001']);
+  });
+});
+
+describe('Restore on a row a renamed charge was joined into (F1)', () => {
+  it('clears a hide stored under the entry, or under any alias, and leaves the rest', () => {
+    const OLD = 'GOOGLE *Google One MOUNTAIN VIEW CA';
+    const NEW = 'GOOGLE *G1AI101M MOUNTAIN VIEW CA';
+    const row = { key: OLD, aliases: [NEW] };
+    expect(unhideEntry(prefs({ hidden: [NEW, 'SPOTIFY'] }), row).hidden).toEqual(['SPOTIFY']);
+    expect(unhideEntry(prefs({ hidden: [OLD, NEW] }), row).hidden).toEqual([]);
+    expect(unhideEntry(prefs({ hidden: ['SPOTIFY'] }), { key: 'SPOTIFY' }).hidden).toEqual([]);
   });
 });

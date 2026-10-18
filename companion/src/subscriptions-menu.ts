@@ -22,7 +22,7 @@ import { MENU_CALLBACK_PREFIX } from '../../shared/categorize-menu.js';
 import { findingHandle } from '../../shared/findings.js';
 import {
   acceptLink, confirmKey, declineLink, deleteManual, hideKey, isUnreadablePrefsError, SubscriptionPrefsInvalidError, restoreDeleted, setRemind,
-  unconfirmKey, undoRename, unhideKey, type RemindDays, type SubscriptionEdit, type SubscriptionPrefs,
+  unconfirmKey, undoRename, unhideEntry, type RemindDays, type SubscriptionEdit, type SubscriptionPrefs,
 } from '../../shared/subscription-prefs.js';
 import {
   manualKey, normalizeRosterKey, rosterAmount, rosterMoney, rosterWhen, type Roster, type RosterEntry,
@@ -303,7 +303,8 @@ export function createSubscriptionsMenu(deps: SubscriptionsMenuDeps): Subscripti
           case 'u': case 'uh': {
             const entry = roster.hidden.find((e) => e.handle === handle);
             if (!entry) return void await gone();
-            if (!(await write((p) => unhideKey(p, entry.key)))) return;
+            // With its aliases: a renamed charge's key hides the entry it was joined into (F1).
+            if (!(await write((p) => unhideEntry(p, entry)))) return;
             if (action === 'u') return void await show(renderHidden(((await reread()) ?? read).roster), 'edit', `Restored ${entry.displayName}`);
             return void await show(await freshList(), 'edit', 'Undone');
           }

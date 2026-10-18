@@ -22,7 +22,7 @@
 import { failedForecast, type CashForecast, type ForecastAccount } from './cash-forecast.js';
 import { expandBills, forecastBills, forecastCash, FORECAST_DAYS } from './forecast.js';
 import { monthlyIncomeTotals, monthlySpendTotals, type ReportCube } from './report-cube.js';
-import { subscriptionKey } from './subscriptions.js';
+import { detectionKeys, subscriptionKey, type DetectedSubscription } from './subscriptions.js';
 import type { ManualSubscription } from './subscription-prefs.js';
 import { manualKey, type Roster, type RosterEntry } from './subscription-roster.js';
 import { descriptionFromComment } from './sync-core.js';
@@ -139,16 +139,32 @@ export function detectorKey(notes: string): string {
 
 /** The detector keys whose charges are the counted bills': a detected entry's
  *  own key, a hand-added entry's linked merchant. A hand-added entry with no
- *  link has no charges anyone can tell apart, so they stay in daily spending. */
-export function billKeys(entries: readonly RosterEntry[], manual: readonly ManualSubscription[]): Set<string> {
+ *  link has no charges anyone can tell apart, so they stay in daily spending.
+ *
+ *  `detected` (cube.subscriptions) adds every key joined into an entry (F1):
+ *  Google renamed its charge to `GOOGLE *G1AI101M …` on Oct 6, the detector
+ *  joined it under the old name, and the rows below still carry each charge's
+ *  own key — so the renamed charge stayed in daily spending while the bill was
+ *  also scheduled, about $21 a month counted twice. */
+export function billKeys(
+  entries: readonly RosterEntry[],
+  manual: readonly ManualSubscription[],
+  detected?: readonly DetectedSubscription[] | null,
+): Set<string> {
   const merchantOf = new Map(manual.map((m) => [manualKey(m.id), m.merchant] as const));
+  const keysOf = new Map<string, string[]>();
+  for (const d of detected ?? []) {
+    const all = detectionKeys(d);
+    for (const k of all) keysOf.set(k, all);
+  }
   const keys = new Set<string>();
+  const add = (key: string) => { for (const k of keysOf.get(key) ?? [key]) keys.add(k); };
   for (const e of entries) {
-    if (e.source === 'detected') keys.add(e.key);
+    if (e.source === 'detected') add(e.key);
     else if (e.source === 'manual') {
       const merchant = merchantOf.get(e.key);
       // A link saved before 1.63 keeps the bank's reference; today's key drops it.
-      if (merchant) keys.add(subscriptionKey(merchant));
+      if (merchant) add(subscriptionKey(merchant));
     }
   }
   return keys;
@@ -207,7 +223,7 @@ export function buildCashForecast(input: ForecastBuildInput): CashForecast {
   if (!Number.isFinite(cash.cashCents) || cash.accounts.some((a) => !Number.isFinite(a.cents))) return failedForecast('balances', now);
   const entries = forecastBills(input.roster);
   if (entries.some((e) => e.nextDate !== null && !Number.isFinite(e.cents))) return failedForecast('bills', now);
-  const billCents = billChargesCents(input.merchantRows, billKeys(entries, input.manual), months);
+  const billCents = billChargesCents(input.merchantRows, billKeys(entries, input.manual, cube.subscriptions), months);
   const daily = dailySpendCents(cube, months, billCents);
   if (!Number.isFinite(billCents) || !Number.isFinite(daily)) return failedForecast('history', now);
   const bills = expandBills(entries, today, days);

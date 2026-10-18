@@ -430,3 +430,52 @@ describe('buildRoster — choices stored under a key from before 1.63 (R6)', () 
     expect(r.linkSuggestions).toEqual([]);
   });
 });
+
+describe('buildRoster — a renamed charge is the entry it was joined into (F1)', () => {
+  // Google renamed Nick's charge on Oct 6; the detector joined it under the old
+  // name and lists the new key as an alias. Choices made under the new key —
+  // before the join, or from a link suggestion that offered it — are that entry.
+  const OLD = 'GOOGLE *Google One MOUNTAIN VIEW CA';
+  const NEW = 'GOOGLE *G1AI101M MOUNTAIN VIEW CA';
+  const google = () => det(OLD, { monthlyCents: 2119, lastCents: 2119, lastDate: '2026-10-06', count: 5, aliases: [NEW] });
+  const prices = [[], [{ name: NEW, cents: 2119, count: 1 }]];
+
+  it('a hand-added entry linked under the renamed key absorbs the joined row: ONE entry', () => {
+    const g1 = { id: 'goog0001', name: 'Google One', cents: 2119, cadence: 'monthly' as const, nextDate: '2026-11-06', merchant: NEW };
+    const r = roster({ detected: [google()], prefs: prefsWith({ manual: [g1] }) });
+    expect(r.subscriptions.map((e) => [e.key, e.cents, e.nextDate])).toEqual([['m:goog0001', 2119, '2026-11-06']]);
+    expect(r.monthlyCents).toBe(2119);
+  });
+
+  it('a watched renamed key is the joined row, not a second watched one', () => {
+    const r = roster({ detected: [google()], merchants: prices, prefs: prefsWith({ confirmed: [NEW] }) });
+    expect(r.subscriptions.map((e) => [e.key, e.source])).toEqual([[OLD, 'detected']]);
+    expect(r.monthlyCents).toBe(2119);
+  });
+
+  it('a renamed key hidden or confirmed is the joined row; the row carries its aliases so Restore can clear them', () => {
+    const hidden = roster({ detected: [google()], prefs: prefsWith({ hidden: [NEW] }) });
+    expect(hidden.subscriptions).toEqual([]);
+    expect(hidden.hidden.map((e) => [e.key, e.aliases])).toEqual([[OLD, [NEW]]]);
+    const bill = roster({ detected: [{ ...google(), kind: 'bill' }], prefs: prefsWith({ confirmed: [NEW] }) });
+    expect(bill.subscriptions.map((e) => e.key)).toEqual([OLD]);
+  });
+
+  it('a No to a link stored under the renamed key holds for the joined name', () => {
+    const r = roster({
+      detected: [google()],
+      prefs: prefsWith({
+        manual: [{ id: 'goog0001', name: 'Google One', cents: 2119, cadence: 'monthly', nextDate: '2026-11-06' }],
+        declinedLinks: [`goog0001|${NEW}`],
+      }),
+      links: [{ manualId: 'goog0001', merchant: OLD, date: '2026-10-06', cents: 2119 }],
+    });
+    expect(r.linkSuggestions).toEqual([]);
+  });
+
+  it('an older cube without aliases changes nothing: the renamed key is still its own watched row', () => {
+    const r = roster({ detected: [{ ...google(), aliases: undefined }], merchants: prices, prefs: prefsWith({ confirmed: [NEW] }) });
+    expect(r.subscriptions.map((e) => [e.key, e.source])).toEqual([[NEW, 'watched'], [OLD, 'detected']]);
+    expect(r.subscriptions[1]).not.toHaveProperty('aliases');
+  });
+});

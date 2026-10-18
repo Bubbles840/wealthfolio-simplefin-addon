@@ -372,6 +372,24 @@ describe('subscriptions follow a renamed charge (1.63, C1)', () => {
     }), new Date('2026-10-22T12:00:00Z'), 2);
     expect(cube.subscriptions).toEqual([expect.objectContaining({
       name: 'GOOGLE *Google One MOUNTAIN VIEW CA', kind: 'subscription', monthlyCents: 2119, count: 5, lastDate: '2026-10-06',
+      aliases: ['GOOGLE *G1AI101M MOUNTAIN VIEW CA'],
     })]);
+  });
+
+  it('suggests the joined name for a hand-added Google One, so accepting it absorbs the detected row (F1)', async () => {
+    const row = (date: string, notes: string, amount: number) => ({ month: date.slice(0, 7), date, notes, amount, accountId: 'acct-card' });
+    const google = { id: 'goog0001', name: 'Google One', cents: 2119, cadence: 'monthly' as const, nextDate: '2026-11-06' };
+    const cube = await buildReportCube(deps({
+      merchantRows: vi.fn(() => [
+        row('2026-07-06', 'GOOGLE *Google One MOUNTAIN VIEW CA · TRN-3', 5.29),
+        row('2026-08-06', 'GOOGLE *Google One MOUNTAIN VIEW CA · TRN-4', 5.29),
+        row('2026-09-06', 'GOOGLE *Google One MOUNTAIN VIEW CA · TRN-5', 21.19),
+        row('2026-10-06', 'GOOGLE *G1AI101M MOUNTAIN VIEW CA · TRN-6', 21.19),
+      ]),
+      subscriptionPrefs: vi.fn(async () => ({ ...emptySubscriptionPrefs(), manual: [google] })),
+    }), new Date('2026-10-25T12:00:00Z'), 2);
+    expect(cube.subscriptionLinks).toEqual([
+      { manualId: 'goog0001', merchant: 'GOOGLE *Google One MOUNTAIN VIEW CA', date: '2026-10-06', cents: 2119 },
+    ]);
   });
 });

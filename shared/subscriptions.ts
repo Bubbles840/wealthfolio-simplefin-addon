@@ -58,6 +58,15 @@ export interface DetectedSubscription {
    *  card's detail and in /subscriptions. Absent on older cubes; readers fall
    *  back to `lastDate`/`lastCents`. */
   recent?: Array<{ date: string; cents: number }>;
+  /** 1.63 (C1): the keys of the merchants joined INTO this entry — a renamed
+   *  charge's new name — never `name` itself. Absent when nothing was joined,
+   *  and on older cubes. Everything outside the detector groups a charge under
+   *  its own key, so each consumer that maps a charge key or a stored name to
+   *  an entry treats an alias as this entry (`aliasNames`, `detectionKeys`):
+   *  without it Google's renamed `GOOGLE *G1AI101M` stayed in the forecast's
+   *  daily spending while the bill was also scheduled, and was offered to
+   *  link and to watch as a second subscription. */
+  aliases?: string[];
 }
 
 /** Names that ARE subscriptions when they recur at all — two monthly charges
@@ -158,10 +167,13 @@ export function brandWord(key: string): string | null {
  * subscription vanished. A new merchant continues an old one only when the
  * match is clear: same account, same brand word (R8), next monthly date, same
  * price, and no other candidate on either side. Ambiguity leaves both apart.
- * Each result list is oldest first, keyed by the oldest name in its chain.
+ * Each result list is oldest first, keyed by the oldest name in its chain,
+ * with the keys joined into it, in chain order, as its aliases.
  * Pairs are judged against the original groups, so Map order cannot matter.
  */
-function joinRenamedMerchants(groups: Map<string, SubscriptionCharge[]>): Map<string, SubscriptionCharge[]> {
+function joinRenamedMerchants(
+  groups: Map<string, SubscriptionCharge[]>,
+): Map<string, { charges: SubscriptionCharge[]; aliases: string[] }> {
   const pairs: Array<[string, string]> = [];
   for (const [oldKey, old] of groups) {
     if (old.length < 2) continue;
@@ -190,14 +202,37 @@ function joinRenamedMerchants(groups: Map<string, SubscriptionCharge[]>): Map<st
   for (const [o, n] of pairs) if (asOld.get(o) === 1 && asNext.get(n) === 1) continuation.set(o, n);
   const continued = new Set(continuation.values());
 
-  const joined = new Map<string, SubscriptionCharge[]>();
+  const joined = new Map<string, { charges: SubscriptionCharge[]; aliases: string[] }>();
   for (const [key, list] of groups) {
     if (continued.has(key)) continue;
-    const all = [...list];
-    for (let k = continuation.get(key); k !== undefined; k = continuation.get(k)) all.push(...groups.get(k)!);
-    joined.set(key, all);
+    const charges = [...list];
+    const aliases: string[] = [];
+    for (let k = continuation.get(key); k !== undefined; k = continuation.get(k)) {
+      charges.push(...groups.get(k)!);
+      aliases.push(k);
+    }
+    joined.set(key, { charges, aliases });
   }
   return joined;
+}
+
+/** Every key a detection answers to: its name, then the keys joined into it
+ *  (F1). The cube is not validated past its required fields, so a malformed
+ *  `aliases` is ignored rather than trusted. */
+export function detectionKeys(d: DetectedSubscription): string[] {
+  const aliases = Array.isArray(d.aliases) ? d.aliases : [];
+  return [d.name, ...aliases.filter((a): a is string => typeof a === 'string' && a !== '' && a !== d.name)];
+}
+
+/** Each joined key → the name of the entry it was joined into (F1): what a
+ *  charge grouped under `GOOGLE *G1AI101M …`, or a choice stored under it,
+ *  belongs to. Empty for an older cube, so nothing changes there. */
+export function aliasNames(detected: readonly DetectedSubscription[] | null | undefined): Map<string, string> {
+  const out = new Map<string, string>();
+  for (const d of detected ?? []) {
+    for (const alias of detectionKeys(d).slice(1)) if (!out.has(alias)) out.set(alias, d.name);
+  }
+  return out;
 }
 
 export function detectSubscriptions(
@@ -220,7 +255,7 @@ export function detectSubscriptions(
   for (const list of byMerchant.values()) list.sort((a, b) => (a.date < b.date ? -1 : 1));
 
   const found: DetectedSubscription[] = [];
-  for (const [name, list] of joinRenamedMerchants(byMerchant)) {
+  for (const [name, { charges: list, aliases }] of joinRenamedMerchants(byMerchant)) {
     if (list.length < 2) continue;
 
     const last = list[list.length - 1];
@@ -269,6 +304,7 @@ export function detectSubscriptions(
       kind,
       // `recent` above is the trailing three, oldest first.
       recent: [...recent].reverse().map((c) => ({ date: c.date, cents: c.cents })),
+      ...(aliases.length > 0 ? { aliases } : {}),
     });
   }
 
