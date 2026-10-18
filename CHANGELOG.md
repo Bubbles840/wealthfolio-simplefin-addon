@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- **A card payment that names one of your accounts is a transfer from the
+  moment it posts.** On a cash account, money out whose bank text names another
+  connected account (Citi, Robinhood, Discover…) in payment words (`payment`,
+  `autopay`, `e-payment`, `transfer`, `ach`…) is held as a transfer while its
+  other half is on the way, instead of asking for a category. It links when the
+  other half posts and, as before, counts as spending marked "Needs review"
+  after 10 days. A transaction rule or an Undo still wins. Money in is left to
+  pairing.
+- **A bank's leading reference number no longer splits a merchant.** PNC now
+  puts a fresh reference first (`*0082 PAYMENT CITI AUTOPAY …`). Category rules,
+  category guesses, subscriptions, the forecast's bills and "Make every …
+  deposit a payback" now leave it out, so this month's rule matches next
+  month's charge. Rules you already saved are untouched, and anything you hid,
+  confirmed, linked or said No to under the old name still applies.
+- **A subscription survives a rename and a plan change.** When a merchant
+  renames its charge on the same account, at the same price, a month after the
+  last one, it stays one subscription under its old name. A price that steps
+  once and then holds is a subscription at the new price, shown as a rise in
+  the month it changes, instead of a bill priced at the old one.
+
+### Fixed
+- **"↔ Mark one as a transfer" writes a rule that matches.** The rule dropped
+  the bank's punctuation (`WEB-RECUR` became `WEB RECUR`) and kept its leading
+  reference, so it matched nothing, or only that one payment. It is now built
+  from the bank's own words, the way a category rule is.
+
 ## [1.62.0] - 2026-10-15
 
 ### Added

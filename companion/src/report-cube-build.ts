@@ -222,11 +222,12 @@ export async function buildReportCube(
   // date comes from an older reader, and no dates at all means "could not
   // look" (null), which must stay distinguishable from "none found" ([]).
   const datedCharges: SubscriptionCharge[] = [];
-  for (const r of merchantRows as Array<{ date?: string; notes: string; amount: number }>) {
+  for (const r of merchantRows as Array<{ date?: string; notes: string; amount: number; accountId?: string }>) {
     if (!r.date) continue;
     const name = descriptionFromComment(r.notes);
     if (!name) continue;
-    datedCharges.push({ date: r.date, merchant: name, cents: cents(r.amount) });
+    // The account rides along so a renamed charge joins its old name only on the same account.
+    datedCharges.push({ date: r.date, merchant: name, cents: cents(r.amount), ...(r.accountId ? { accountId: r.accountId } : {}) });
   }
   const subscriptions = datedCharges.length > 0 ? detectSubscriptions(datedCharges, now) : null;
   // Link suggestions ride the same dated charges. A failed read costs the
