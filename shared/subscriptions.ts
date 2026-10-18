@@ -88,6 +88,21 @@ const median = (values: number[]): number => {
   return s.length % 2 ? s[mid] : Math.round((s[mid - 1] + s[mid]) / 2);
 };
 
+/**
+ * The key a merchant is grouped, hidden, confirmed and linked under: the
+ * rule-flow pattern (trimmed, a bank's leading reference token and trailing
+ * varying tokens dropped), or the name itself when nothing is left. Idempotent.
+ *
+ * Why stored choices go through it too (R6): 1.63 strips a leading reference
+ * from the detector's key, so `*8712 PAYMENT LOUISVILLE GAS & ACH` became
+ * `PAYMENT LOUISVILLE GAS & ACH`. A hide, watch, link or No saved under the
+ * old key would silently stop applying; comparing both sides through this
+ * function makes the old key and the new one the same entry.
+ */
+export function subscriptionKey(merchant: string): string {
+  return categoryRulePattern(merchant) || merchant;
+}
+
 export function detectSubscriptions(
   charges: readonly SubscriptionCharge[],
   now: Date,
@@ -99,7 +114,7 @@ export function detectSubscriptions(
     // banks append varying reference tokens per charge, and exact-name
     // grouping split one real subscription into groups of one — the live
     // miss this fixes.
-    const key = categoryRulePattern(c.merchant) || c.merchant;
+    const key = subscriptionKey(c.merchant);
     const list = byMerchant.get(key) ?? [];
     list.push(c);
     byMerchant.set(key, list);

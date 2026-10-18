@@ -307,3 +307,27 @@ describe('pruneDeleted edges', () => {
     expect(pruned.deleted).toEqual([exact]);
   });
 });
+
+describe('edits on a key stored before 1.63 (R6)', () => {
+  const OLD = '*8712 PAYMENT LOUISVILLE GAS & ACH';
+  const NEW = 'PAYMENT LOUISVILLE GAS & ACH';
+
+  it('Restore removes the old key, and hiding again adds no second copy', () => {
+    expect(unhideKey(prefs({ hidden: [OLD, 'SPOTIFY'] }), NEW).hidden).toEqual(['SPOTIFY']);
+    expect(hideKey(prefs({ hidden: [OLD] }), NEW).hidden).toEqual([OLD]);
+  });
+
+  it('unconfirm removes the old key, and confirming again adds no second copy', () => {
+    expect(unconfirmKey(prefs({ confirmed: [OLD] }), NEW).confirmed).toEqual([]);
+    expect(confirmKey(prefs({ confirmed: [OLD] }), NEW).confirmed).toEqual([OLD]);
+  });
+
+  it('accepting a link moves a hide stored under the old key to the hand-added key', () => {
+    const p = acceptLink(prefs({ manual: [HULU], hidden: [OLD] }), { manualId: 'hulu0001', merchant: NEW, date: '2026-09-19' });
+    expect(p.hidden).toEqual(['m:hulu0001']);
+  });
+
+  it('compares hand-added keys exactly', () => {
+    expect(unhideKey(prefs({ hidden: ['m:hulu0001'] }), 'm:hulu0002').hidden).toEqual(['m:hulu0001']);
+  });
+});

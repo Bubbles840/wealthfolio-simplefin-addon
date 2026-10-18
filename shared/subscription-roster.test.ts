@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   addDaysIso, addMonthsClamped, addPeriod, addYearsClamped, daysBetween, isManualKey, localIsoDay, manualKey,
-  rollForward,
+  rollForward, normalizeDeclinedLink, normalizeRosterKey,
   aboutDollars, buildRoster, dueWithin, formatRosterTotal, monthDay, rosterAmount, rosterMoney, rosterPrice,
   rosterWhen, type RosterInput,
 } from './subscription-roster.js';
@@ -366,5 +366,58 @@ describe('roster text helpers', () => {
     expect(monthDay('2026-10-05')).toBe('Oct 5');
     const r = roster({ detected: [det('A', { lastDate: '2026-09-15' }), det('B', { lastDate: '2026-09-08' })] });
     expect(r.subscriptions.map(rosterWhen)).toEqual(['next Oct 15', 'due Oct 8, not charged yet']);
+  });
+});
+
+describe('buildRoster — choices stored under a key from before 1.63 (R6)', () => {
+  // 1.63 strips a leading bank reference from the detector's key, so a choice
+  // saved under the old key must still find the entry under the new one.
+  const OLD = '*8712 PAYMENT LOUISVILLE GAS & ACH';
+  const NEW = 'PAYMENT LOUISVILLE GAS & ACH';
+
+  it('normalizes a stored key, leaving hand-added keys and the manual id of a declined link alone', () => {
+    expect(normalizeRosterKey(OLD)).toBe(NEW);
+    expect(normalizeRosterKey(NEW)).toBe(NEW);
+    expect(normalizeRosterKey('m:lge00001')).toBe('m:lge00001');
+    expect(normalizeDeclinedLink(`lge00001|${OLD}`)).toBe(`lge00001|${NEW}`);
+  });
+
+  it('a hidden name stored under the old key still hides the new key', () => {
+    const r = roster({ detected: [det(NEW, { kind: 'bill', monthlyCents: 6149 })], prefs: prefsWith({ hidden: [OLD] }) });
+    expect(r.bills).toEqual([]);
+    expect(names(r.hidden)).toEqual([NEW]);
+    expect(r.billsMonthlyCents).toBe(0);
+  });
+
+  it('a confirmed name stored under the old key still counts, with no second watched row', () => {
+    const r = roster({
+      detected: [det('PAYMENT VENMO ACH WEB', { kind: 'possible', count: 2 })],
+      prefs: prefsWith({ confirmed: ['*8768 PAYMENT VENMO ACH WEB'] }),
+    });
+    expect(r.subscriptions.map((e) => [e.key, e.source])).toEqual([['PAYMENT VENMO ACH WEB', 'detected']]);
+    expect(r.maybes).toEqual([]);
+  });
+
+  it('a watched bank name is the same entry as its detection', () => {
+    const r = roster({ detected: [det('HULU', { kind: 'possible', count: 2, monthlyCents: 999 })], prefs: prefsWith({ confirmed: ['HULU 877-824-4858'] }) });
+    expect(r.subscriptions.map((e) => [e.key, e.source])).toEqual([['HULU', 'detected']]);
+  });
+
+  it('a hand-added entry linked under the old key still absorbs the detection', () => {
+    const lge = { id: 'lge00001', name: 'LG&E', cents: 6000, cadence: 'monthly' as const, nextDate: '2026-10-20', merchant: OLD };
+    const r = roster({ detected: [det(NEW, { kind: 'bill', monthlyCents: 6149, lastDate: '2026-10-08' })], prefs: prefsWith({ manual: [lge] }) });
+    expect(r.bills).toEqual([]);
+    expect(r.subscriptions.map((e) => [e.key, e.cents, e.nextDate])).toEqual([['m:lge00001', 6149, '2026-11-08']]);
+  });
+
+  it('a No to a link, stored under the old key, still holds', () => {
+    const r = roster({
+      prefs: prefsWith({
+        manual: [{ id: 'lge00001', name: 'LG&E', cents: 6000, cadence: 'monthly', nextDate: '2026-10-20' }],
+        declinedLinks: [`lge00001|${OLD}`],
+      }),
+      links: [{ manualId: 'lge00001', merchant: NEW, date: '2026-09-19', cents: 6149 }],
+    });
+    expect(r.linkSuggestions).toEqual([]);
   });
 });

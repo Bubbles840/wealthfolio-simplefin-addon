@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { detectSubscriptions } from './subscriptions.js';
+import { detectSubscriptions, subscriptionKey } from './subscriptions.js';
 
 const NOW = new Date('2026-09-02T12:00:00Z');
 const charge = (date: string, merchant: string, cents: number) => ({ date, merchant, cents });
@@ -274,5 +274,19 @@ describe('leading references (1.63)', () => {
     ], NOW);
     expect(found).toHaveLength(1);
     expect(found[0]).toMatchObject({ name: 'PAYMENT LOUISVILLE GAS & ACH', kind: 'bill', count: 3 });
+  });
+});
+
+describe('subscriptionKey (R6)', () => {
+  it('is the detector key, and maps a key stored before 1.63 onto it', () => {
+    expect(subscriptionKey('*8712 PAYMENT LOUISVILLE GAS & ACH DEBIT')).toBe('PAYMENT LOUISVILLE GAS & ACH');
+    expect(subscriptionKey('*8712 PAYMENT LOUISVILLE GAS & ACH')).toBe('PAYMENT LOUISVILLE GAS & ACH');
+    expect(subscriptionKey('HULU 877-824-4858')).toBe('HULU');
+  });
+
+  it('is idempotent', () => {
+    for (const name of ['*8712 PAYMENT LOUISVILLE GAS & ACH DEBIT', 'HULU 877-824-4858', 'GOOGLE *Google One MOUNTAIN VIEW CA', '99182', '']) {
+      expect(subscriptionKey(subscriptionKey(name))).toBe(subscriptionKey(name));
+    }
   });
 });

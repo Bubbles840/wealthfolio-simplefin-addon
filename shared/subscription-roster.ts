@@ -15,7 +15,7 @@
 
 import { findingHandle } from './handle.js';
 import type { CubeMerchant } from './report-cube.js';
-import type { DetectedSubscription } from './subscriptions.js';
+import { subscriptionKey, type DetectedSubscription } from './subscriptions.js';
 import type { ManualSubscription, RemindDays, SubscriptionPrefs } from './subscription-prefs.js';
 
 export type Cadence = 'monthly' | 'yearly';
@@ -83,6 +83,20 @@ export function manualKey(id: string): string {
 
 export function isManualKey(key: string): boolean {
   return key.startsWith(MANUAL_PREFIX);
+}
+
+/** A stored hide/confirm/rename key as the detector would spell it today (R6):
+ *  `*8712 PAYMENT LOUISVILLE GAS & ACH` and `PAYMENT LOUISVILLE GAS & ACH` are
+ *  one entry. A hand-added key is an id, not a merchant, and is left alone. */
+export function normalizeRosterKey(key: string): string {
+  return isManualKey(key) ? key : subscriptionKey(key);
+}
+
+/** A declined link is `manualId|merchant`; only the merchant part moves with
+ *  the detector's key. The id may not contain `|`, so split at the first. */
+export function normalizeDeclinedLink(entry: string): string {
+  const bar = entry.indexOf('|');
+  return bar < 0 ? entry : `${entry.slice(0, bar)}|${subscriptionKey(entry.slice(bar + 1))}`;
 }
 
 // ── The roster ────────────────────────────────────────────────────────────
@@ -204,10 +218,14 @@ const own = (rec: object, key: string): boolean => Object.prototype.hasOwnProper
 export function buildRoster(input: RosterInput): Roster {
   const { prefs, today } = input;
   const detected = input.detected ?? null;
-  const hidden = new Set(prefs.hidden);
-  const confirmed = new Set(prefs.confirmed);
+  // R6: choices saved before 1.63 are keyed by the bank's old spelling
+  // (`*8712 PAYMENT LOUISVILLE GAS & ACH`); the detector now says `PAYMENT
+  // LOUISVILLE GAS & ACH`. Every stored name is compared through one
+  // normalizer so the old choice still finds its entry.
+  const hidden = new Set(prefs.hidden.map(normalizeRosterKey));
+  const confirmed = new Set(prefs.confirmed.map(normalizeRosterKey));
   const linkedManual = new Map<string, ManualSubscription>();
-  for (const m of prefs.manual) if (m.merchant) linkedManual.set(m.merchant, m);
+  for (const m of prefs.manual) if (m.merchant) linkedManual.set(subscriptionKey(m.merchant), m);
   const detectedByName = new Map((detected ?? []).map((d) => [d.name, d] as const));
 
   const naming = (key: string, fallback: string, bank: string | undefined) => {
@@ -232,8 +250,11 @@ export function buildRoster(input: RosterInput): Roster {
 
   // Watched: confirmed, but the detector has no verdict (one charge so far).
   const prices = recentMerchantPrices(input.merchants);
-  for (const name of new Set(prefs.confirmed)) {
-    if (detectedByName.has(name) || linkedManual.has(name) || isManualKey(name)) continue;
+  const watched = new Set<string>();
+  for (const name of prefs.confirmed) {
+    const norm = normalizeRosterKey(name);
+    if (watched.has(norm) || detectedByName.has(norm) || linkedManual.has(norm) || isManualKey(name)) continue;
+    watched.add(norm);
     all.push({
       key: name, ...naming(name, name, name), group: 'subscription', source: 'watched',
       cents: prices.get(name) ?? 0, cadence: 'monthly', nextDate: null, recent: [],
@@ -243,7 +264,7 @@ export function buildRoster(input: RosterInput): Roster {
 
   for (const m of prefs.manual) {
     const key = manualKey(m.id);
-    const d = m.merchant ? detectedByName.get(m.merchant) : undefined;
+    const d = m.merchant ? detectedByName.get(subscriptionKey(m.merchant)) : undefined;
     const base = {
       key, ...naming(key, m.name, m.merchant), group: 'subscription' as const, source: 'manual' as const,
       cadence: m.cadence, ...reminder(key), handle: findingHandle(key),
@@ -255,13 +276,13 @@ export function buildRoster(input: RosterInput): Roster {
       : { ...base, cents: m.cents, nextDate: rollForward(m.nextDate, m.cadence, today), recent: [] });
   }
 
-  const visible = all.filter((e) => !hidden.has(e.key));
+  const visible = all.filter((e) => !hidden.has(normalizeRosterKey(e.key)));
   const group = (g: RosterGroup) => visible.filter((e) => e.group === g).sort(rosterOrder);
   const subscriptions = group('subscription');
   const bills = group('bill');
   const sum = (list: RosterEntry[]) => list.reduce((s, e) => s + e.cents, 0);
 
-  const declined = new Set(prefs.declinedLinks);
+  const declined = new Set(prefs.declinedLinks.map(normalizeDeclinedLink));
   const manualById = new Map(prefs.manual.map((m) => [m.id, m] as const));
   const linkSuggestions: RosterLinkSuggestion[] = [];
   for (const l of input.links ?? []) {
@@ -279,7 +300,7 @@ export function buildRoster(input: RosterInput): Roster {
     subscriptions,
     bills,
     maybes: group('maybe'),
-    hidden: all.filter((e) => hidden.has(e.key)).sort(rosterOrder),
+    hidden: all.filter((e) => hidden.has(normalizeRosterKey(e.key))).sort(rosterOrder),
     monthlyCents: sum(subscriptions.filter((e) => e.cadence === 'monthly')),
     yearlyCents: sum(subscriptions.filter((e) => e.cadence === 'yearly')),
     billsMonthlyCents: sum(bills),
