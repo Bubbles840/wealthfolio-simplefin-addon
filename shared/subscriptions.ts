@@ -19,6 +19,8 @@ export interface SubscriptionCharge {
   /** Already normalized (descriptionFromComment) — grouping key and label. */
   merchant: string;
   cents: number;
+  /** The Wealthfolio account charged; a charge without one is never joined to a renamed merchant. */
+  accountId?: string;
 }
 
 /**
@@ -131,6 +133,61 @@ export function subscriptionKey(merchant: string): string {
   return categoryRulePattern(merchant) || merchant;
 }
 
+/**
+ * The brand a key is known by: its first token made only of letters, 3 or
+ * more (R8). `GOOGLE *G1AI101M ...` is `google`; a bare reference is null.
+ */
+export function brandWord(key: string): string | null {
+  return key.toLowerCase().split(/[^a-z0-9]+/).find((t) => /^[a-z]{3,}$/.test(t)) ?? null;
+}
+
+/**
+ * Joins a renamed charge to its old merchant. Google renamed the charge on
+ * 2026-10-06 ("GOOGLE *Google One" to "GOOGLE *G1AI101M"); by Oct 22 the old
+ * name had been silent 46 days and the new one had one charge, so the
+ * subscription vanished. A new merchant continues an old one only when the
+ * match is clear: same account, same brand word (R8), next monthly date, same
+ * price, and no other candidate on either side. Ambiguity leaves both apart.
+ * Each result list is oldest first, keyed by the oldest name in its chain.
+ * Pairs are judged against the original groups, so Map order cannot matter.
+ */
+function joinRenamedMerchants(groups: Map<string, SubscriptionCharge[]>): Map<string, SubscriptionCharge[]> {
+  const pairs: Array<[string, string]> = [];
+  for (const [oldKey, old] of groups) {
+    if (old.length < 2) continue;
+    const oldLast = old[old.length - 1];
+    const brand = brandWord(oldKey);
+    if (!oldLast.accountId || !brand) continue;
+    for (const [nextKey, next] of groups) {
+      if (nextKey === oldKey) continue;
+      const first = next[0];
+      if (first.accountId !== oldLast.accountId || brandWord(nextKey) !== brand) continue;
+      const gap = (Date.parse(`${first.date}T00:00:00Z`) - Date.parse(`${oldLast.date}T00:00:00Z`)) / DAY_MS;
+      if (gap < MIN_GAP_DAYS || gap > MAX_GAP_DAYS) continue;
+      if (Math.abs(first.cents - oldLast.cents) > oldLast.cents * AMOUNT_TOLERANCE) continue;
+      pairs.push([oldKey, nextKey]);
+    }
+  }
+  const asOld = new Map<string, number>();
+  const asNext = new Map<string, number>();
+  for (const [o, n] of pairs) {
+    asOld.set(o, (asOld.get(o) ?? 0) + 1);
+    asNext.set(n, (asNext.get(n) ?? 0) + 1);
+  }
+  const continuation = new Map<string, string>();
+  for (const [o, n] of pairs) if (asOld.get(o) === 1 && asNext.get(n) === 1) continuation.set(o, n);
+  const continued = new Set(continuation.values());
+
+  const joined = new Map<string, SubscriptionCharge[]>();
+  for (const [key, list] of groups) {
+    if (continued.has(key)) continue;
+    const all = [...list];
+    for (let k = continuation.get(key); k !== undefined; k = continuation.get(k)) all.push(...groups.get(k)!);
+    joined.set(key, all);
+  }
+  return joined;
+}
+
 export function detectSubscriptions(
   charges: readonly SubscriptionCharge[],
   now: Date,
@@ -148,10 +205,11 @@ export function detectSubscriptions(
     byMerchant.set(key, list);
   }
 
+  for (const list of byMerchant.values()) list.sort((a, b) => (a.date < b.date ? -1 : 1));
+
   const found: DetectedSubscription[] = [];
-  for (const [name, list] of byMerchant) {
+  for (const [name, list] of joinRenamedMerchants(byMerchant)) {
     if (list.length < 2) continue;
-    list.sort((a, b) => (a.date < b.date ? -1 : 1));
 
     const last = list[list.length - 1];
     const daysSinceLast = (now.getTime() - Date.parse(`${last.date}T00:00:00Z`)) / DAY_MS;

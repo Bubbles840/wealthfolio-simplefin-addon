@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { detectSubscriptions, subscriptionKey } from './subscriptions.js';
+import { brandWord, detectSubscriptions, subscriptionKey, type SubscriptionCharge } from './subscriptions.js';
 
 const NOW = new Date('2026-09-02T12:00:00Z');
 const charge = (date: string, merchant: string, cents: number) => ({ date, merchant, cents });
@@ -350,5 +350,75 @@ describe('a price step is a plan change (C2, 1.63)', () => {
       charge('2026-08-06', 'GOOGLE *Google One', 529),
     ], NOW);
     expect(middle[0].kind).toBe('bill');
+  });
+});
+
+describe('a renamed charge is the same subscription (C1, 1.63)', () => {
+  const g = (date: string, merchant: string, cents: number, accountId: string | null = 'wf-citi'): SubscriptionCharge =>
+    ({ date, merchant, cents, ...(accountId ? { accountId } : {}) });
+  /** Nick's six Google rows on the Citi card. Google renamed the charge on Oct 6. */
+  const GOOGLE = (): SubscriptionCharge[] => [
+    g('2026-06-06', 'GOOGLE *Google One MOUNTAIN VIEW CA', 529),
+    g('2026-06-10', 'Google One Mountain View CA', 2649),
+    g('2026-07-06', 'GOOGLE *Google One MOUNTAIN VIEW CA', 529),
+    g('2026-08-06', 'GOOGLE *Google One MOUNTAIN VIEW CA', 529),
+    g('2026-09-06', 'GOOGLE *Google One MOUNTAIN VIEW CA', 2119),
+    g('2026-10-06', 'GOOGLE *G1AI101M MOUNTAIN VIEW CA', 2119),
+  ];
+  const withOct = (over: Partial<SubscriptionCharge>) => [...GOOGLE().slice(0, 5), { ...GOOGLE()[5], ...over }];
+  const OCT_22 = new Date('2026-10-22T12:00:00Z');
+
+  it.each(['2026-10-18', '2026-10-22'])("Nick's Google One on %s: one subscription at $21.19, five charges, under the older name", (day) => {
+    expect(detectSubscriptions(GOOGLE(), new Date(`${day}T12:00:00Z`))).toEqual([expect.objectContaining({
+      name: 'GOOGLE *Google One MOUNTAIN VIEW CA', kind: 'subscription', monthlyCents: 2119, count: 5,
+      lastDate: '2026-10-06', lastCents: 2119, creep: false,
+    })]);
+  });
+
+  it('never joins charges on different accounts', () => {
+    const moved = withOct({ accountId: 'wf-chase' });
+    expect(detectSubscriptions(moved, new Date('2026-10-18T12:00:00Z'))).toEqual([expect.objectContaining({ count: 4, lastDate: '2026-09-06' })]);
+    expect(detectSubscriptions(moved, OCT_22)).toEqual([]);
+  });
+
+  it('joins nothing without an account', () => {
+    expect(detectSubscriptions(GOOGLE().map(({ accountId: _a, ...c }) => c), OCT_22)).toEqual([]);
+  });
+
+  it.each([
+    ['a different price', { cents: 2649 }],
+    ['a charge off the monthly date', { date: '2026-10-20' }],
+    ['a different brand', { merchant: 'YOUTUBE PREMIUM 650-253-0000' }],
+  ])('leaves a new merchant apart at %s', (_why, over) => {
+    expect(detectSubscriptions(withOct(over), OCT_22)).toEqual([]);
+  });
+
+  it('leaves it apart when two new merchants could continue the old one', () => {
+    const two = [...GOOGLE(), g('2026-10-07', 'GOOGLE *G1XX999Z MOUNTAIN VIEW CA', 2119)];
+    expect(detectSubscriptions(two, OCT_22)).toEqual([]);
+  });
+
+  it('needs two charges under the old name', () => {
+    const one = [g('2026-09-06', 'GOOGLE *Google One MOUNTAIN VIEW CA', 2119), g('2026-10-06', 'GOOGLE *G1AI101M MOUNTAIN VIEW CA', 2119)];
+    expect(detectSubscriptions(one, OCT_22)).toEqual([]);
+  });
+
+  it('follows a chain of renames back to the oldest name', () => {
+    const chain = [
+      g('2026-06-06', 'GOOGLE *Google One MOUNTAIN VIEW CA', 999), g('2026-07-06', 'GOOGLE *Google One MOUNTAIN VIEW CA', 999),
+      g('2026-08-06', 'GOOGLE STORAGE 855-836-3987', 999), g('2026-09-06', 'GOOGLE STORAGE 855-836-3987', 999),
+      g('2026-10-06', 'GOOGLE *G1AI101M MOUNTAIN VIEW CA', 999),
+    ];
+    expect(detectSubscriptions(chain, OCT_22)).toEqual([expect.objectContaining({
+      name: 'GOOGLE *Google One MOUNTAIN VIEW CA', kind: 'subscription', count: 5, monthlyCents: 999,
+    })]);
+  });
+
+  it('takes the brand from the first all-letters word of 3+ letters (R8)', () => {
+    expect(brandWord('GOOGLE *G1AI101M MOUNTAIN VIEW CA')).toBe('google');
+    expect(brandWord('SQ *BLUE BOTTLE')).toBe('blue');
+    expect(brandWord('NETFLIX.COM')).toBe('netflix');
+    expect(brandWord('G1AI101M MOUNTAIN VIEW')).toBe('mountain');
+    expect(brandWord('99182')).toBeNull();
   });
 });
