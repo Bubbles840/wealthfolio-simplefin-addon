@@ -264,3 +264,15 @@ describe('recent charges (1.60)', () => {
     expect(found.recent).toEqual([{ date: '2026-08-20', cents: 1199 }, { date: '2026-07-20', cents: 1199 }]);
   });
 });
+
+describe('leading references (1.63)', () => {
+  it('groups one bill across the fresh reference PNC puts in front of each charge', () => {
+    const found = detectSubscriptions([
+      charge('2026-06-19', '*8712 PAYMENT LOUISVILLE GAS & ACH DEBIT', 6120),
+      charge('2026-07-20', '*5521 PAYMENT LOUISVILLE GAS & ACH DEBIT', 7480),
+      charge('2026-08-19', '*0937 PAYMENT LOUISVILLE GAS & ACH DEBIT', 5390),
+    ], NOW);
+    expect(found).toHaveLength(1);
+    expect(found[0]).toMatchObject({ name: 'PAYMENT LOUISVILLE GAS & ACH', kind: 'bill', count: 3 });
+  });
+});
