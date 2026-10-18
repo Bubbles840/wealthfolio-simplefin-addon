@@ -1477,6 +1477,14 @@ branches.
   at most. And the first heal or deep scan after deploy turns older unpaired
   payments that name such an account (a dead Discover feed) from WITHDRAWAL
   into held placeholders, so past spending drops. Intended for card payments.
+- **Choices stored under a renamed charge's own key (C1 aliases).** A hide
+  stored under the new name hides the joined row and Restore clears it, but
+  accepting a link to the joined entry does not move that hide to the
+  hand-added key (`acceptLink` matches `link.merchant` only), so it lingers
+  with no effect until the join breaks. And a rename or reminder saved under
+  the new name is dropped once the charge joins its old name (`naming` /
+  `reminder` read only the joined entry's name). Reachable only when the new
+  name was hidden, renamed or given a reminder as its own row before the join.
 
 ## Reference: name mismatches between the database, the REST API, and the SDK
 
