@@ -290,3 +290,65 @@ describe('subscriptionKey (R6)', () => {
     }
   });
 });
+
+describe('a price step is a plan change (C2, 1.63)', () => {
+  it('in the month the price goes up: a subscription at the new price, flagged as a rise', () => {
+    // Nick's Google One as it stood on 2026-09-10: $5.29 for three months, then
+    // the upgrade. Before 1.63 the step made it a "bill" priced at $5.29.
+    const found = detectSubscriptions([
+      charge('2026-06-06', 'GOOGLE *Google One MOUNTAIN VIEW CA', 529),
+      charge('2026-06-10', 'Google One Mountain View CA', 2649),
+      charge('2026-07-06', 'GOOGLE *Google One MOUNTAIN VIEW CA', 529),
+      charge('2026-08-06', 'GOOGLE *Google One MOUNTAIN VIEW CA', 529),
+      charge('2026-09-06', 'GOOGLE *Google One MOUNTAIN VIEW CA', 2119),
+    ], new Date('2026-09-10T12:00:00Z'));
+    expect(found).toHaveLength(1);
+    expect(found[0]).toMatchObject({
+      name: 'GOOGLE *Google One MOUNTAIN VIEW CA', kind: 'subscription', monthlyCents: 2119,
+      lastCents: 2119, prevCents: 529, count: 4, creep: true,
+    });
+  });
+
+  it('the month after: still a subscription at the new price, no longer a rise', () => {
+    const found = detectSubscriptions([
+      charge('2026-06-14', 'CLAUDE.AI SUBSCRIPTION', 2000),
+      charge('2026-07-14', 'CLAUDE.AI SUBSCRIPTION', 10000),
+      charge('2026-08-14', 'CLAUDE.AI SUBSCRIPTION', 10000),
+    ], NOW);
+    expect(found[0]).toMatchObject({ kind: 'subscription', monthlyCents: 10000, creep: false });
+  });
+
+  it('a step down is a plan change too, never a rise', () => {
+    const found = detectSubscriptions([
+      charge('2026-06-03', 'PEACOCK TV', 1500),
+      charge('2026-07-03', 'PEACOCK TV', 1500),
+      charge('2026-08-03', 'PEACOCK TV', 999),
+    ], NOW);
+    expect(found[0]).toMatchObject({ kind: 'subscription', monthlyCents: 999, creep: false });
+  });
+
+  it('"agree" is within 2% (R9): a near-repeat then a jump is a step, a wider pair is not', () => {
+    const run = (b: number) => detectSubscriptions([
+      charge('2026-06-03', 'ACME STORAGE', 5000),
+      charge('2026-07-03', 'ACME STORAGE', b),
+      charge('2026-08-03', 'ACME STORAGE', 9000),
+    ], NOW)[0];
+    expect(run(5100)).toMatchObject({ kind: 'subscription', monthlyCents: 9000, creep: true });
+    expect(run(5110).kind).toBe('bill');
+  });
+
+  it('charges that wander stay a bill, and so does an odd one in the middle', () => {
+    const lge = detectSubscriptions([
+      charge('2026-06-03', 'LOUISVILLE GAS & ELECTRIC', 8412),
+      charge('2026-07-03', 'LOUISVILLE GAS & ELECTRIC', 10233),
+      charge('2026-08-03', 'LOUISVILLE GAS & ELECTRIC', 7655),
+    ], NOW);
+    expect(lge[0]).toMatchObject({ kind: 'bill', creep: false });
+    const middle = detectSubscriptions([
+      charge('2026-06-06', 'GOOGLE *Google One', 529),
+      charge('2026-07-06', 'GOOGLE *Google One', 2119),
+      charge('2026-08-06', 'GOOGLE *Google One', 529),
+    ], NOW);
+    expect(middle[0].kind).toBe('bill');
+  });
+});

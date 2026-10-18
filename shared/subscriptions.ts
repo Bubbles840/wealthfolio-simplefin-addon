@@ -35,7 +35,8 @@ export type RecurringKind = 'subscription' | 'bill' | 'possible';
 
 export interface DetectedSubscription {
   name: string;
-  /** The recurring price: the MEDIAN charge, robust against one crept month. */
+  /** The recurring price: the MEDIAN charge, robust against one crept month —
+   *  or, after a plan change (C2, 1.63), the newest charge. */
   monthlyCents: number;
   count: number;
   lastDate: string;
@@ -81,6 +82,33 @@ const AMOUNT_TOLERANCE = 0.15;
 const ACTIVE_WITHIN_DAYS = 45;
 
 const DAY_MS = 86_400_000;
+
+/** Two charges "agree" on a price when they sit within this fraction of each
+ *  other (R9) — a repeat of the same plan, not a wandering utility bill. */
+const PLAN_PRICE_AGREEMENT = 0.02;
+
+/**
+ * A one-time price step in the trailing three charges: two that agree and one
+ * that is apart from them, at either end. Nick's Google One paid $5.29 for
+ * three months, then upgraded on Sep 6 2026 to $21.19; the old rule saw an
+ * unstable trio and filed it as a $5.29 "bill". A step is a plan change, so
+ * the subscription now prices at the newest charge.
+ *
+ * Gas & electric (8412, 10233, 7655) has no agreeing pair, and an odd charge
+ * in the MIDDLE (529, 2119, 529) is a one-off, not a step — both stay bills.
+ *
+ * `steppedNow` is true when the odd charge is the newest: the step landed this
+ * month, so it is a rise worth flagging once. False means the step is behind us.
+ */
+function planChange(recent: readonly SubscriptionCharge[]): { steppedNow: boolean } | null {
+  if (recent.length !== 3) return null;
+  const [a, b, c] = recent.map((r) => r.cents);
+  const agree = (x: number, y: number) => Math.abs(x - y) <= Math.max(x, y) * PLAN_PRICE_AGREEMENT;
+  const apart = (odd: number, price: number) => Math.abs(odd - price) > price * AMOUNT_TOLERANCE;
+  if (agree(a, b) && apart(c, b)) return { steppedNow: true };
+  if (agree(b, c) && apart(a, b)) return { steppedNow: false };
+  return null;
+}
 
 const median = (values: number[]): number => {
   const s = [...values].sort((a, b) => a - b);
@@ -144,12 +172,14 @@ export function detectSubscriptions(
     const typical = median(recent.map((c) => c.cents));
     const stable = recent.every((c) => Math.abs(c.cents - typical) <= typical * AMOUNT_TOLERANCE);
 
+    const change = list.length >= 3 && !stable ? planChange(recent) : null;
+
     // Nothing with a monthly cadence vanishes any more — v1.37's rule, after
     // a plan upgrade made a real subscription's two charges "unstable" and
     // silently disappear. Stability only decides WHICH tier.
     let kind: RecurringKind;
     if (list.length >= 3) {
-      kind = stable ? 'subscription' : 'bill';
+      kind = stable || change ? 'subscription' : 'bill';
     } else {
       kind = isKnownBrand(name) ? 'subscription' : 'possible';
     }
@@ -158,12 +188,14 @@ export function detectSubscriptions(
       name,
       // Across an upgrade the median is a price nobody pays — the newest
       // charge is the plan as it exists now.
-      monthlyCents: stable ? typical : (list.length >= 3 ? typical : last.cents),
+      monthlyCents: change ? last.cents : (stable ? typical : (list.length >= 3 ? typical : last.cents)),
       count: list.length,
       lastDate: last.date,
       lastCents: last.cents,
       ...(list.length >= 2 ? { prevCents: list[list.length - 2].cents } : {}),
-      creep: kind === 'subscription' && stable && last.cents > typical,
+      // A step up is a rise in the month it lands, and only then.
+      creep: kind === 'subscription'
+        && ((stable && last.cents > typical) || (!!change?.steppedNow && last.cents > recent[1].cents)),
       kind,
       // `recent` above is the trailing three, oldest first.
       recent: [...recent].reverse().map((c) => ({ date: c.date, cents: c.cents })),

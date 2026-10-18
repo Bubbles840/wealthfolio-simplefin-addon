@@ -181,12 +181,19 @@ function nextFromCharge(lastDate: string, cadence: Cadence, today: string): Pick
   return { nextDate: null, overdueSince: predicted };
 }
 
+/** A stable subscription's rise is measured from its median. A plan change is
+ *  priced at the newest charge already (monthlyCents === lastCents), so the
+ *  price it rose FROM is the charge before it — Google One shows $5.29 → $21.19. */
+function creepFromCents(d: DetectedSubscription): number {
+  return d.lastCents === d.monthlyCents && d.prevCents !== undefined ? d.prevCents : d.monthlyCents;
+}
+
 function fromDetection(d: DetectedSubscription, cadence: Cadence, today: string) {
   return {
     // After a price rise the newest charge is the price going forward.
     cents: d.creep ? d.lastCents : d.monthlyCents,
     ...nextFromCharge(d.lastDate, cadence, today),
-    ...(d.creep ? { creep: { fromCents: d.monthlyCents, toCents: d.lastCents, chargedOn: d.lastDate } } : {}),
+    ...(d.creep ? { creep: { fromCents: creepFromCents(d), toCents: d.lastCents, chargedOn: d.lastDate } } : {}),
     recent: d.recent && d.recent.length > 0
       ? d.recent.slice(0, 3).map(({ date, cents }) => ({ date, cents }))
       : [{ date: d.lastDate, cents: d.lastCents }],

@@ -226,6 +226,15 @@ describe('buildRoster — what detection adds', () => {
     expect(e.creep).toEqual({ fromCents: 1549, toCents: 1799, chargedOn: '2026-10-10' });
   });
 
+  it('a plan change shows the old price beside the new one in the month it steps (C2)', () => {
+    // The detector prices a step at the NEW price, so the old one is prevCents.
+    const e = roster({ detected: [det('GOOGLE *Google One MOUNTAIN VIEW CA', {
+      monthlyCents: 2119, lastCents: 2119, prevCents: 529, creep: true, lastDate: '2026-09-06',
+    })] }).subscriptions[0];
+    expect(e.cents).toBe(2119);
+    expect(e.creep).toEqual({ fromCents: 529, toCents: 2119, chargedOn: '2026-09-06' });
+  });
+
   it('lists the newest three charges, falling back to the last charge on older cubes', () => {
     const recent = [{ date: '2026-09-15', cents: 1199 }, { date: '2026-08-15', cents: 1199 }, { date: '2026-07-15', cents: 1099 }];
     expect(roster({ detected: [det('SPOTIFY', { recent })] }).subscriptions[0].recent).toEqual(recent);
