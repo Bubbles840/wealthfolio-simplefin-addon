@@ -31,7 +31,7 @@ import { changeLocalDay, isBackground, isChangeLogPartial } from './change-view.
 import { savingsRateData } from './report-data.js';
 import type { ReportCube } from './report-cube.js';
 import { rosterMoney, rosterPrice, type Roster, type RosterEntry } from './subscription-roster.js';
-import type { DetectedSubscription } from './subscriptions.js';
+import { aliasNames, subscriptionKey, type DetectedSubscription } from './subscriptions.js';
 import { escapeMarkdown, moneyWhole, shortDate } from './telegram.js';
 
 export const REVIEW_TOP = 3;
@@ -109,8 +109,17 @@ export function buildMonthReview(input: MonthReviewInput): MonthReview {
     const entries = [...roster.subscriptions, ...roster.bills];
     if (cube?.subscriptions) {
       const detected = new Map(cube.subscriptions.map((d) => [d.name, d] as const));
+      // A linked entry's bank name is the merchant as it was stored: a key from
+      // before 1.63 keeps the bank's leading reference (R6), and a renamed
+      // charge's key names the entry it was joined into (F1). The exact name
+      // first: a cube built before 1.63 still keys its entries the old way.
+      const aliasOf = aliasNames(cube.subscriptions);
+      const detectionOf = (name: string) => {
+        const key = subscriptionKey(name);
+        return detected.get(name) ?? detected.get(aliasOf.get(key) ?? key);
+      };
       newSubs = orNull(entries.flatMap((entry) => {
-        const d = detected.get(entry.source === 'detected' ? entry.key : entry.bankName ?? entry.displayName);
+        const d = detectionOf(entry.source === 'detected' ? entry.key : entry.bankName ?? entry.displayName);
         const since = d ? firstCharge(d) : null;
         if (!d || !since || !(d.recent ?? []).some((c) => c.date.slice(0, 7) === month)) return [];
         return since.slice(0, 7) === month || since.slice(0, 7) === previous ? [{ entry, since }] : [];
