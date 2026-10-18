@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import type { ChangeEntry, ChangeLogSink } from './change-entries.js';
 import { createFakeHost, type FakeHostSeed } from './fake-host.js';
-import { runSyncCore, txIdFromComment, VALUATION_POLL } from './sync-core.js';
+import { IN_TRANSIT_COMMENT_PREFIX, runSyncCore, txIdFromComment, VALUATION_POLL } from './sync-core.js';
 import type { HostActivity, SaveManyRequest, SaveManyResult } from './sync-host.js';
 import { emptySyncOverrides, setTxOverride, type SyncOverrides } from './sync-overrides.js';
 import { accountTxKey } from './transfers.js';
@@ -26,12 +26,16 @@ const HELD_FOR_A_READ = 'Could not read every account, so a transfer you undid w
 const notTransfer = (...keys: string[]): SyncOverrides =>
   keys.reduce((o, k) => setTxOverride(o, k, 'notTransfer', NOW), emptySyncOverrides());
 
-/** A Citi payment: out of Checking, into the card, both in this run's feed. */
+/** A Citi payment: out of Checking, into the card, both in this run's feed.
+ *  The card's name is generic on purpose: since 1.63 a cash leg whose text names a
+ *  connected account is a transfer from the moment it posts (A), which would turn
+ *  these unlink tests into tests of that typing; the naming case is pinned at the
+ *  end of the file. */
 const twoAccounts = (extra: Partial<FakeHostSeed> = {}): FakeHostSeed => ({
   accountSet: { errors: [], accounts: [
     { id: 'sfin-1', name: 'Checking', currency: 'USD', balance: '0', 'balance-date': epoch('2026-10-13T12:00:00Z'),
       transactions: [{ id: 'tx-out', posted: epoch('2026-10-08T12:00:00Z'), amount: '-464.60', description: 'CITI AUTOPAY PAYMENT' }] },
-    { id: 'sfin-2', name: 'Citi', currency: 'USD', balance: '0', 'balance-date': epoch('2026-10-13T12:00:00Z'),
+    { id: 'sfin-2', name: 'Card', currency: 'USD', balance: '0', 'balance-date': epoch('2026-10-13T12:00:00Z'),
       transactions: [{ id: 'tx-in', posted: epoch('2026-10-09T12:00:00Z'), amount: '464.60', description: 'PAYMENT THANK YOU' }] },
   ] },
   mapping: { 'sfin-1': 'wf-a', 'sfin-2': 'wf-b' },
@@ -390,7 +394,7 @@ describe('runSyncCore — notTransfer', () => {
       const two = (n: number, both: boolean) => {
         const accounts = [
           { id: 'sfin-1', name: 'Checking', currency: 'USD', balance: '0', 'balance-date': epoch('2026-10-13T12:00:00Z'), transactions: [] as any[] },
-          { id: 'sfin-2', name: 'Citi', currency: 'USD', balance: '0', 'balance-date': epoch('2026-10-13T12:00:00Z'), transactions: [] as any[] },
+          { id: 'sfin-2', name: 'Card', currency: 'USD', balance: '0', 'balance-date': epoch('2026-10-13T12:00:00Z'), transactions: [] as any[] },
         ];
         const existing = new Map<string, HostActivity[]>([['wf-a', []], ['wf-b', []]]);
         let o = emptySyncOverrides();
@@ -610,5 +614,27 @@ describe('runSyncCore — notTransfer', () => {
         }
       }
     });
+  });
+
+  it('one override on the card leg, the cash leg naming the card: the cash leg stays a transfer and is held (1.63, A)', async () => {
+    // Before 1.63 the cash leg became ordinary spending. Now its text names a
+    // connected account ("CITI" and a card called "Citi"), so it is the paying
+    // half of a transfer whose other half was undone: held, as the card leg is
+    // when the override sits on the cash side. Undo marks BOTH legs, so this
+    // takes a one-sided override. The first sync unlinks; the second retypes
+    // the stored WITHDRAWAL (the relink sweep re-creates it asset-free, without
+    // the in-transit marker); the third marks it.
+    const seed = twoAccounts({ existing: linkedRows(), syncOverrides: notTransfer(IN), upstreamWriteRules: true });
+    seed.accountSet!.accounts[1].name = 'Citi';
+    const fh = createFakeHost(seed);
+    for (let run = 0; run < 3; run += 1) {
+      const r = await runSyncCore(fh.host, fh.store, run === 0 ? {} : { force: true });
+      expect(r.errors).toEqual([]);
+    }
+    expect(fh.links).toEqual([]);
+    expect(fh.activities.get('wf-b')!.map((r) => r.activityType)).toEqual(['CREDIT']);
+    expect(fh.activities.get('wf-a')!.map((r) => [r.activityType, r.comment])).toEqual([
+      ['TRANSFER_OUT', `${IN_TRANSIT_COMMENT_PREFIX}CITI AUTOPAY PAYMENT · tx-out`],
+    ]);
   });
 });
