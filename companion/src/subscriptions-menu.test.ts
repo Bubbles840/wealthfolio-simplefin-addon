@@ -95,6 +95,19 @@ describe('subscriptions menu', () => {
     expect(h.ui.answer).toHaveBeenLastCalledWith('Undone');
   });
 
+  it('Restore and Undo find a choice stored under a key from before 1.63 (R6)', async () => {
+    const LGE = 'PAYMENT LOUISVILLE GAS & ACH';
+    const VENMO = 'PAYMENT VENMO ACH WEB';
+    const h = harness({
+      report_cube: cubeJson([det(LGE, { kind: 'bill' }), det(VENMO, { kind: 'possible', count: 2 })]),
+      subscription_prefs: doc({ hidden: ['*8712 PAYMENT LOUISVILLE GAS & ACH'], confirmed: ['*8768 PAYMENT VENMO ACH WEB'] }),
+    });
+    await h.tap(`cz:sb:u:${H(LGE)}`);
+    expect(h.stored().hidden).toEqual([]);
+    await h.tap(`cz:sb:uc:${H(VENMO)}`);
+    expect(h.stored().confirmed).toEqual([]);
+  });
+
   it('a maybe answered Yes counts from then on; Undo takes it back', async () => {
     const h = harness(BASE());
     await h.tap('cz:sb:mb');

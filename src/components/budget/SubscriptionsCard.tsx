@@ -19,7 +19,7 @@ import {
   type LoadedSubscriptionPrefs, type RemindDays, type SubscriptionEdit,
 } from '../../../shared/subscription-prefs';
 import {
-  aboutDollars, buildRoster, formatRosterTotal, localIsoDay, manualKey, monthDay, rosterMoney, rosterPrice, rosterWhen,
+  aboutDollars, buildRoster, formatRosterTotal, localIsoDay, manualKey, monthDay, normalizeRosterKey, rosterMoney, rosterPrice, rosterWhen,
   type Cadence, type RosterEntry,
 } from '../../../shared/subscription-roster';
 import {
@@ -406,13 +406,14 @@ export function SubscriptionsCard({
         </>
       )}
       {full && edit && (() => {
+        // A bank name, a detected key and a pre-1.63 choice can name one merchant (R6).
         const known = new Set<string>([
           ...(cube.subscriptions ?? []).map((s) => s.name),
           ...(prefs?.confirmed ?? []),
           ...(prefs?.hidden ?? []),
           ...(prefs?.manual ?? []).flatMap((m) => (m.merchant ? [m.merchant] : [])),
-        ]);
-        const watchable = recentMerchants(cube).filter((m) => !known.has(m.name)).slice(0, 12);
+        ].map(normalizeRosterKey));
+        const watchable = recentMerchants(cube).filter((m) => !known.has(normalizeRosterKey(m.name))).slice(0, 12);
         if (watchable.length === 0) return null;
         return (
           <>

@@ -68,3 +68,17 @@ describe('findLinkSuggestions', () => {
       .toEqual([{ manualId: 'hulu0001', merchant: 'HULU', date: '2026-10-09', cents: 999 }]);
   });
 });
+
+describe('names stored under a key from before 1.63 (R6)', () => {
+  const LGE: ManualSubscription = { id: 'lge00001', name: 'LG&E', cents: 6149, cadence: 'monthly', nextDate: '2026-10-19' };
+  const bill = charge('2026-09-19', '*0937 PAYMENT LOUISVILLE GAS & ACH DEBIT', 6149);
+
+  it('a merchant declined or linked under the old key is not offered again', () => {
+    expect(findLinkSuggestions([bill], prefsWith({ manual: [LGE] }), NOW))
+      .toEqual([{ manualId: 'lge00001', merchant: 'PAYMENT LOUISVILLE GAS & ACH', date: '2026-09-19', cents: 6149 }]);
+    expect(findLinkSuggestions([bill], prefsWith({ manual: [LGE], declinedLinks: ['lge00001|*8712 PAYMENT LOUISVILLE GAS & ACH'] }), NOW))
+      .toEqual([]);
+    expect(findLinkSuggestions([bill], prefsWith({ manual: [LGE, { ...HULU, merchant: '*8712 PAYMENT LOUISVILLE GAS & ACH' }] }), NOW))
+      .toEqual([]);
+  });
+});

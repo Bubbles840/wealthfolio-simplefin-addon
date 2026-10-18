@@ -443,6 +443,22 @@ describe('subscriptions card: watch + per-item restore', () => {
     expect(applied(onEdit, base.prefs).hidden).toEqual([]);
   });
 
+  it('restores a row hidden under a key from before 1.63, and never offers a known merchant to watch (R6)', () => {
+    const onEdit = vi.fn();
+    const base = prefsWith({ hidden: ['*8712 PAYMENT LOUISVILLE GAS & ACH'], confirmed: ['PAYMENT VENMO ACH WEB'] });
+    render(<ReportView id="subscriptions" customReports={[]} hero
+      cube={{
+        ...fresh(),
+        subscriptions: [sub(), sub({ name: 'PAYMENT LOUISVILLE GAS & ACH', kind: 'bill', monthlyCents: 6149, lastCents: 6149 })],
+        merchants: [[], [{ name: '*8768 PAYMENT VENMO ACH WEB', cents: 2000, count: 1 }, { name: 'CHIPOTLE', cents: 4500, count: 3 }]],
+      }}
+      subscriptionPrefs={base} onSubscriptionEdit={onEdit} />);
+    expect(screen.getByRole('button', { name: 'Watch CHIPOTLE' })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Watch *8768 PAYMENT VENMO ACH WEB' })).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Restore PAYMENT LOUISVILLE GAS & ACH' }));
+    expect(applied(onEdit, base.prefs).hidden).toEqual([]);
+  });
+
   it('watch list and watched pricing look back past the current month', () => {
     // Live miss: a mid-August charge was unwatchable on September 2nd because
     // only the newest month's merchants were offered.

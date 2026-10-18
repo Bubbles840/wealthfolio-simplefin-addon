@@ -25,7 +25,7 @@ import {
   unconfirmKey, undoRename, unhideKey, type RemindDays, type SubscriptionEdit, type SubscriptionPrefs,
 } from '../../shared/subscription-prefs.js';
 import {
-  manualKey, rosterAmount, rosterMoney, rosterWhen, type Roster, type RosterEntry,
+  manualKey, normalizeRosterKey, rosterAmount, rosterMoney, rosterWhen, type Roster, type RosterEntry,
 } from '../../shared/subscription-roster.js';
 import {
   escapeMarkdown, formatSubscriptionList, shortDate, subscriptionListPage, type InlineKeyboard,
@@ -308,7 +308,8 @@ export function createSubscriptionsMenu(deps: SubscriptionsMenuDeps): Subscripti
             return void await show(await freshList(), 'edit', 'Undone');
           }
           case 'uc': {
-            if (!anywhere || !prefs.confirmed.includes(anywhere.key)) return void await gone();
+            // The Yes may be stored under a pre-1.63 key (R6).
+            if (!anywhere || !prefs.confirmed.some((k) => normalizeRosterKey(k) === normalizeRosterKey(anywhere.key))) return void await gone();
             if (!(await write((p) => unconfirmKey(p, anywhere.key)))) return;
             return void await show(await freshList(), 'edit', 'Undone');
           }

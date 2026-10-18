@@ -22,7 +22,7 @@
 import { failedForecast, type CashForecast, type ForecastAccount } from './cash-forecast.js';
 import { expandBills, forecastBills, forecastCash, FORECAST_DAYS } from './forecast.js';
 import { monthlyIncomeTotals, monthlySpendTotals, type ReportCube } from './report-cube.js';
-import { categoryRulePattern } from './rule-pattern.js';
+import { subscriptionKey } from './subscriptions.js';
 import type { ManualSubscription } from './subscription-prefs.js';
 import { manualKey, type Roster, type RosterEntry } from './subscription-roster.js';
 import { descriptionFromComment } from './sync-core.js';
@@ -134,7 +134,7 @@ export interface MerchantRow { month: string; notes: string; amount: number }
  *  the note's description, trimmed to its rule pattern. '' for a row with none. */
 export function detectorKey(notes: string): string {
   const name = descriptionFromComment(notes);
-  return name ? categoryRulePattern(name) || name : '';
+  return name ? subscriptionKey(name) : '';
 }
 
 /** The detector keys whose charges are the counted bills': a detected entry's
@@ -147,7 +147,8 @@ export function billKeys(entries: readonly RosterEntry[], manual: readonly Manua
     if (e.source === 'detected') keys.add(e.key);
     else if (e.source === 'manual') {
       const merchant = merchantOf.get(e.key);
-      if (merchant) keys.add(merchant);
+      // A link saved before 1.63 keeps the bank's reference; today's key drops it.
+      if (merchant) keys.add(subscriptionKey(merchant));
     }
   }
   return keys;

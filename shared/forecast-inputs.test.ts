@@ -169,6 +169,12 @@ describe('the bills’ past charges', () => {
       .toEqual(['RENT LLC', 'NETFLIX.COM']);
   });
 
+  it('a hand-added entry linked under a key from before 1.63 counts its charges under today\'s key (R6)', () => {
+    const linked = entry({ key: 'm:abc12345', source: 'manual', displayName: 'LG&E' });
+    expect([...billKeys([linked], [manual({ merchant: '*8712 PAYMENT LOUISVILLE GAS & ACH' })])]).toEqual(['PAYMENT LOUISVILLE GAS & ACH']);
+    expect(detectorKey('*0937 PAYMENT LOUISVILLE GAS & ACH DEBIT · TRN-5')).toBe('PAYMENT LOUISVILLE GAS & ACH');
+  });
+
   it('sums what they charged in the history months, refunds subtracting', () => {
     const keys = new Set(['NETFLIX.COM', 'RENT LLC']);
     expect(billChargesCents(ROWS, keys, HISTORY)).toBe(364647);
