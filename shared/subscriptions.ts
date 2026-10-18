@@ -11,6 +11,7 @@
  * time and publishes only the summaries; raw charges never leave the box.
  */
 
+import { GENERIC_BANK_WORDS } from './category-guess.js';
 import { categoryRulePattern } from './rule-pattern.js';
 
 export interface SubscriptionCharge {
@@ -133,12 +134,21 @@ export function subscriptionKey(merchant: string): string {
   return categoryRulePattern(merchant) || merchant;
 }
 
+const BANK_WORDS = new Set(GENERIC_BANK_WORDS);
+
 /**
  * The brand a key is known by: its first token made only of letters, 3 or
- * more (R8). `GOOGLE *G1AI101M ...` is `google`; a bare reference is null.
+ * more (R8), that is not one of the bank's own words. `GOOGLE *G1AI101M ...`
+ * is `google`; a bare reference is null.
+ *
+ * Why the bank's words are skipped: once the leading reference is stripped,
+ * every PNC ACH row starts with `PAYMENT` (`PAYMENT LOUISVILLE GAS & ACH`),
+ * and "payment" as the brand joined a cancelled insurer to a new gym that
+ * happened to bill a month later at about the same price on the same account.
+ * `PAYMENT LOUISVILLE GAS & ACH` is `louisville`.
  */
 export function brandWord(key: string): string | null {
-  return key.toLowerCase().split(/[^a-z0-9]+/).find((t) => /^[a-z]{3,}$/.test(t)) ?? null;
+  return key.toLowerCase().split(/[^a-z0-9]+/).find((t) => /^[a-z]{3,}$/.test(t) && !BANK_WORDS.has(t)) ?? null;
 }
 
 /**
@@ -163,7 +173,9 @@ function joinRenamedMerchants(groups: Map<string, SubscriptionCharge[]>): Map<st
       const first = next[0];
       if (first.accountId !== oldLast.accountId || brandWord(nextKey) !== brand) continue;
       const gap = (Date.parse(`${first.date}T00:00:00Z`) - Date.parse(`${oldLast.date}T00:00:00Z`)) / DAY_MS;
-      if (gap < MIN_GAP_DAYS || gap > MAX_GAP_DAYS) continue;
+      // Fails closed: a date that does not parse is a NaN gap, which no range
+      // test rejects — it would join, and become the entry's last charge.
+      if (!(gap >= MIN_GAP_DAYS && gap <= MAX_GAP_DAYS)) continue;
       if (Math.abs(first.cents - oldLast.cents) > oldLast.cents * AMOUNT_TOLERANCE) continue;
       pairs.push([oldKey, nextKey]);
     }

@@ -398,6 +398,14 @@ describe('a renamed charge is the same subscription (C1, 1.63)', () => {
     expect(detectSubscriptions(two, OCT_22)).toEqual([]);
   });
 
+  it('never joins across a date it cannot read: the gap is unknown, not in range (F4)', () => {
+    // A NaN gap passed both "< 24" and "> 38" as false; the join then made the
+    // malformed charge the entry's last, and the whole subscription vanished.
+    expect(detectSubscriptions(withOct({ date: '2026-13-06' }), new Date('2026-10-18T12:00:00Z'))).toEqual([expect.objectContaining({
+      name: 'GOOGLE *Google One MOUNTAIN VIEW CA', count: 4, lastDate: '2026-09-06',
+    })]);
+  });
+
   it('needs two charges under the old name', () => {
     const one = [g('2026-09-06', 'GOOGLE *Google One MOUNTAIN VIEW CA', 2119), g('2026-10-06', 'GOOGLE *G1AI101M MOUNTAIN VIEW CA', 2119)];
     expect(detectSubscriptions(one, OCT_22)).toEqual([]);
@@ -420,5 +428,27 @@ describe('a renamed charge is the same subscription (C1, 1.63)', () => {
     expect(brandWord('NETFLIX.COM')).toBe('netflix');
     expect(brandWord('G1AI101M MOUNTAIN VIEW')).toBe('mountain');
     expect(brandWord('99182')).toBeNull();
+  });
+
+  it("skips the bank's own words: PNC puts PAYMENT first on every ACH row once the reference is gone (F2)", () => {
+    expect(brandWord('PAYMENT LOUISVILLE GAS & ACH')).toBe('louisville');
+    expect(brandWord('ACH DEBIT ROBINHOOD CCB')).toBe('robinhood');
+    expect(brandWord('POS PURCHASE WEB KROGER')).toBe('kroger');
+    expect(brandWord('PAYMENT ACH DEBIT')).toBeNull();
+  });
+
+  it('never joins two billers that share only the bank\'s verb (F2)', () => {
+    // A cancelled insurer and a new gym, a month apart on one account: both
+    // keys start PAYMENT, and "payment" made them one subscription.
+    const pnc = [
+      g('2026-08-01', '*1111 PAYMENT ACME INSURANCE ACH DEBIT', 5000, 'wf-pnc'),
+      g('2026-09-01', '*1111 PAYMENT ACME INSURANCE ACH DEBIT', 5000, 'wf-pnc'),
+      g('2026-10-01', 'PAYMENT NEWGYM CLUB', 4900, 'wf-pnc'),
+    ];
+    expect(detectSubscriptions(pnc, new Date('2026-10-05T12:00:00Z'))).toEqual([expect.objectContaining({
+      name: 'PAYMENT ACME INSURANCE ACH DEBIT', count: 2, kind: 'possible', lastDate: '2026-09-01',
+    })]);
+    // Google's rename still joins.
+    expect(detectSubscriptions(GOOGLE(), OCT_22)).toEqual([expect.objectContaining({ name: 'GOOGLE *Google One MOUNTAIN VIEW CA', count: 5 })]);
   });
 });

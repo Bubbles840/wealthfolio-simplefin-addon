@@ -48,7 +48,8 @@ export type GuessIndex = ReadonlyMap<string, Tally>;
 const norm = (s: string) => s.trim().replace(/\s+/g, ' ').toLowerCase();
 
 /** Words that describe HOW money moved, not who it moved to: a pattern made of
- *  only these (and numbers) is shared by unrelated merchants, so it is no key. */
+ *  only these (and numbers) is shared by unrelated merchants, so it is no key.
+ *  A subscription's brand word (`brandWord`, subscriptions.ts) skips them too. */
 export const GENERIC_BANK_WORDS: readonly string[] = [
   'pos', 'purchase', 'debit', 'credit', 'card', 'ach', 'web', 'withdrawal', 'deposit', 'payment',
   'transfer', 'online', 'recurring', 'check', 'atm', 'pending', 'pmt', 'pymt', 'bill', 'pay', 'the',
