@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.64.1] - 2026-10-19
+
 ### Fixed
 - **An investment account's holdings are no longer counted twice.** Most
   brokers (Fidelity among them) report the account's *total* value as its
