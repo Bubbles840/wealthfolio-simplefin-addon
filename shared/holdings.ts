@@ -39,6 +39,9 @@ export interface HoldingsPosition {
   /** Per-share cost basis, absent when SimpleFin reported none. */
   avgCost?: string;
   currency: string;
+  /** MANUAL creates the asset priced by hand (holdings-prices.ts sets it on a
+   *  per-account asset). Absent: Wealthfolio's default, market pricing. */
+  quoteMode?: 'MANUAL';
 }
 
 export interface HoldingsSnapshot {
@@ -50,6 +53,18 @@ export interface HoldingsSnapshot {
   /** Currency → balance, as strings. SimpleFin reports one balance per account,
    *  so this map always has exactly one entry. */
   cashBalances: Record<string, string>;
+}
+
+/** A holding's price per share, from what the feed says it is worth. */
+export interface FeedPrice {
+  symbol: string;
+  /** Decimal STRING, up to 8 places: market value ÷ shares. */
+  price: string;
+  currency: string;
+  /** The symbol was made from the description (`holdingSymbol`): never a
+   *  ticker, so it is priced from the feed on an asset of its own from the
+   *  first sync, without waiting to see whether the market prices it. */
+  fromDescription?: true;
 }
 
 /** Options for `toHoldingsSnapshot`. Both exist for determinism, not tuning. */
@@ -197,6 +212,29 @@ function cashFor(account: SimplefinAccount, holdings: NonNullable<SimplefinAccou
   return formatMicros(remainder);
 }
 
+/** Longest symbol made from a description: enough to tell funds apart. */
+const DESCRIPTION_SYMBOL_MAX = 40;
+
+/**
+ * The symbol a holding is filed under: SimpleFin's own, or, when it sends
+ * none, the holding's description in capitals ("Target Date Fund 2060" →
+ * "TARGET DATE FUND 2060"). Some retirement plans report their funds with a
+ * share count, a market value and a description but no symbol; dropping them
+ * left the account with no holdings at all.
+ */
+export function holdingSymbol(holding: { symbol?: string | null; description?: string | null }): { symbol: string; fromDescription: boolean } {
+  const own = String(holding.symbol ?? '').trim();
+  if (own && own !== '-') return { symbol: own, fromDescription: false };
+  const named = String(holding.description ?? '')
+    .toUpperCase()
+    .replace(/[^A-Z0-9.&/ -]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, DESCRIPTION_SYMBOL_MAX)
+    .trim();
+  return { symbol: named, fromDescription: named !== '' };
+}
+
 /**
  * The snapshot for one SimpleFin account, or `null` when there is nothing
  * honest to write.
@@ -215,8 +253,9 @@ function cashFor(account: SimplefinAccount, holdings: NonNullable<SimplefinAccou
  *     resolved, and if it drops all of them the remainder is an empty list —
  *     case 2 again, reached by a different road.
  *
- * A holding is unusable without a symbol (nothing to resolve an asset from) or
- * without a share count (nothing to value). Either one makes the host reject the
+ * A holding is unusable without a symbol or a description to name it by
+ * (`holdingSymbol`: nothing to resolve an asset from) or without a share count
+ * (nothing to value). Either one makes the host reject the
  * ENTIRE batch, which is why they are filtered rather than passed through and
  * left to fail: one junk line would cost the account its whole snapshot.
  */
@@ -229,7 +268,7 @@ export function toHoldingsSnapshot(
 
   const positions: HoldingsPosition[] = [];
   for (const holding of holdings) {
-    const symbol = String(holding.symbol ?? '').trim();
+    const { symbol } = holdingSymbol(holding);
     const shares = holding.shares === null || holding.shares === undefined
       ? ''
       : String(holding.shares).trim();
@@ -266,3 +305,70 @@ export function toHoldingsSnapshot(
     cashBalances: { [account.currency]: cashFor(account, holdings) },
   };
 }
+
+// Prices are carried to 8 places: a share count can have 8 (crypto), and a
+// price rounded to cents would misvalue a large position by dollars.
+const PRICE_PLACES = 8;
+const PRICE_SCALE = 10n ** BigInt(PRICE_PLACES);
+
+function parseScaled(value: string | number | null | undefined): bigint | null {
+  if (value === null || value === undefined) return null;
+  const match = /^\+?(\d+)(?:\.(\d*))?$/.exec(String(value).replace(/,/g, '').trim());
+  if (!match) return null;
+  const fraction = (match[2] ?? '').padEnd(PRICE_PLACES, '0').slice(0, PRICE_PLACES);
+  return BigInt(match[1]) * PRICE_SCALE + BigInt(fraction || '0');
+}
+
+/**
+ * Each holding's price per share, as the feed values it: `market_value ÷
+ * shares`. For a holding Wealthfolio cannot price itself (a basket of stocks
+ * reported as one holding, rather than a ticker): the snapshot carries only
+ * the share count, and with no market price Wealthfolio values it at $0.
+ *
+ * Left out: a holding without a symbol (or a description to name it by), a
+ * positive share count or a market value. Never a guessed price: a missing one
+ * leaves the holding as it was.
+ */
+export function feedPrices(account: SimplefinAccount): FeedPrice[] {
+  const prices: FeedPrice[] = [];
+  for (const holding of account.holdings ?? []) {
+    const { symbol, fromDescription } = holdingSymbol(holding);
+    const shares = parseScaled(holding.shares);
+    const value = parseScaled(holding.market_value);
+    if (!symbol || shares === null || shares === 0n || value === null) continue;
+    // value/shares, both scaled by 10^8: scale once more before dividing,
+    // and round half up on the last place.
+    const scaled = (value * PRICE_SCALE * 2n + shares) / (shares * 2n);
+    const whole = scaled / PRICE_SCALE;
+    let fraction = (scaled % PRICE_SCALE).toString().padStart(PRICE_PLACES, '0').replace(/0+$/, '');
+    if (fraction.length < 2) fraction = fraction.padEnd(2, '0');
+    prices.push({
+      symbol,
+      price: `${whole}.${fraction}`,
+      currency: holding.currency?.trim() || account.currency,
+      ...(fromDescription ? { fromDescription: true as const } : {}),
+    });
+  }
+  return prices;
+}
+
+/**
+ * The short name an account's per-account assets carry: the bank's own
+ * identifier at the end of the account name ("Individual (ABCD)" or
+ * "Example Plan - 123456"), else the last four characters of the SimpleFin id.
+ *
+ * Why per account at all: Wealthfolio keeps ONE asset per symbol for every
+ * account, and one price per asset per day. Two accounts can hold different
+ * things under one symbol (two accounts at one robo-advisor, each holding its
+ * own basket under the same name, worth different amounts a share), so a price
+ * from one account's market value valued the other's shares. Only holdings priced from the feed are scoped; a ticker the
+ * market prices is the same thing in every account and stays shared.
+ */
+export function accountTag(account: { id: string; name?: string | null }): string {
+  const name = account.name ?? '';
+  const fromName = (/\(([^()]+)\)\s*$/.exec(name) ?? /\s[-–]\s*([A-Za-z0-9]+)\s*$/.exec(name))?.[1]?.trim();
+  return (fromName || account.id.slice(-4)).toUpperCase();
+}
+
+/** The symbol of a holding's per-account asset. */
+export const scopedSymbol = (symbol: string, tag: string): string => `${symbol.trim()} (${tag})`;

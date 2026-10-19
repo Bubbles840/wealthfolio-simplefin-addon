@@ -3644,9 +3644,29 @@ describe('holdings snapshots for investment accounts', () => {
           positions: [{ symbol: 'VTI', quantity: '2.5', avgCost: '210.11', currency: 'USD' }],
           cashBalances: { USD: '512.34' },
         },
+        // The feed gives VTI no market value, so there is no price to offer.
+        prices: [],
+        // No "(…)" at the end of "Robinhood": the SimpleFin id's last four.
+        scope: { tag: 'IN-B' },
       },
     ]);
     expect(result.holdingsSnapshots).toEqual({ imported: 1, skipped: 0, unresolvedSymbols: [] });
+  });
+
+  it('offers the host each holding’s price from its market value, and reports what it priced', async () => {
+    // A holding Wealthfolio cannot price (a basket reported as one holding)
+    // showed $0.
+    const seed = brokerageSeed();
+    seed.accountSet!.accounts[0].name = 'Individual (ABCD)';
+    seed.accountSet!.accounts[0].holdings = [
+      { symbol: 'MODEL BASKET', shares: '400.5', market_value: '50000.00' },
+    ];
+    seed.holdingsOutcome = { imported: 1, skipped: 0, unresolvedSymbols: [], pricedFromFeed: ['MODEL BASKET'] };
+    const { host, store, holdings } = createFakeHost(seed);
+    const result = await runSyncCore(host, store, { force: true });
+    expect(holdings[0].prices).toEqual([{ symbol: 'MODEL BASKET', price: '124.84394507', currency: 'USD' }]);
+    expect(holdings[0].scope).toEqual({ tag: 'ABCD' });
+    expect(result.holdingsSnapshots.pricedFromFeed).toEqual(['MODEL BASKET']);
   });
 
   it('reports the symbols Wealthfolio could not resolve, without failing the sync', async () => {

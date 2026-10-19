@@ -134,6 +134,22 @@
         }
       ],
       "purpose": "Import holdings snapshots for investment accounts, so a brokerage syncs its positions and not only its cash."
+    },
+    {
+      "category": "assets",
+      "functions": [
+        "getProfile",
+        "updateQuoteMode"
+      ],
+      "purpose": "Read whether a holding is priced by the market or by hand, and switch one Wealthfolio has no price for (a basket of stocks reported as one holding) to manual pricing"
+    },
+    {
+      "category": "quotes",
+      "functions": [
+        "getHistory",
+        "update"
+      ],
+      "purpose": "Check whether a holding has any market price, and write the day's price for one that has none, from the value your bank reports"
     }
   ]
 }

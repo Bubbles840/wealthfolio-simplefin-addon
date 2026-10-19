@@ -1,7 +1,7 @@
 import type { AccountMapping, MappingRule, SimplefinAccountSet, UnmappedAccount } from './types.js';
 import type { AmazonLedger } from './amazon-ledger.js';
 import type { VenmoLedger } from './venmo-ledger.js';
-import type { HoldingsSnapshot } from './holdings.js';
+import type { FeedPrice, HoldingsSnapshot } from './holdings.js';
 import type { SkippedTransaction } from './skipped-transactions.js';
 import type { TransferNames } from './transfer-names.js';
 import type { IgnoreRule } from './ignore-rules.js';
@@ -152,6 +152,10 @@ export interface HoldingsSyncOutcome {
    *  unresolved symbol gets priced against whatever listing its bare ticker
    *  happens to match. */
   unresolvedSymbols: string[];
+  /** Holdings priced from SimpleFin's market value because Wealthfolio has no
+   *  price of its own for them (src/utils/holdings-prices.ts). Absent on a host
+   *  that does not price. */
+  pricedFromFeed?: string[];
 }
 
 export interface SyncHost {
@@ -201,7 +205,14 @@ export interface SyncHost {
    * which dates an account already has, which is a better signal than anything
    * this side could persist.
    */
-  syncHoldings?(wfAccountId: string, snapshot: HoldingsSnapshot): Promise<HoldingsSyncOutcome>;
+  syncHoldings?(
+    wfAccountId: string,
+    snapshot: HoldingsSnapshot,
+    /** Each holding's price from the feed's market value (`feedPrices`). */
+    prices?: FeedPrice[],
+    /** The account's short name (`accountTag`), for per-account assets. */
+    scope?: { tag: string },
+  ): Promise<HoldingsSyncOutcome>;
   /**
    * Balances computed from each account's own activities, for accounts the
    * valuations API does not report.

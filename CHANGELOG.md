@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **A holding Wealthfolio can't price shows its real value.** A position that
+  isn't a ticker (a basket of stocks a robo-advisor reports as one holding)
+  had no market price, so Wealthfolio valued it at $0 while the bank reported
+  its market value. The sync now writes that day's price from SimpleFin's
+  market value ÷ shares, as a manual quote, on an asset of the holding's own
+  for each account: two accounts can hold different baskets under one symbol,
+  and Wealthfolio keeps one asset, and one price a day, per symbol. A ticker
+  the market prices stays shared and is never touched. A holding SimpleFin
+  sends without a symbol (some retirement plans do) is now filed under its
+  description instead of being dropped, which had left such an account with
+  no holdings at all. The add-on asks for two more permissions (assets,
+  quotes) for this.
+
 ## [1.67.1] - 2026-10-22
 
 Update both halves: each writes its own change log, and Reset is in the

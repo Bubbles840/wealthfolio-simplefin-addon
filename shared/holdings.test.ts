@@ -1,5 +1,5 @@
 import { afterEach, describe, it, expect, vi } from 'vitest';
-import { toHoldingsSnapshot } from './holdings.js';
+import { accountTag, feedPrices, holdingSymbol, scopedSymbol, toHoldingsSnapshot } from './holdings.js';
 import type { SimplefinAccount } from './types.js';
 
 const account = (over: Partial<SimplefinAccount> = {}): SimplefinAccount => ({
@@ -237,5 +237,83 @@ describe('toHoldingsSnapshot — dated by the local day (1.63.1)', () => {
       holdings: [{ symbol: 'VTI', shares: '1' }],
     }));
     expect(snapshot?.date).toBe('2026-10-18');
+  });
+});
+
+describe('feedPrices', () => {
+  it('prices a holding at market value ÷ shares, to 8 places', () => {
+    // A basket of stocks reported as one holding: Wealthfolio valued it at $0
+    // while SimpleFin reported its market value.
+    expect(feedPrices(account({
+      holdings: [{ symbol: 'MODEL BASKET', shares: '400.5', market_value: '50000.00', description: 'Model Basket' }],
+    }))).toEqual([{ symbol: 'MODEL BASKET', price: '124.84394507', currency: 'USD' }]);
+  });
+
+  it('keeps a round price readable, and reads a value written with commas', () => {
+    expect(feedPrices(account({ holdings: [{ symbol: 'VTI', shares: '2', market_value: '1,000.00' }] })))
+      .toEqual([{ symbol: 'VTI', price: '500.00', currency: 'USD' }]);
+  });
+
+  it("uses the holding's own currency when it names one", () => {
+    expect(feedPrices(account({ holdings: [{ symbol: 'SHOP', shares: '1', market_value: '100', currency: 'CAD' }] }))[0].currency).toBe('CAD');
+  });
+
+  it('never guesses: no symbol, no or zero shares, or no market value gives no price', () => {
+    expect(feedPrices(account({
+      holdings: [
+        { shares: '1', market_value: '5' },
+        { symbol: 'A', market_value: '5' },
+        { symbol: 'B', shares: '0', market_value: '5' },
+        { symbol: 'C', shares: '1' },
+        { symbol: 'D', shares: '1', market_value: 'n/a' },
+      ],
+    }))).toEqual([]);
+    expect(feedPrices(account({ holdings: undefined }))).toEqual([]);
+  });
+});
+
+describe('accountTag', () => {
+  it("takes the bank's identifier from the end of the account name", () => {
+    expect(accountTag({ id: 'ACT-1', name: 'Individual (ABCD)' })).toBe('ABCD');
+    expect(accountTag({ id: 'ACT-1', name: 'EXAMPLE CO. 401(K) PLAN (1234)' })).toBe('1234');
+  });
+
+  it('falls back to the last four characters of the SimpleFin id', () => {
+    expect(accountTag({ id: 'ACT-9f3a2b', name: 'Brokerage' })).toBe('3A2B');
+    expect(accountTag({ id: 'ACT-9f3a2b' })).toBe('3A2B');
+  });
+
+  it('names the per-account symbol after it', () => {
+    expect(scopedSymbol(' MODEL BASKET ', 'ABCD')).toBe('MODEL BASKET (ABCD)');
+  });
+});
+
+describe('a holding SimpleFin sends without a symbol', () => {
+  // Some retirement plans report a fund with shares, a market value and a
+  // description, but no symbol: the account then had no holdings at all.
+  const plan = (holdings: NonNullable<SimplefinAccount['holdings']>) =>
+    account({ name: 'Example Co 401(K) Plan - 123456', balance: '10000.00', holdings });
+
+  it('is filed under its description, in capitals', () => {
+    expect(holdingSymbol({ description: '  Target Date Fund 2060 ' })).toEqual({ symbol: 'TARGET DATE FUND 2060', fromDescription: true });
+    expect(holdingSymbol({ symbol: '-', description: 'Stable Value Fund' })).toEqual({ symbol: 'STABLE VALUE FUND', fromDescription: true });
+    expect(holdingSymbol({ symbol: 'VTI', description: 'Total Market' })).toEqual({ symbol: 'VTI', fromDescription: false });
+    expect(holdingSymbol({})).toEqual({ symbol: '', fromDescription: false });
+  });
+
+  it('makes a snapshot of it, with the balance read as its value and no cash on top', () => {
+    const snapshot = toHoldingsSnapshot(plan([{ shares: '40', market_value: '10000.00', description: 'Target Date Fund 2060' }]));
+    expect(snapshot?.positions).toEqual([{ symbol: 'TARGET DATE FUND 2060', quantity: '40', currency: 'USD' }]);
+    expect(snapshot?.cashBalances).toEqual({ USD: '0' });
+  });
+
+  it('prices it from its market value, marked as a symbol made from the description', () => {
+    expect(feedPrices(plan([{ shares: '40', market_value: '10000.00', description: 'Target Date Fund 2060' }]))).toEqual([
+      { symbol: 'TARGET DATE FUND 2060', price: '250.00', currency: 'USD', fromDescription: true },
+    ]);
+  });
+
+  it('tags the account by the number after a trailing dash', () => {
+    expect(accountTag({ id: 'ACT-9f3a2b', name: 'Example Co 401(K) Plan - 123456' })).toBe('123456');
   });
 });
