@@ -47,7 +47,7 @@ describe('runSyncCore — a card gets a real verdict after the run\'s own saves 
     const fh = createFakeHost(citiSeed('-161.20', [NEW_CHARGE], { cardTotals: true }));
     const result = await runSyncCore(fh.host, fh.store, { manual: true });
     expect(result.imported).toBe(1);
-    expect(await badge(fh)).toMatchObject({ measured: true, drift: null });
+    expect(await badge(fh)).toMatchObject({ measured: true, drift: null, checkedAfterSave: true });
   });
 
   it('and off by $X when it does not — on the badge only: no alert, no correction (R15)', async () => {
@@ -93,6 +93,7 @@ describe('runSyncCore — a card gets a real verdict after the run\'s own saves 
     fh.host.postedLedgerTotals = async (accounts) => { asked.push(accounts.map((a) => a.wfAccountId)); return read(accounts); };
     await runSyncCore(fh.host, fh.store, { manual: true });
     expect(await badge(fh)).toMatchObject({ measured: true, drift: -11.2 });
+    expect(await badge(fh)).not.toHaveProperty('checkedAfterSave');
     expect(asked).toEqual([]);
   });
 });
