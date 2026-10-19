@@ -30,6 +30,7 @@ describe('toHoldingsSnapshot', () => {
           { symbol: 'AAPL', shares: '1', purchase_price: '190.00' },
         ],
       }),
+      { timeZone: 'UTC' },
     );
     expect(snapshot).toEqual({
       // A bare calendar day, NOT an instant: a snapshot is a valuation bucket
@@ -79,9 +80,126 @@ describe('toHoldingsSnapshot', () => {
 
   it('dates the snapshot from the balance date, not from today', () => {
     const snapshot = toHoldingsSnapshot(
-      account({ 'balance-date': Date.parse('2025-01-01T12:00:00Z') / 1000, holdings: [{ symbol: 'VTI', shares: '1' }] }),
+      account({ 'balance-date': 1735732800, holdings: [{ symbol: 'VTI', shares: '1' }] }),
+      { timeZone: 'UTC' },
     );
     expect(snapshot?.date).toBe('2025-01-01');
+  });
+
+  describe('the date follows the local calendar, not UTC', () => {
+    // 2026-10-19 05:08:42Z is 22:08 on Oct 18 in Los Angeles: the exact moment
+    // that made every investment account fail with "Date 2026-10-19 can't be
+    // imported. Use a date from 1970-01-01 to 2026-10-18."
+    const evening = 1792386522;
+    const now = new Date(evening * 1000);
+    const held = [{ symbol: 'VTI', shares: '1' }];
+
+    it('dates an evening-west-of-UTC balance on the local day', () => {
+      const snapshot = toHoldingsSnapshot(
+        account({ 'balance-date': evening, holdings: held }),
+        { timeZone: 'America/Los_Angeles', now },
+      );
+      expect(snapshot?.date).toBe('2026-10-18');
+    });
+
+    it('still reads UTC as UTC when that is the zone asked for', () => {
+      const snapshot = toHoldingsSnapshot(
+        account({ 'balance-date': evening, holdings: held }),
+        { timeZone: 'UTC', now },
+      );
+      expect(snapshot?.date).toBe('2026-10-19');
+    });
+
+    it('never dates a snapshot after the local today', () => {
+      // A feed timestamp that runs ahead of the clock.
+      const snapshot = toHoldingsSnapshot(
+        account({ 'balance-date': evening + 3 * 86400, holdings: held }),
+        { timeZone: 'America/Los_Angeles', now },
+      );
+      expect(snapshot?.date).toBe('2026-10-18');
+    });
+
+    it('falls back to the runtime zone for a zone name it does not know', () => {
+      const input = account({ 'balance-date': 1789214400, holdings: held });
+      const bad = toHoldingsSnapshot(input, { timeZone: 'Not/AZone', now });
+      const runtime = toHoldingsSnapshot(input, { now });
+      expect(bad?.date).toBe(runtime?.date);
+    });
+  });
+
+  describe('the cash line is not the account total', () => {
+    const fidelity = (balance: string, holdings: NonNullable<SimplefinAccount['holdings']>) =>
+      toHoldingsSnapshot(account({ balance, holdings }));
+
+    it('is zero when the balance is just the holdings added up (a total-value feed)', () => {
+      // Fidelity: balance equals the sum of the positions, money-market core
+      // included. Writing the balance as cash as well counted everything twice.
+      const snapshot = fidelity('1000.00', [
+        { symbol: 'VTI', shares: '2', market_value: '600.00' },
+        { symbol: 'SPAXX', shares: '400', market_value: '400.00' },
+      ]);
+      expect(snapshot?.cashBalances).toEqual({ USD: '0' });
+    });
+
+    it('is the remainder when the balance exceeds the holdings', () => {
+      const snapshot = fidelity('1250.50', [
+        { symbol: 'VTI', shares: '2', market_value: '800.00' },
+        { symbol: 'VXUS', shares: '4', market_value: '400.00' },
+      ]);
+      expect(snapshot?.cashBalances).toEqual({ USD: '50.50' });
+    });
+
+    it('absorbs a few cents of rounding between balance and positions', () => {
+      const snapshot = fidelity('1000.37', [
+        { symbol: 'VTI', shares: '2', market_value: '999.99' },
+      ]);
+      expect(snapshot?.cashBalances).toEqual({ USD: '0' });
+    });
+
+    it('counts a holding the snapshot drops, because its value is inside the balance', () => {
+      const snapshot = fidelity('1000.00', [
+        { symbol: 'VTI', shares: '2', market_value: '600.00' },
+        { symbol: '', shares: '1', market_value: '400.00' }, // unusable as a position
+      ]);
+      expect(snapshot?.positions).toHaveLength(1);
+      expect(snapshot?.cashBalances).toEqual({ USD: '0' });
+    });
+
+    it('keeps the balance as cash when it is smaller than the holdings (cash-only feed)', () => {
+      const snapshot = fidelity('512.34', [
+        { symbol: 'VTI', shares: '40', market_value: '10000.00' },
+      ]);
+      expect(snapshot?.cashBalances).toEqual({ USD: '512.34' });
+    });
+
+    it('keeps the balance when a holding has no market value to compare with', () => {
+      // Nothing to settle which convention this broker uses, so nothing is
+      // invented: the line is written as it was before the comparison existed.
+      const snapshot = fidelity('512.34', [
+        { symbol: 'VTI', shares: '2', market_value: '600.00' },
+        { symbol: 'AAPL', shares: '1' },
+      ]);
+      expect(snapshot?.cashBalances).toEqual({ USD: '512.34' });
+    });
+
+    it('keeps the balance when a holding is priced in another currency', () => {
+      const snapshot = fidelity('1000.00', [
+        { symbol: 'VTI', shares: '2', market_value: '600.00' },
+        { symbol: 'SHOP', shares: '1', market_value: '400.00', currency: 'CAD' },
+      ]);
+      expect(snapshot?.cashBalances).toEqual({ USD: '1000.00' });
+    });
+
+    it('does its arithmetic in integers, not floats', () => {
+      // 0.1 + 0.2 style trouble: three 0.10 holdings must leave exactly 3.00
+      // over, not 2.9999999999999996.
+      const snapshot = fidelity('3.30', [
+        { symbol: 'A', shares: '1', market_value: '0.10' },
+        { symbol: 'B', shares: '1', market_value: '0.10' },
+        { symbol: 'C', shares: '1', market_value: '0.10' },
+      ]);
+      expect(snapshot?.cashBalances).toEqual({ USD: '3.00' });
+    });
   });
 });
 
