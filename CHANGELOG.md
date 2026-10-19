@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.63.0] - 2026-10-18
+
 ### Changed
 - **A card payment that names one of your accounts is a transfer from the
   moment it posts.** On a cash account, money out whose bank text names another
