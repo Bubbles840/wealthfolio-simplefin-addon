@@ -1626,6 +1626,10 @@ branches.
 - **A 1.64 writer beside a 1.65 one** flips every young generic payment out
   between a placeholder and a withdrawal on each writer's sync (the relink
   re-creates it under a new id). The CHANGELOG says to update both together.
+- **Two feeds on one account**: an out-of-window row's `notTransfer`,
+  skip-list and payback keys are looked up under whichever feed's pass runs
+  first, so a "Not a transfer" filed under the other feed's key can settle
+  the row with Needs review instead of as an ordinary row (harmless).
 
 ## Reference: name mismatches between the database, the REST API, and the SDK
 
