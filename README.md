@@ -238,6 +238,29 @@ nothing.
   lets Wealthfolio book the cash movement and pair the two legs. See
   `companion/upstream-pr.md` for the underlying upstream issue.
 
+### Ignore rules
+
+Some accounts report money moving *inside* the account as ordinary rows. A
+brokerage cash account, for example, lists both sides of every sweep into and
+out of its core fund as separate rows.
+Wealthfolio's Transactions mode treats every row as cash moving, so those rows
+never cancel and the account's value climbs far above the bank's balance.
+
+**Settings → Categorizing → Ignore rules** tells the sync never to import rows
+whose description contains (or, as a regular expression, matches) a pattern.
+Each rule applies to one account you pick, or to all synced accounts if you
+choose that.
+**Preview last 30 days** shows what a rule would catch before you save it (it
+uses one SimpleFin download). Ignore only rows that net to zero inside the
+account: ignoring a real payment makes the balance differ from the bank's by
+that amount, and the balance-drift alert will say so.
+
+A rule never removes rows that are already imported. After adding one, delete
+the old rows it covers in Wealthfolio, sync, and fix the balance. An empty
+pattern, or a regular expression that matches an empty description, is never
+saved, and the sync ignores one it finds stored. A Docker companion obeys the
+same rules once it is updated to the same release as the add-on.
+
 ### Starting balances
 
 On an account's first sync the addon reads its current balance from

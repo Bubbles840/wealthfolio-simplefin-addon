@@ -402,7 +402,7 @@ describe('SettingsTab', () => {
     // account mapping — since it undersells a destructive action otherwise.
     expect(card!.textContent).toContain(
       'Clears every SimpleFin Sync setting — the connection, account mapping, sync '
-      + 'schedule, transaction rules, the change log, and any Telegram or Amazon setup. '
+      + 'schedule, transaction and ignore rules, the change log, and any Telegram or Amazon setup. '
       + 'Transactions already imported into Wealthfolio stay.',
     );
   });
@@ -463,6 +463,77 @@ describe('SettingsTab', () => {
   // ── Accounts card ────────────────────────────────────────────────────────
   // Mapping an account linked AFTER setup used to require Reset, which clears
   // every other setting. These cover the path that replaced it.
+  describe('Ignore rules card', () => {
+    const withIgnoreRules = (stored: { kind: string; list?: any[] }) => {
+      const props = makeProps();
+      props.store.readIgnoreRules = vi.fn(async () => stored);
+      props.store.setIgnoreRules = vi.fn(async () => {});
+      return props;
+    };
+
+    it('is absent on a store that cannot keep ignore rules', async () => {
+      render(<SyncPage {...makeProps()} />);
+      await switchTab(/settings/i);
+      await screen.findByRole('button', { name: /^Transaction rules/i });
+      expect(screen.queryByRole('button', { name: /^Ignore rules/i })).toBeNull();
+    });
+
+    it('summarises the stored rules, and offers only the mapped accounts by their SimpleFin names', async () => {
+      const props = withIgnoreRules({ kind: 'ok', list: [{ pattern: 'SWEEP FROM CORE', matchType: 'contains', account: 'sfin-1' }] });
+      render(<SyncPage {...props} />);
+      await switchTab(/settings/i);
+      expect(await screen.findByText('Ignoring 1 pattern')).toBeInTheDocument();
+      await openSection(/^Ignore rules/i);
+      expect(await screen.findByTestId('ignore-rule')).toHaveTextContent('Growth');
+      const select = screen.getByLabelText('Account') as HTMLSelectElement;
+      await waitFor(() => expect(Array.from(select.options).map((o) => o.textContent)).toEqual([
+        'Choose an account…', 'All synced accounts', 'Growth', 'Spend',
+      ]));
+    });
+
+    it('saves a confirmed rule through the store', async () => {
+      const props = withIgnoreRules({ kind: 'absent' });
+      render(<SyncPage {...props} />);
+      await switchTab(/settings/i);
+      await openSection(/^Ignore rules/i);
+      fireEvent.change(await screen.findByLabelText('Description pattern'), { target: { value: 'SWEEP TO CORE FUND' } });
+      fireEvent.change(screen.getByLabelText('Account'), { target: { value: 'sfin-2' } });
+      fireEvent.click(screen.getByRole('button', { name: 'Add rule…' }));
+      fireEvent.click(screen.getByRole('button', { name: 'Yes, ignore these' }));
+      await waitFor(() => expect(props.store.setIgnoreRules).toHaveBeenCalledWith([
+        { pattern: 'SWEEP TO CORE FUND', matchType: 'contains', account: 'sfin-2' },
+      ]));
+      expect(await screen.findByText('Ignoring 1 pattern')).toBeInTheDocument();
+    });
+
+    it('turns read-only over a stored list it cannot read', async () => {
+      const props = withIgnoreRules({ kind: 'corrupt' });
+      render(<SyncPage {...props} />);
+      await switchTab(/settings/i);
+      expect(await screen.findByText("Can't be read")).toBeInTheDocument();
+      await openSection(/^Ignore rules/i);
+      expect(screen.queryByLabelText('Description pattern')).toBeNull();
+    });
+
+    it('reads the preview from SimpleFin only when asked', async () => {
+      const { fetchAccounts } = await import('../utils/simplefin');
+      const props = withIgnoreRules({ kind: 'absent' });
+      render(<SyncPage {...props} />);
+      await switchTab(/settings/i);
+      await openSection(/^Ignore rules/i);
+      vi.mocked(fetchAccounts).mockClear();
+      try {
+        expect(fetchAccounts).not.toHaveBeenCalled();
+        fireEvent.click(await screen.findByRole('button', { name: 'Preview last 30 days' }));
+        await screen.findByTestId('ignore-preview');
+        expect(fetchAccounts).toHaveBeenCalledTimes(1);
+      } finally {
+        // The Accounts card's tests count this mock's calls from zero.
+        vi.mocked(fetchAccounts).mockClear();
+      }
+    });
+  });
+
   describe('Accounts card', () => {
     it('does not touch the bridge until the card is opened', async () => {
       const { fetchAccounts } = await import('../utils/simplefin');

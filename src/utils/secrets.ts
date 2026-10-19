@@ -2,6 +2,7 @@ import { parseReportStore, reportsSecretKey, type ReportKind, type ReportStore }
 import { SIMPLEFIN_REQUESTS_SECRET_KEY } from '../../shared/simplefin-budget';
 import { TRANSFER_NAMES_SECRET_KEY, parseTransferNames, type TransferNames } from '../../shared/transfer-names';
 import { SKIPPED_TRANSACTIONS_SECRET_KEY, parseSkippedTransactions, parseSkippedTransactionsStrict, type ParsedSkippedTransactions, type SkippedTransaction } from '../../shared/skipped-transactions';
+import { IGNORE_RULES_SECRET_KEY, IgnoreRulesUnreadableError, IGNORE_PROBLEM_TEXT, ignoreRuleProblem, normalizeIgnoreRules, parseIgnoreRules, parseIgnoreRulesStrict, type IgnoreRule, type ParsedIgnoreRules } from '../../shared/ignore-rules';
 import type { AddonContext } from '@wealthfolio/addon-sdk';
 import { AMAZON_LEDGER_SECRET_KEY } from '../../shared/amazon-ledger';
 import { VENMO_LEDGER_SECRET_KEY, type VenmoLedger } from '../../shared/venmo-ledger';
@@ -118,6 +119,7 @@ const KEYS = {
   unmappedAccounts: 'unmapped_accounts',
   ignoredAccounts: 'ignored_accounts',
   skippedTransactions: SKIPPED_TRANSACTIONS_SECRET_KEY,
+  ignoreRules: IGNORE_RULES_SECRET_KEY,
   // Companion-published, add-on-read-only; the companion recomputes it, so Reset clears it.
   transferNames: TRANSFER_NAMES_SECRET_KEY,
   autoHeal: 'auto_heal',
@@ -671,6 +673,32 @@ export class SecretsStore {
    *  "none" for a list it cannot read). */
   async readSkippedTransactions(): Promise<ParsedSkippedTransactions> {
     return parseSkippedTransactionsStrict(await this.ctx.api.secrets.get(KEYS.skippedTransactions));
+  }
+
+  /** Rules for bank transactions never to import, by description
+   *  (shared/ignore-rules.ts). What the sync obeys: unreadable reads as none. */
+  async getIgnoreRules(): Promise<IgnoreRule[]> {
+    return parseIgnoreRules(await this.ctx.api.secrets.get(KEYS.ignoreRules));
+  }
+
+  /** The rules with corrupt told apart from absent, for the editor: a list it
+   *  cannot read must not show as "None" and then be saved over. */
+  async readIgnoreRules(): Promise<ParsedIgnoreRules> {
+    return parseIgnoreRulesStrict(await this.ctx.api.secrets.get(KEYS.ignoreRules));
+  }
+
+  /** Replace the rules. Refuses a rule that would ignore everything (the editor
+   *  already does; this is the last line, because an empty Deposit rule once
+   *  turned every card row into a deposit), and writes nothing over a stored
+   *  list it cannot read, which would drop the rules it did not understand. */
+  async setIgnoreRules(rules: IgnoreRule[]): Promise<void> {
+    for (const rule of rules) {
+      const problem = ignoreRuleProblem(rule);
+      if (problem) throw new Error(IGNORE_PROBLEM_TEXT[problem]);
+    }
+    const current = parseIgnoreRulesStrict(await this.ctx.api.secrets.get(KEYS.ignoreRules));
+    if (current.kind === 'corrupt') throw new IgnoreRulesUnreadableError();
+    await this.ctx.api.secrets.set(KEYS.ignoreRules, JSON.stringify(normalizeIgnoreRules(rules)));
   }
 
   /** What the sync obeys (shared/sync-overrides.ts): corrupt, absent and a

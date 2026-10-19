@@ -5,6 +5,7 @@ import type { VenmoLedger } from './venmo-ledger.js';
 import type { HoldingsSnapshot } from './holdings.js';
 import type { SkippedTransaction } from './skipped-transactions.js';
 import type { TransferNames } from './transfer-names.js';
+import type { IgnoreRule } from './ignore-rules.js';
 import type { SyncOverrides } from './sync-overrides.js';
 import type {
   ActivityWrite,
@@ -103,6 +104,8 @@ export interface FakeHostSeed {
   skippedTransactions?: SkippedTransaction[];
   /** The learned transfer names (absent: the store has no `getTransferNames`). */
   transferNames?: TransferNames;
+  /** The user's ignore rules (see shared/ignore-rules.ts). */
+  ignoreRules?: IgnoreRule[];
   /** What Undo told the sync not to do (shared/sync-overrides.ts). Absent
    *  leaves `getSyncOverrides` off the store, the shape of an older host. */
   syncOverrides?: SyncOverrides;
@@ -586,6 +589,9 @@ export function createFakeHost(seed: FakeHostSeed = {}): FakeHost {
           async setSimplefinRequests(raw: string) { seed.requestLog!.raw = raw; },
         }
       : {}),
+    async getIgnoreRules() {
+      return seed.ignoreRules ?? [];
+    },
     ...(seed.syncOverrides
       ? { async getSyncOverrides() { return seed.syncOverrides!; } }
       : {}),

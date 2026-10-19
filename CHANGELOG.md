@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Ignore rules: keep a kind of bank row out of the import.** Settings →
+  Categorizing → **Ignore rules** leaves out every transaction whose
+  description contains (or matches) a pattern, in one account or in every
+  synced one. They are for rows that only move money inside one account, like
+  a brokerage cash account's sweeps into and out of its core fund. In a
+  Transactions-mode account those rows never cancel, so the account's value
+  drifts far above its bank balance. **Preview last 30
+  days** shows which rows a rule would catch before you save it. An empty
+  pattern, or a regular expression that matches everything, is refused, and
+  the sync drops one it finds stored. Rows already imported are left alone:
+  delete them in Wealthfolio once, then fix the balance. A Docker companion
+  has to be updated too, or its syncs import those rows again.
+
 ## [1.65.0] - 2026-10-19
 
 Update the add-on and the companion together: both decide how a transfer is

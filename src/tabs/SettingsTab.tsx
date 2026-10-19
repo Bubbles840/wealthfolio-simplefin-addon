@@ -5,6 +5,7 @@ import { Button, CollapsibleCard, ErrorBox, Why } from '../components/ui';
 import { AmazonCard, type AmazonDraftState } from '../components/AmazonCard';
 import { AccountMapper } from '../components/AccountMapper';
 import { RuleEditor } from '../components/RuleEditor';
+import { IgnoreRulesEditor } from '../components/IgnoreRulesEditor';
 import { AccountList, accountsSummary } from '../components/AccountList';
 import { AccountAudit, ChecksCard, checksSummary } from '../components/AuditViews';
 import { DockerSnippet } from '../components/DockerSnippet';
@@ -27,6 +28,7 @@ import { undoFromApp } from '../utils/change-undo';
 import type { LinkPair } from '../../shared/audit-link';
 import { linkFromApp, notTransferFromApp } from '../utils/audit-fix';
 import type { HeldTransfer } from '../../shared/held-transfers';
+import type { IgnoreRule } from '../../shared/ignore-rules';
 
 /** Ids for this tab's collapsible cards. Doubles as the persisted key set (the
  *  page owns the open-card map), so these strings must not change — a rename
@@ -46,6 +48,7 @@ export const CARD = {
   amazon: 'amazon',
   amazonGuide: 'amazon-guide',
   rules: 'rules',
+  ignoreRules: 'ignore-rules',
   pool: 'pool',
   changeLog: 'change-log',
   checks: 'checks',
@@ -131,6 +134,9 @@ export function SettingsTab({
   const knownRules = useRef<string>('[]');
   const rulesQueue = useRef<Promise<void>>(Promise.resolve());
   const [rulesNote, setRulesNote] = useState('');
+  const [ignoreRules, setIgnoreRules] = useState<IgnoreRule[]>([]);
+  /** The stored ignore rules could not be read: the editor turns read-only. */
+  const [ignoreRulesUnreadable, setIgnoreRulesUnreadable] = useState(false);
   // Reset's own two-step inline confirm. window.confirm is silently
   // suppressed in the addon sandbox (the iframe is sandbox="allow-scripts"
   // with no allow-modals), which is why confirmation is rendered inline
@@ -323,6 +329,36 @@ export function SettingsTab({
     }
   }, [store]);
 
+  // Ignore rules (shared/ignore-rules.ts). Their own read, not part of the
+  // Promise.all above: a failure there hides the account mapper, and an
+  // unreadable rule list is no reason to. Optional-called for older stores and
+  // test doubles, which then show no card.
+  useEffect(() => {
+    store.readIgnoreRules?.().then((read) => {
+      if (read.kind === 'corrupt') setIgnoreRulesUnreadable(true);
+      else setIgnoreRules(read.kind === 'ok' ? read.list : []);
+    }).catch(() => setIgnoreRulesUnreadable(true));
+  }, [store]);
+  const saveIgnoreRules = useCallback(async (next: IgnoreRule[]) => {
+    await store.setIgnoreRules(next);
+    setIgnoreRules(next);
+  }, [store]);
+  /** The mapped SimpleFin accounts, the only ones a rule reaches. */
+  const ignoreRuleAccounts = Object.keys(accountMapping)
+    .filter((id) => !!accountMapping[id])
+    .map((id) => ({ id, name: sfinNames[id] ?? id }));
+  /** The preview's feed: one SimpleFin download, made only when the person asks,
+   *  and counted like "Refresh from SimpleFin" (C5). */
+  const loadIgnorePreview = useCallback(async (days: number) => {
+    const accessUrl = await store.getAccessUrl();
+    if (!accessUrl) throw new Error('No SimpleFin connection — run setup first.');
+    const refused = await directCallLine(store, 'setup');
+    if (refused) throw new Error(refused);
+    const authKey = await store.getAuthB64Key();
+    const set = await fetchAccounts(accessUrl, new Date(Date.now() - days * 24 * 60 * 60 * 1000), ctx.api.network, authKey);
+    return set.accounts;
+  }, [ctx, store]);
+
   // Stable, so the card reads once each time it opens. Optional-called: an
   // older store (or a test double) has no change log, which reads as empty.
   const loadChangeLog = useCallback(
@@ -367,6 +403,12 @@ export function SettingsTab({
     rules.length === 0
       ? 'None — using the +/− defaults'
       : `${rules.length} rule${rules.length === 1 ? '' : 's'}`;
+
+  const ignoreRulesSummary = ignoreRulesUnreadable
+    ? "Can't be read"
+    : ignoreRules.length === 0
+      ? 'None — every transaction is imported'
+      : `Ignoring ${ignoreRules.length} pattern${ignoreRules.length === 1 ? '' : 's'}`;
 
 
   return (
@@ -665,6 +707,26 @@ export function SettingsTab({
         )}
       </CollapsibleCard>
 
+      {/* Beside Transaction rules, which choose what a row becomes; these
+          choose which rows are never imported. */}
+      {typeof store.readIgnoreRules === 'function' && (
+        <CollapsibleCard
+          id={CARD.ignoreRules}
+          title="Ignore rules"
+          summary={ignoreRulesSummary}
+          open={isOpen(CARD.ignoreRules)}
+          onToggle={() => toggleCard(CARD.ignoreRules)}
+        >
+          <IgnoreRulesEditor
+            rules={ignoreRules}
+            accounts={ignoreRuleAccounts}
+            onChange={saveIgnoreRules}
+            loadFeed={loadIgnorePreview}
+            unreadable={ignoreRulesUnreadable}
+          />
+        </CollapsibleCard>
+      )}
+
       <div className="sfin-callout sfin-advanced-callout">
         To see synced transactions in Wealthfolio&apos;s <strong>Spending</strong> page, turn on
         the Spending Tracker for your mapped accounts.
@@ -688,7 +750,7 @@ export function SettingsTab({
         <b>Reset connection</b>
         <div className="sfin-subtle sfin-danger-note">
           Clears every SimpleFin Sync setting — the connection, account mapping, sync
-          schedule, transaction rules, the change log, and any Telegram or Amazon setup.
+          schedule, transaction and ignore rules, the change log, and any Telegram or Amazon setup.
           Transactions already imported into Wealthfolio stay.
         </div>
         <div className="sfin-danger-actions">
