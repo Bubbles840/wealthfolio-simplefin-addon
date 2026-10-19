@@ -173,6 +173,15 @@ export function checkedLine(dataAt: number | null, now: Date): string {
   return `Balances checked · bank data is from ${minutesAgo(dataAt, now)} min ago.`;
 }
 
+/** What a Deep scan says when it lands inside the 5-minute gap: the 90-day
+ *  re-scan needs a download, so only the balances were re-checked. `lastAt`
+ *  is the gate's newest request (epoch ms); unknown, it says "in a few minutes". */
+export function deepScanWaitLine(lastAt: number | undefined): string {
+  return lastAt === undefined
+    ? 'Deep scan needs a fresh download — try again in a few minutes.'
+    : `Deep scan needs a fresh download — try again at ${clockTime(new Date(lastAt + SIMPLEFIN_GAP_MS))}.`;
+}
+
 /** Requests in the last 24 hours, or null when the record is corrupt. */
 export function requestsToday(raw: string | null, now: Date): number | null {
   const log = parseRequestLog(raw);

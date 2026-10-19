@@ -1,7 +1,7 @@
 import React, { useEffect, useState, useCallback, useRef } from 'react';
 import type { AddonContext } from '@wealthfolio/addon-sdk';
 import { runSync } from '../utils/sync';
-import { directCallLine, requestsToday } from '../../shared/simplefin-budget';
+import { deepScanWaitLine, directCallLine, requestsToday } from '../../shared/simplefin-budget';
 import { SIMPLEFIN_SYNC_VERSION, versionMismatchNotice } from '../../shared/version';
 import type { SyncResult } from '../utils/sync';
 import { fetchAccounts } from '../utils/simplefin';
@@ -638,8 +638,11 @@ export function SyncPage({ ctx, store, onReset, scheduler, initialSearch }: Prop
       const result = await runSync(ctx, store, { heal: true, manual: true });
       readSimplefinCount();
       if (result.download) {
-        setSyncNotice(result.download.line);
-        if (result.download.kind === 'checkOnly') loadBalances();
+        // Inside the gap the 90-day re-scan did not run (only the balances were
+        // re-checked), so it says when it can, not "Balances checked" (F3b).
+        const checkOnly = result.download.kind === 'checkOnly';
+        setSyncNotice(checkOnly ? deepScanWaitLine(result.download.lastAt) : result.download.line);
+        if (checkOnly) loadBalances();
         return;
       }
       if (result.errors.length > 0) setError(result.errors.join('; '));

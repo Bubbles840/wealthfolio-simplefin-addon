@@ -82,7 +82,8 @@ describe('runSyncCore — SimpleFin is never asked more often than it allows (C)
     const fetch = fetchSpy(fh);
     for (const opts of [{ manual: true }, { manual: true, heal: true }]) {
       const result = await runSyncCore(fh.host, fh.store, opts);
-      expect(result.download).toEqual({ kind: 'checkOnly', line: 'Balances checked · bank data is from 2 min ago.' });
+      // `lastAt`: the gate's newest request, so a Deep scan can say when it may run (F3b).
+      expect(result.download).toEqual({ kind: 'checkOnly', line: 'Balances checked · bank data is from 2 min ago.', lastAt: NOW.getTime() });
     }
     expect(fetch).not.toHaveBeenCalled();
     expect(requests(log)).toHaveLength(1);

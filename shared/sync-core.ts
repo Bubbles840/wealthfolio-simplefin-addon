@@ -443,8 +443,10 @@ export interface SyncResult {
   /** Present only on a run the SimpleFin budget stopped (shared/simplefin-budget.ts):
    *  `checkOnly` re-checked balances against the last download, `skipped` was
    *  refused by the daily limit, the gap or an unreadable request record. `line`
-   *  is the one sentence to show. Never an error: nothing went wrong. */
-  download?: { kind: 'checkOnly' | 'skipped'; line: string };
+   *  is the one sentence to show. Never an error: nothing went wrong.
+   *  `lastAt` (checkOnly only): when the newest request was sent, epoch ms, so a
+   *  Deep scan can say when it may download (F3b). */
+  download?: { kind: 'checkOnly' | 'skipped'; line: string; lastAt?: number };
   stuckTransferAlerts: Array<{ outTxId: string; description: string; amountCents: number; currency: string }>;
   /** Every feed transaction this run CONFIRMED as created, for the companion's
    *  import notice. Driven off the create echo, so a rejected create is not
@@ -2034,7 +2036,7 @@ async function runSyncPass(
     const gate = await reserveSimplefinRequest(requestLog, opts.manual ? 'manual' : 'scheduled', now);
     if (gate.kind === 'checkOnly') {
       const { dataAt } = await checkBalancesOnly(host, store, { mapping, newestRequestAt: gate.lastAt.getTime() });
-      return { ...notDownloaded(), download: { kind: 'checkOnly', line: checkedLine(dataAt, now) } };
+      return { ...notDownloaded(), download: { kind: 'checkOnly', line: checkedLine(dataAt, now), lastAt: gate.lastAt.getTime() } };
     }
     if (gate.kind !== 'go') {
       const line = gateLine(gate, now)!;
