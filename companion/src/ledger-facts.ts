@@ -184,8 +184,8 @@ export function getLedgerFacts(
          AND a.notes NOT LIKE '%${PENDING_SUFFIX}'
          AND CAST(COALESCE(a.amount,'0') AS REAL) <> 0
          AND COALESCE(CAST(a.fee AS REAL),0) = 0
-         AND NOT (json_valid(COALESCE(a.metadata,''))
-                  AND COALESCE(json_type(a.metadata, '$.flow.is_external'), '') IN ('false'))`,
+         AND CASE WHEN json_valid(COALESCE(a.metadata,''))
+                  THEN COALESCE(json_type(a.metadata,'$.flow.is_external'),'') ELSE '' END <> 'false'`,
     ).map((r) => ({
       id: r.id, description: describe(r.notes), amount: Number(r.amt), ageDays: Number(r.age),
       wfAccountId: String(r.account_id), date: String(r.d), txId: txIdFromComment(String(r.notes)),

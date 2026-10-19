@@ -42,8 +42,8 @@ export interface HeldTransfer {
   amount: number;
   ageDays: number;
   direction: 'in' | 'out';
-  /** The holding account's name; null = no feed holds it (the next sync
-   *  settles it); ABSENT = cannot tell. */
+  /** The holding account's name ("another account" when none is stored);
+   *  null = no feed holds it (the next sync settles it); ABSENT = cannot tell. */
   heldBy?: string | null;
   txKey: string | null;
   label: string;
