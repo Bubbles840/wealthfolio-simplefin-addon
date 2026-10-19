@@ -3612,7 +3612,7 @@ describe('holdings snapshots for investment accounts', () => {
   const brokerageSeed = (): FakeHostSeed => ({
     accountSet: { errors: [], accounts: [{
       id: 'sfin-b', name: 'Robinhood', currency: 'USD', balance: '512.34',
-      'balance-date': 1789171200,
+      'balance-date': 1789214400,
       transactions: [],
       holdings: [
         { symbol: 'VTI', shares: '2.5', purchase_price: '210.11' },

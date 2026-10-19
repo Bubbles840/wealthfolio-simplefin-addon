@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **An investment account's holdings are no longer counted twice.** Most
+  brokers (Fidelity among them) report the account's *total* value as its
+  `balance`. The snapshot wrote that figure as the cash line on top of the
+  positions, so a Holdings-mode account showed "cash" equal to the sum of its
+  holdings and a total about double the truth. The cash line is now what is left
+  of the balance after the positions' market values: zero for a fully invested
+  account, the remainder when there is real cash. A balance smaller than the
+  holdings is still read as cash alone, and an account whose holdings lack a
+  market value (or are priced in another currency) is written as before.
+- **Holdings snapshots no longer fail in the evening west of UTC.** A snapshot
+  was dated with the UTC day of the balance timestamp, so after about 5 PM
+  Pacific every investment account failed with "Date 2026-10-19 can't be
+  imported. Use a date from 1970-01-01 to 2026-10-18." until local midnight.
+  The date is now read on the local calendar and never runs ahead of today.
+
 ## [1.63.0] - 2026-10-18
 
 ### Changed
