@@ -7,6 +7,7 @@ import type { AmazonLedger } from '../../shared/amazon-ledger.js';
 import { VENMO_LEDGER_SECRET_KEY, type VenmoLedger } from '../../shared/venmo-ledger.js';
 import { linkPairPreferInPlace, unlinkPairPreferInPlace, type InPlaceIo } from '../../shared/link-in-place.js';
 import type { UnlinkLeg, UnlinkResult } from '../../shared/link-pair.js';
+import { SIMPLEFIN_REQUESTS_SECRET_KEY } from '../../shared/simplefin-budget.js';
 import { TRANSFER_NAMES_SECRET_KEY, parseTransferNames, type TransferNames } from '../../shared/transfer-names.js';
 import { SKIPPED_TRANSACTIONS_SECRET_KEY, parseSkippedTransactions, type SkippedTransaction } from '../../shared/skipped-transactions.js';
 import { loadSyncOverrides, syncOverridesIgnoredLog, syncOverridesOrEmpty, type LoadedSyncOverrides, type SyncOverrides } from '../../shared/sync-overrides.js';
@@ -387,6 +388,14 @@ export class RestSyncStore implements SyncStore {
    *  companion tool, and honoured here (see shared/skipped-transactions.ts). */
   async getTransferNames(): Promise<TransferNames | null> {
     return parseTransferNames(await this.client.getAddonSecret(this.addonId, TRANSFER_NAMES_SECRET_KEY));
+  }
+
+  /** The request record both writers share; a failed read rejects (fail closed). */
+  async getSimplefinRequests(): Promise<string | null> {
+    return (await this.client.getAddonSecret(this.addonId, SIMPLEFIN_REQUESTS_SECRET_KEY)) ?? null;
+  }
+  async setSimplefinRequests(raw: string): Promise<void> {
+    await this.client.setAddonSecret(this.addonId, SIMPLEFIN_REQUESTS_SECRET_KEY, raw);
   }
 
   async getSkippedTransactions(): Promise<SkippedTransaction[]> {

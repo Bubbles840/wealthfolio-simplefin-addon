@@ -277,6 +277,20 @@ describe('RestSyncStore', () => {
     expect(await store.getLastSyncAt()).toEqual(new Date('2026-07-01T12:00:00Z'));
   });
 
+  it('reads and writes the SimpleFin request record under the key the add-on shares, and a failed read rejects (1.64, C1)', async () => {
+    const secrets = new Map<string, string>();
+    const client = {
+      getAddonSecret: vi.fn(async (_a: string, key: string) => secrets.get(key) ?? null),
+      setAddonSecret: vi.fn(async (_a: string, key: string, val: string) => { secrets.set(key, val); }),
+    } as any;
+    const store = new RestSyncStore(client);
+    await store.setSimplefinRequests('["2026-10-18T15:00:00.000Z"]');
+    expect(secrets.get('simplefin_requests')).toBe('["2026-10-18T15:00:00.000Z"]');
+    expect(await store.getSimplefinRequests()).toBe('["2026-10-18T15:00:00.000Z"]');
+    client.getAddonSecret.mockRejectedValueOnce(new Error('401'));
+    await expect(store.getSimplefinRequests()).rejects.toThrow('401');
+  });
+
   it('reads the learned transfer names it publishes, null when absent or unreadable (1.64)', async () => {
     const secrets = new Map<string, string>();
     const client = { getAddonSecret: vi.fn(async (_a: string, key: string) => secrets.get(key) ?? null), setAddonSecret: vi.fn() } as any;

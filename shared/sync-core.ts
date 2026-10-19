@@ -30,6 +30,7 @@ import {
 } from './change-entries.js';
 import { emptySyncOverrides, hasAccountOverride, hasTxOverride, syncOverridesIgnoredLog } from './sync-overrides.js';
 import { bankDayInstant } from './bank-day.js';
+import { checkedLine, gateLine, requestLogIo, reserveSimplefinRequest } from './simplefin-budget.js';
 
 /**
  * A datable timestamp for a SimpleFin transaction: `posted` when present, else
@@ -424,6 +425,13 @@ const SPENDING_TYPES = new Set<string>(['WITHDRAWAL', 'FEE', 'TAX']);
  *  back into this module. */
 const noHoldings = (): HoldingsSyncOutcome => ({ imported: 0, skipped: 0, unresolvedSymbols: [] });
 
+/** A run that sent nothing to SimpleFin and changed nothing. A function for the
+ *  same reason as `noHoldings`: every result owns its arrays. */
+const notDownloaded = (): SyncResult => ({
+  imported: 0, skipped: 0, errors: [], stuckTransferAlerts: [], importedTransactions: [], largeTransactionAlerts: [],
+  balanceDriftAlerts: [], prunedDuplicates: [], unmappedAccounts: null, refusedCreates: [], holdingsSnapshots: noHoldings(),
+});
+
 export interface SyncResult {
   imported: number;
   skipped: number;
@@ -432,6 +440,11 @@ export interface SyncResult {
    *  snapshot capability, and on a set of accounts that publishes no holdings —
    *  which is every bank and card account. */
   holdingsSnapshots: HoldingsSyncOutcome;
+  /** Present only on a run that did NOT download (shared/simplefin-budget.ts):
+   *  `checkOnly` re-checked balances against the last download, `skipped` was
+   *  refused by the daily limit, the gap or an unreadable request record. `line`
+   *  is the one sentence to show. Never an error: nothing went wrong. */
+  download?: { kind: 'checkOnly' | 'skipped'; line: string };
   stuckTransferAlerts: Array<{ outTxId: string; description: string; amountCents: number; currency: string }>;
   /** Every feed transaction this run CONFIRMED as created, for the companion's
    *  import notice. Driven off the create echo, so a rejected create is not
@@ -1983,9 +1996,11 @@ async function runSyncPass(
   const heal = opts.heal || autoAdjust || (await store.getAutoHeal());
   console.log('[simplefin-sync] starting sync core', { heal, force: !!opts.force, autoAdjust });
 
-  // Enforce minimum interval unless the caller forces (Sync anyway) or heals
+  // Enforce the one-hour minimum interval on SCHEDULED runs only (C6, R18). A
+  // person is governed by the 5-minute gap and the daily limit instead (below):
+  // a Sync pressed 5-60 minutes after the last one used to check nothing at all.
   const lastSync = await store.getLastSyncAt();
-  if (!opts.force && !heal && lastSync && Date.now() - lastSync.getTime() < MIN_SYNC_INTERVAL_MS) {
+  if (!opts.manual && !opts.force && !heal && lastSync && Date.now() - lastSync.getTime() < MIN_SYNC_INTERVAL_MS) {
     return { imported: 0, skipped: 0, errors: [INTERVAL_SKIP_MESSAGE], stuckTransferAlerts: [], importedTransactions: [], largeTransactionAlerts: [], balanceDriftAlerts: [], prunedDuplicates: [], unmappedAccounts: null, refusedCreates: [], holdingsSnapshots: noHoldings() };
   }
 
@@ -1997,6 +2012,26 @@ async function runSyncPass(
   const mapping = await store.getAccountMapping();
   if (!mapping) {
     return { imported: 0, skipped: 0, errors: ['Not configured: no account mapping'], stuckTransferAlerts: [], importedTransactions: [], largeTransactionAlerts: [], balanceDriftAlerts: [], prunedDuplicates: [], unmappedAccounts: null, refusedCreates: [], holdingsSnapshots: noHoldings() };
+  }
+
+  // The SimpleFin budget (C1-C3). The request is recorded BEFORE the download is
+  // sent (SimpleFin counts attempts, a failed one included), in the one record
+  // both writers share, and it fails closed. A store with no record keeps no budget.
+  const requestLog = requestLogIo(store);
+  let fetchedAt = Date.now();
+  if (requestLog) {
+    const now = new Date();
+    const gate = await reserveSimplefinRequest(requestLog, opts.manual ? 'manual' : 'scheduled', now);
+    if (gate.kind === 'checkOnly') {
+      const { dataAt } = await checkBalancesOnly(host, store, { mapping, newestRequestAt: gate.lastAt.getTime() });
+      return { ...notDownloaded(), download: { kind: 'checkOnly', line: checkedLine(dataAt, now) } };
+    }
+    if (gate.kind !== 'go') {
+      const line = gateLine(gate, now)!;
+      console.log(`[simplefin-sync] ${line}`);
+      return { ...notDownloaded(), download: { kind: 'skipped', line } };
+    }
+    fetchedAt = gate.at.getTime();
   }
 
   const rules = await store.getMappingRules();
@@ -2017,8 +2052,7 @@ async function runSyncPass(
         ? THIRTY_DAYS_AGO
         : new Date(lastSync.getTime() - SYNC_LOOKBACK_OVERLAP_MS);
   const authKey = await store.getAuthB64Key();
-  // Task 7 moves this up and sets it from the recorded request time.
-  const fetchedAt = Date.now();
+  // `fetchedAt` (set above from the recorded request time) is stamped on every bank figure.
   const accountSet = await host.fetchSimplefin(accessUrl, startDate, authKey);
 
   for (const sfErr of accountSet.errors) {

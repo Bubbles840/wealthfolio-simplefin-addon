@@ -106,6 +106,10 @@ export interface FakeHostSeed {
   /** What Undo told the sync not to do (shared/sync-overrides.ts). Absent
    *  leaves `getSyncOverrides` off the store, the shape of an older host. */
   syncOverrides?: SyncOverrides;
+  /** The SimpleFin request record (1.64 C1). Shared BY REFERENCE: two hosts given
+   *  the same object are two writers sharing one count. Absent leaves the two
+   *  store methods off (no budget). `failReads` makes the read reject. */
+  requestLog?: { raw: string | null; failReads?: boolean };
 }
 
 export interface FakeHost {
@@ -572,6 +576,15 @@ export function createFakeHost(seed: FakeHostSeed = {}): FakeHost {
     },
     ...(seed.transferNames
       ? { async getTransferNames() { return seed.transferNames!; } }
+      : {}),
+    ...(seed.requestLog
+      ? {
+          async getSimplefinRequests() {
+            if (seed.requestLog!.failReads) throw new Error('secrets unavailable');
+            return seed.requestLog!.raw;
+          },
+          async setSimplefinRequests(raw: string) { seed.requestLog!.raw = raw; },
+        }
       : {}),
     ...(seed.syncOverrides
       ? { async getSyncOverrides() { return seed.syncOverrides!; } }

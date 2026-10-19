@@ -209,6 +209,19 @@ describe('SecretsStore', () => {
     expect(data['venmo_ledger']).toBeUndefined();
   });
 
+  it('keeps the SimpleFin request record under the key the companion shares, and Reset leaves it (1.64, C1)', async () => {
+    const { ctx, data } = makeCtxWithData();
+    const s = new SecretsStore(ctx);
+    expect(await s.getSimplefinRequests()).toBeNull();
+    await s.setSimplefinRequests('["2026-10-18T15:00:00.000Z"]');
+    expect(data['simplefin_requests']).toBe('["2026-10-18T15:00:00.000Z"]');
+    await s.clearAll();
+    // SimpleFin keeps counting after a Reset, so the record does too.
+    expect(data['simplefin_requests']).toBe('["2026-10-18T15:00:00.000Z"]');
+    ctx.api.secrets.get.mockRejectedValueOnce(new Error('401'));
+    await expect(s.getSimplefinRequests()).rejects.toThrow('401');
+  });
+
   it('reads the learned transfer names the companion publishes, null when absent or unreadable, and clearAll removes them (1.64)', async () => {
     const { ctx, data } = makeCtxWithData();
     const s = new SecretsStore(ctx);

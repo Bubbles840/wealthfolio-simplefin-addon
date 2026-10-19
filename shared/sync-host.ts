@@ -352,6 +352,14 @@ export interface SyncStore {
    */
   getTransferNames?(): Promise<TransferNames | null>;
   /**
+   * The SimpleFin request record both writers share (shared/simplefin-budget.ts,
+   * 1.64 C1): a JSON list of ISO times, or null when none was ever kept. REJECTS
+   * when the record cannot be read, so the sync can fail closed. Both methods or
+   * neither; a store with neither keeps no budget.
+   */
+  getSimplefinRequests?(): Promise<string | null>;
+  setSimplefinRequests?(raw: string): Promise<void>;
+  /**
    * What the person told the sync not to do again (shared/sync-overrides.ts),
    * set by an Undo in the change log. A stored document that cannot be read —
    * or a failed read — comes back EMPTY, so the sync behaves exactly as it did
