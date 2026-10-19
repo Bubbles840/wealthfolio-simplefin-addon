@@ -10,6 +10,7 @@ import { execFileSync } from 'child_process';
 import { DatabaseSync } from 'node:sqlite';
 import { descriptionFromComment, PENDING_SUFFIX as PENDING_NOTE_SUFFIX } from '../../shared/sync-core.js';
 import { IN_TRANSIT_COMMENT_PREFIX } from '../../shared/reconcile.js';
+import { cashSignSql } from '../../shared/audit-ledger.js';
 import { CLI_SEPARATOR, isDay, isTrue, NOTES, shiftDay, SPENDING_BUDGET_TARGET_FILTER, tail, TOP_CATEGORY_CTE } from './sqlite-cli-helpers.js';
 import { spendLines, topCategoryId, SPENDING_TAXONOMY, type SpendLine, type SpendRow } from '../../shared/wf-spending.js';
 
@@ -272,10 +273,13 @@ const NOT_AWAITING_TRANSFER_HALF = `
  * against, which is why the starting-balance correction has never run on one,
  * and why a card carried a $235.40 opening gap for five months with no alert.
  *
- * The sign table is transcribed from Wealthfolio 3.8's
- * `type_directed_cash_effect`, including its one account-dependent exception:
- * INTEREST is income on a brokerage and a charge on a credit card
- * (`resolve_cash_with_account_context`). Since 3.8 `amount` is the final cash
+ * The sign table is `typeCashSign` (shared/audit-ledger.ts) through
+ * `cashSignSql` - Wealthfolio 3.8's `type_directed_cash_effect`, including its
+ * one account-dependent exception: INTEREST is income on a brokerage and a
+ * charge on a credit card (`resolve_cash_with_account_context`). Since 1.64
+ * (R14) it signs the EFFECTIVE type (override first), as Wealthfolio and the
+ * app's own total do; that corrects a card holding an overridden row, which the
+ * raw type used to sign backwards. Since 3.8 `amount` is the final cash
  * and `fee` is informational, so `fee` is deliberately absent from the
  * arithmetic — adding it back would double-count every charge.
  *
@@ -301,15 +305,13 @@ export function getNativeAccountBalances(dbPath: string): Map<string, number> {
   const out = new Map<string, number>();
   if (!dbPath || !existsSync(dbPath)) return out;
 
+  const T = hasActivityTypeOverride(dbPath)
+    ? "UPPER(COALESCE(NULLIF(TRIM(a.activity_type_override), ''), a.activity_type, ''))"
+    : "UPPER(COALESCE(a.activity_type, ''))";
   const query = `
     SELECT a.account_id,
            ROUND(SUM(
-             CASE
-               WHEN UPPER(acc.account_type) = 'CREDIT_CARD' AND UPPER(a.activity_type) = 'INTEREST' THEN -1
-               WHEN UPPER(a.activity_type) IN ('DEPOSIT','CREDIT','TRANSFER_IN','DIVIDEND','INTEREST','SELL') THEN 1
-               WHEN UPPER(a.activity_type) IN ('WITHDRAWAL','TRANSFER_OUT','FEE','TAX','BUY') THEN -1
-               ELSE 0
-             END * ABS(CAST(COALESCE(a.amount, '0') AS REAL))
+             (${cashSignSql(T, "UPPER(COALESCE(acc.account_type, ''))")}) * ABS(CAST(COALESCE(a.amount, '0') AS REAL))
            ), 2) AS balance
     FROM activities a
     JOIN accounts acc ON a.account_id = acc.id

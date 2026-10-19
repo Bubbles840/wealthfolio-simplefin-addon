@@ -213,6 +213,18 @@ export interface SyncHost {
    * cash accounts only. A valuation, where one exists, stays authoritative.
    */
   ledgerBalances?(accountIds: string[]): Promise<Map<string, number>>;
+  /**
+   * A card's POSTED total, read after this run's writes (1.64, B1).
+   *
+   * OPTIONAL. Signed by the EFFECTIVE type (override first, R14) through the one
+   * sign table; pending rows left out; an account holding an in-transit
+   * placeholder, or one the host could not read reliably, is OMITTED (omitted =
+   * "not checked"). Asked only for accounts the valuations did not report, and
+   * it drives the badge only (R15) - never an alert or a write. The companion
+   * reads live on every run; the add-on pages the card's whole history on a
+   * manual run and answers empty on a scheduled one (R7).
+   */
+  postedLedgerTotals?(accounts: ReadonlyArray<{ wfAccountId: string; accountType: string }>): Promise<Map<string, number>>;
   readonly capabilities: {
     /** True when listActivities returns a trustworthy sourceGroupId. */
     readsSourceGroupId: boolean;
