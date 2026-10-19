@@ -7,6 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- **A wire or online transfer to someone else counts as spending from the
+  start** (issue #13). Money out of a bank account worded only "wire
+  transfer", "online transfer", "bank transfer" or "member transfer" was held
+  as a transfer waiting for an other half that never came. It is now an
+  ordinary withdrawal unless its text names another connected account or
+  matches a transfer wording the companion learned. A transfer between your
+  own accounts still links when its other half arrives within 5 days. Money
+  in, the "PNC Bank" and "Capital One transfer" wordings, cards and your
+  rules are unchanged.
+- **"Still in transit" says why, every day, and offers a way out.** A
+  transfer held more than 14 days names the connected account whose feed is
+  behind (or says the next sync settles it), shows in the daily findings
+  every day until it settles, and offers **Not a transfer**: in Telegram
+  after a confirm, and in Settings → Checks, which now lists these
+  transfers. It writes the same override the change log's Undo writes; the
+  app re-checks the transaction first and changes nothing if it was linked
+  or settled since the checks ran. A marked transfer says so until the next
+  sync settles it.
+
+### Fixed
+- **A transfer still waiting after 10 days settles even when the bank no
+  longer sends it** (issue #13). The give-up only ran on rows in the current
+  download, so a leg a lagging feed held past the 14-day re-download window
+  stayed "In-transit" forever. Every sync now settles stored placeholders
+  outside the download exactly as it settles those inside: ordinary money in
+  or out, marked Needs review, unless a connected feed that has not caught
+  up still holds it.
+
 ## [1.64.1] - 2026-10-19
 
 ### Fixed
