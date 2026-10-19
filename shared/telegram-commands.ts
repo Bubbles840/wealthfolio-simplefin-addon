@@ -13,6 +13,7 @@ import type { GlyphStyle } from './telegram.js';
 // with the menu because that is where the type carrying `parentName` lives; a
 // second copy of the `Name (Parent)` rule is how the preview and the miss reply
 // would come to disagree about which category they are talking about.
+import { budgetStatusLine } from './simplefin-budget.js';
 import { categoryDisplayName } from './categorize-menu.js';
 import { rollForward, type Cadence } from './subscription-roster.js';
 
@@ -446,6 +447,9 @@ export function formatAffordReply(
  */
 export interface StatusReplyInput {
   version: string;
+  /** SimpleFin downloads in the last 24 hours (1.64, C4). null/absent = the
+   *  record could not be read, which shows NO line: "0 of 20" would be a claim. */
+  simplefinToday?: number | null;
   /** ISO; null = never synced — but see `lastSyncUnreadable`, which is the
    *  difference between "no sync has run" and "we could not find out". */
   lastSyncAt: string | null;
@@ -558,6 +562,8 @@ export function formatStatusReply(input: StatusReplyInput, now: Date): string {
     );
   }
 
+  if (typeof input.simplefinToday === 'number') lines.push(budgetStatusLine(input.simplefinToday));
+
   for (const account of input.accounts) {
     // Account names are Wealthfolio-user-controlled text, not trusted display
     // strings — same reasoning as every other place a name is interpolated
@@ -628,6 +634,15 @@ export function formatSyncReply(r: { imported: number; skipped: number; driftAle
   }
 
   return lines.join('\n');
+}
+
+/**
+ * The whole reply to a `/sync` the SimpleFin budget stopped (1.64, C3). The
+ * usual "Synced: 0 imported, 0 skipped" beside "the limit is used up" would
+ * read as a sync that ran and found nothing, so the one line stands alone.
+ */
+export function formatSyncSkipReply(line: string): string {
+  return escapeMarkdown(line);
 }
 
 /** What `/pool` replies when its arguments don't parse. The example is the

@@ -19,6 +19,7 @@ import { parseFiledState } from '../../shared/bookkeeping-filing.js';
 import { CARD_REWRITE_SECRET_KEY, rewriteCardBookkeeping } from './card-bookkeeping-rewrite.js';
 import cron from 'node-cron';
 import { readFileSync, existsSync } from 'fs';
+import { SIMPLEFIN_REQUESTS_SECRET_KEY, requestsToday } from '../../shared/simplefin-budget.js';
 import { runSyncCore, descriptionFromComment, txIdFromComment } from '../../shared/sync-core.js';
 import type { SyncResult } from '../../shared/sync-core.js';
 import { RestSyncStore, syncHostFor } from './rest-host.js';
@@ -103,6 +104,7 @@ import {
   formatStatusReply,
   formatReportFooter,
   formatSyncReply,
+  formatSyncSkipReply,
   parseAffordArgs,
   parseLeftArgs,
   resolveCategoryQuery,
@@ -951,7 +953,7 @@ export async function sendUnmappedAccountsNotice(
  * The addon's Sync Now button makes the same distinction: it forces, and offers
  * a "Sync anyway" retry when a scheduled run was skipped (src/pages/SyncPage.tsx).
  */
-export async function runCompanionSync(opts: { force?: boolean } = {}): Promise<SyncResult> {
+export async function runCompanionSync(opts: { force?: boolean; manual?: boolean } = {}): Promise<SyncResult> {
   // The checks compare the report's figure only from a cube THIS run published (M-2).
   const runStartedAt = new Date();
   const apiUrl = process.env.WEALTHFOLIO_API_URL ?? '';
@@ -1044,11 +1046,14 @@ export async function runCompanionSync(opts: { force?: boolean } = {}): Promise<
     // One run id for the sync and the filings after it, so the change log
     // groups them as one run.
     const changeLog = companionChangeSink(wfClient);
-    const result = await runSyncCore(host, store, { force, changeLog });
+    // `/sync` is a person, so no one-hour wall; the SimpleFin budget applies (1.64, C6).
+    const result = await runSyncCore(host, store, { force, changeLog, ...(opts.manual ? { manual: true } : {}) });
 
     for (const err of result.errors) {
       log(`Sync note: ${err}`);
     }
+    // A status line, never an alert: the budget stopping a download is not a failure.
+    if (result.download) log(`Sync: ${result.download.line}`);
     log(`Done: ${result.imported} imported, ${result.skipped} skipped`);
 
     // 1.62 (W2): once, move the rows Wealthfolio stored at 00:00 UTC to noon
@@ -2963,6 +2968,9 @@ async function readStatusReplyInput(wfClient: WealthfolioClient): Promise<Status
   const balancesRead = await readableSecret('account_balances');
   const balances =
     parseSecretJson<Record<string, StoredAccountBalance>>(balancesRead.raw, 'account_balances') ?? {};
+  // A failed read is no line, never "0 of 20" (1.64, C4).
+  const requestsRead = await readableSecret(SIMPLEFIN_REQUESTS_SECRET_KEY);
+  const simplefinToday = requestsRead.read ? requestsToday(requestsRead.raw, new Date()) : null;
   const names = parseSecretJson<Record<string, string>>(await secret('account_names'), 'account_names') ?? {};
   // Which Wealthfolio account each is, for its 🔎 button (2c). Unreadable:
   // no buttons, and the reply is otherwise unchanged.
@@ -3018,6 +3026,7 @@ async function readStatusReplyInput(wfClient: WealthfolioClient): Promise<Status
     // Same distinction one step further out: an empty `accounts` because the
     // snapshot said nothing, versus because it could not be read at all.
     accountBalancesUnreadable: !balancesRead.read,
+    simplefinToday,
     uncategorizedCount: typeof uncategorized?.count === 'number' ? uncategorized.count : null,
     amazonUnparsed: typeof amazon?.unparsed === 'number' ? amazon.unparsed : null,
   };
@@ -3057,9 +3066,9 @@ const SYNC_ALREADY_RUNNING_REPLY = 'Already syncing — hang on.';
  * can only ever FULFIL, with a string.
  */
 export function startTelegramSync(): { started: boolean; summary: Promise<string> } {
-  const { started, result } = runCompanionSyncExclusive(() => runCompanionSync({ force: true }));
+  const { started, result } = runCompanionSyncExclusive(() => runCompanionSync({ force: true, manual: true }));
   const summary = result.then(
-    (r) => formatSyncReply({
+    (r) => r.download ? formatSyncSkipReply(r.download.line) : formatSyncReply({
       imported: r.imported,
       skipped: r.skipped,
       driftAlerts: r.balanceDriftAlerts.length,
@@ -3822,12 +3831,11 @@ export function buildTelegramCommandHandler(
       }
 
       case 'sync': {
-        // FORCED, unlike the cron tick: `MIN_SYNC_INTERVAL_HOURS` (1h by default)
-        // would otherwise refuse a `/sync` typed twenty minutes after a scheduled
-        // run with "0 imported, 0 skipped" plus "minimum sync interval of 1 hour
-        // not yet elapsed". The addon's Sync Now answers that with a "Sync
-        // anyway" button; a chat command has no second click, so an explicit
-        // request forces — which is what the design and the changelog promise.
+        // MANUAL, unlike the cron tick (1.64, C6): no one-hour wall, so a `/sync`
+        // typed twenty minutes after a scheduled run is not refused. The SimpleFin
+        // budget applies: inside five minutes of the last download it is only a
+        // re-check, and with the day's 20 used it is refused in one line. Still
+        // forced, so it re-pulls the 30-day window as before.
         const { started, summary } = startTelegramSync();
 
         await reply(started ? SYNC_STARTED_REPLY : SYNC_ALREADY_RUNNING_REPLY);
