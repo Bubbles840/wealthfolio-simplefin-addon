@@ -90,6 +90,39 @@ describe('gatherFindings', () => {
     });
   });
 
+  const heldFacts = () => {
+    const facts = cleanFacts();
+    facts.heldTransfers = [{
+      id: 'h1', description: 'WIRE TRANSFER TO ACME LLC', amount: 250, ageDays: 20,
+      wfAccountId: 'wf-chk', date: '2026-09-19', txId: 'w-old', direction: 'out',
+    }];
+    return facts;
+  };
+  const heldSecrets = (overrides: string) => ({
+    account_mapping: JSON.stringify({ 'sfin-chk': 'wf-chk', 'sfin-sav': 'wf-sav' }),
+    account_balances: JSON.stringify({
+      'sfin-chk': { balance: 10, date: unixDaysAgo(0), aliveThrough: unixDaysAgo(0) },
+      'sfin-sav': { balance: 10, date: unixDaysAgo(18), aliveThrough: unixDaysAgo(18) },
+    }),
+    account_names: JSON.stringify({ 'sfin-chk': 'Checking', 'sfin-sav': 'Harbor Savings' }),
+    sync_overrides: overrides,
+  });
+
+  it('a held transfer already marked "not a transfer" says so and loses its button (1.65 C)', async () => {
+    const marked = JSON.stringify({ v: 1, tx: { [accountTxKey('sfin-chk', 'w-old')]: { notTransfer: true, at: NOW.toISOString() } } });
+    const { deps } = makeDeps(heldSecrets(marked), heldFacts());
+    const found = await gatherFindings(deps, NOW, { recordLedgerChecks: false, ...healthy });
+    const held = found.visible.find((f) => f.key === 'held-transfer:h1')!;
+    expect(held.message).toContain('marked not a transfer; the next sync settles it');
+    expect(held.fix).toBeUndefined();
+  });
+
+  it('keeps the button when the stored overrides are corrupt (the tap says why) (1.65 C)', async () => {
+    const { deps } = makeDeps(heldSecrets('{not json'), heldFacts());
+    const found = await gatherFindings(deps, NOW, { recordLedgerChecks: false, ...healthy });
+    expect(found.visible.find((f) => f.key === 'held-transfer:h1')!.fix?.kind).toBe('not-transfer');
+  });
+
   it('still shows a held transfer, with no reason, when the stored balances are corrupt (1.65 C)', async () => {
     const facts = cleanFacts();
     facts.heldTransfers = [{

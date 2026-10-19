@@ -250,7 +250,7 @@ describe('"Not a transfer" on the held-transfer finding (1.65 C acceptance)', ()
     await editSyncOverrides(async (k) => secrets.get(k) ?? null, async (k, v) => { secrets.set(k, v); }, notTransferEdit(fix.txKey, fix.label, NOW), NOW);
     const parsed = parseSyncOverrides(secrets.get(SYNC_OVERRIDES_SECRET_KEY));
     if (parsed.kind !== 'ok') throw new Error('overrides not written');
-    // The very entry the change log's Undo writes for a held leg.
+    // The same flag and label the change log's Undo writes for a held leg.
     expect(parsed.overrides.tx[fix.txKey]).toEqual({ notTransfer: true, at: NOW.toISOString(), label: 'WIRE TRANSFER TO ACME LLC · Checking' });
 
     // The same lagging feed that held it: "Not a transfer" is the way out.

@@ -162,6 +162,19 @@ describe('evaluateLedgerChecks', () => {
     expect(evaluateLedgerChecks(f, {}, NOW).findings[0].fix).toBeUndefined();
   });
 
+  it('a held transfer already marked "not a transfer" says so and offers no fix (1.65 C)', () => {
+    const f = clean();
+    f.heldTransfers = [{
+      id: 'h1', description: 'WIRE TRANSFER TO ACME LLC', amount: 250, ageDays: 20,
+      wfAccountId: 'wf-chk', date: '2026-08-31', txId: 'w-old', direction: 'out',
+    }];
+    const marked = new Set([accountTxKey('sfin-chk', 'w-old')]);
+    const { findings } = evaluateLedgerChecks(f, {}, NOW, HELD_FEEDS, marked);
+    expect(findings).toHaveLength(1);
+    expect(findings[0].message).toContain('marked not a transfer; the next sync settles it');
+    expect(findings[0].fix).toBeUndefined();
+  });
+
   it('offers no fix when two feeds share the account, so the transaction cannot be named (1.65 C)', () => {
     const f = clean();
     f.heldTransfers = [{

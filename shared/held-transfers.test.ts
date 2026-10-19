@@ -19,6 +19,25 @@ const feeds = (savAlive: string, over: Partial<StoredFeeds> = {}): StoredFeeds =
   ...over,
 });
 
+describe('judgeHeldTransfer: marked "not a transfer" (1.65 C fix round 1)', () => {
+  const key = accountTxKey('sfin-chk', 'w-old');
+
+  it('says it is marked, replacing any held-by reason', () => {
+    const h = judgeHeldTransfer(WIRE, feeds('2026-09-30T12:00:00Z'), NOW, new Set([key]));
+    expect(h.marked).toBe(true);
+    expect(heldTransferMessage(h)).toBe(
+      'WIRE TRANSFER TO ACME LLC ($250.00) has waited 20 days for its other half — marked not a transfer; the next sync settles it',
+    );
+  });
+
+  it('ignores marks for other transactions, and an empty or absent set', () => {
+    const f = feeds('2026-09-30T12:00:00Z');
+    expect(judgeHeldTransfer(WIRE, f, NOW, new Set(['other'])).marked).toBeUndefined();
+    expect(judgeHeldTransfer(WIRE, f, NOW, new Set()).marked).toBeUndefined();
+    expect(judgeHeldTransfer(WIRE, f, NOW).marked).toBeUndefined();
+  });
+});
+
 describe('judgeHeldTransfer (1.65 C)', () => {
   it('names the connected account whose feed holds the leg open, and the bank transaction to act on', () => {
     expect(judgeHeldTransfer(WIRE, feeds('2026-09-30T12:00:00Z'), NOW)).toEqual({

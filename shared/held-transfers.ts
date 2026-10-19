@@ -47,6 +47,8 @@ export interface HeldTransfer {
   heldBy?: string | null;
   txKey: string | null;
   label: string;
+  /** The user already said "not a transfer" for this transaction; the next sync settles it. */
+  marked?: true;
 }
 
 const finite = (v: unknown): number | null => (typeof v === 'number' && Number.isFinite(v) ? v : null);
@@ -64,7 +66,13 @@ function ownFeedId(feeds: StoredFeeds, wfAccountId: string): string | null {
   return null;
 }
 
-export function judgeHeldTransfer(row: HeldRow, feeds: StoredFeeds | undefined, now: Date): HeldTransfer {
+export function judgeHeldTransfer(
+  row: HeldRow,
+  feeds: StoredFeeds | undefined,
+  now: Date,
+  /** Bank-transaction keys already marked `notTransfer`. */
+  marked?: ReadonlySet<string>,
+): HeldTransfer {
   const sfinId = feeds && row.wfAccountId ? ownFeedId(feeds, row.wfAccountId) : null;
   const own = feeds && sfinId ? feeds.names[sfinId] : undefined;
   const base: HeldTransfer = {
@@ -76,6 +84,7 @@ export function judgeHeldTransfer(row: HeldRow, feeds: StoredFeeds | undefined, 
     txKey: sfinId && row.txId ? accountTxKey(sfinId, row.txId) : null,
     label: own ? `${row.description} · ${own}` : row.description,
   };
+  if (base.txKey && marked?.has(base.txKey)) return { ...base, marked: true };
   // Unusable stored balances for the leg's own account: cannot tell why.
   if (!feeds || !sfinId || !row.date || !isObj(feeds.balances[sfinId])) return base;
 
@@ -99,6 +108,7 @@ export function judgeHeldTransfer(row: HeldRow, feeds: StoredFeeds | undefined, 
 
 export function heldTransferMessage(h: HeldTransfer): string {
   const head = `${h.description} (${formatDollars(Math.abs(h.amount), 2)}) has waited ${h.ageDays} days for its other half`;
+  if (h.marked) return `${head} — marked not a transfer; the next sync settles it`;
   if (h.heldBy === undefined) return head;
   if (h.heldBy === null) return `${head} — the next sync settles it`;
   return `${head} — ${h.heldBy}'s feed is behind, so it stays on hold`;

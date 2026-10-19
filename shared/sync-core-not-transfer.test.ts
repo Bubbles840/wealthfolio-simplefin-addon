@@ -166,7 +166,7 @@ describe('runSyncCore — notTransfer', () => {
     expect(log.entries()).toEqual([expect.objectContaining({
       kind: 'transfer-type', undoable: false,
       summary: "Counted Online Transfer to Savings as spending — you said it isn't a transfer",
-      why: 'You undid the transfer',
+      why: "You said it isn't a transfer",
     })]);
   });
 
