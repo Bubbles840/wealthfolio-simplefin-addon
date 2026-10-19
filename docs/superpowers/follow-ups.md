@@ -1565,6 +1565,50 @@ branches.
   so the check-only pass has nothing fresh to compare until the first
   download.
 
+## 21. In-transit rows always settle; generic wording needs corroboration (2026-10-19, plan `2026-10-19-in-transit-expiry-and-generic-wording.md`)
+
+- **The expiry has no Undo.** A settled placeholder logs the in-feed expiry's
+  own entry ("Stopped waiting for the other half…"), which is not undoable:
+  there is no "it is a transfer after all" override. The entry written when
+  the row was first held keeps its Undo (`notTransfer`).
+- **An expired row keeps `flow.is_external: true`**, in-feed and out alike:
+  an update that omits metadata leaves it. Nothing reads it on a
+  non-transfer row; if one ever does, clear it in the expiry write (both
+  paths at once).
+- **A placeholder older than its account's newest 500 rows is reached by
+  neither writer**: both read a 500-row recent page (R3). The held finding
+  reads the whole database, so such a row is listed, and "the next sync
+  settles it" (or, once marked, "marked not a transfer") stays untrue until
+  a Deep scan reaches it — never, past 90 days. New placeholders settle long
+  before they leave the page; only old stuck rows are affected.
+- **The first 1.65 sync retypes a young generic-wording placeholder** to a
+  withdrawal and logs it as "No other half arrived within 10 days": a
+  one-time, wrongly worded entry.
+- **The finding's reason reads account names without the institution** (the
+  sync also uses the org name), so under the 21-day dead-feed rule a leg
+  that names only the institution can read "the next sync settles it" while
+  the sync still holds it.
+- **A row the sync leaves alone for a reason only the secrets know** (skip
+  list, a frozen key, `asReimbursement`) is still listed as held.
+- **An account whose sync step fails stores no `aliveThrough`** that run, so
+  the finding can name a live feed as behind until the next run (it errs
+  toward holding).
+- **The app's list is the companion's last snapshot.** A "Not a transfer"
+  tapped there shows as marked at once (the view reads the overrides), but
+  the collapsed card's count and the daily report count it until the next
+  sync settles it. Home's "Checks: N to look at" counts Health only.
+- **The app's re-check honours the add-on's write lock, not the
+  companion's**: a tap moments before the companion's own sync links the
+  pair can still be undone by the next sync's unlink. On a host that reports
+  links but for an account outside Spending, a stale `linked_groups` entry
+  makes the app refuse ("That one has changed…") — the same rule Link uses;
+  Telegram still works.
+- **`held` is not trimmed** in the audit snapshot (personal scale). A very
+  long list would stop the snapshot publishing.
+- **The override's label names the SimpleFin account**; Undo's names the
+  Wealthfolio account first, so Settings → overrides can show both for one
+  account.
+
 ## Reference: name mismatches between the database, the REST API, and the SDK
 
 Every one of these cost a diagnostic cycle against the live instance on
