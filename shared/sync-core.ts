@@ -1423,12 +1423,12 @@ export function expiredTransferLegType(accountType: string, signedAmount: number
  * row; the demotion it prevents costs phantom spending in every report and a
  * manual repair.
  */
-function expiryHoldAccount(
+export function expiryHoldAccount(
   legSfinAccountId: string,
   legPostedEpoch: number,
-  mappedSfinIds: string[],
-  feedAliveEpoch: Map<string, number>,
-  dead: { nowSec: number; legDescription: string; nameWords: Map<string, string[]> },
+  mappedSfinIds: readonly string[],
+  feedAliveEpoch: ReadonlyMap<string, number>,
+  dead: { nowSec: number; legDescription: string; nameWords: ReadonlyMap<string, readonly string[]> },
 ): string | null {
   const caughtUpBy = legPostedEpoch + TRANSFER_MATCH_WINDOW_SECONDS;
   const description = dead.legDescription.toLowerCase();
@@ -1449,6 +1449,62 @@ function expiryHoldAccount(
     return id;
   }
   return null;
+}
+
+export interface StaleTransitContext {
+  wfAccountId: string;
+  sfinAccountId: string;
+  accountType: string;
+  /** Every transaction id in this account's download (frozen keys included):
+   *  those rows take the in-feed path. */
+  feedTxIds: ReadonlySet<string>;
+  nowSec: number;
+  mappedSfinIds: readonly string[];
+  feedAliveEpoch: ReadonlyMap<string, number>;
+  nameWords: ReadonlyMap<string, readonly string[]>;
+  /** Linked, skip-listed or payback-flagged rows: not ours to settle. */
+  leaveAlone(row: ExistingRow & { sourceGroupId?: string | null; flowExternal?: boolean | null }): boolean;
+  notTransfer(txId: string): boolean;
+}
+
+/**
+ * Stored in-transit placeholders OUTSIDE this run's download get exactly the
+ * in-feed decision (issue #13). The 10-day give-up used to run only on rows in
+ * the download; an incremental sync re-downloads from the last sync minus
+ * SYNC_LOOKBACK_OVERLAP_MS (14 days), so a leg not re-evaluated between day 10
+ * and day 14 kept its placeholder shape forever. Same timeout, same
+ * expiryHoldAccount (an absent mapped account holds), same result: the prefix
+ * goes, the row is flagged Needs review (R1), and the companion's next pass
+ * takes the "Sync bookkeeping" filing back out (R2). A "not a transfer" row
+ * settles to ordinary at once with no hold and no flag (R3, as in the feed).
+ * Linked, pending, skip-listed and payback-flagged rows, and rows Wealthfolio
+ * linked in place (flow.is_external false), are left alone.
+ */
+export function planStaleInTransit(
+  rows: ReadonlyArray<ExistingRow & { sourceGroupId?: string | null; flowExternal?: boolean | null }>,
+  ctx: StaleTransitContext,
+): { settle: FeedTx[]; held: Array<{ txId: string; heldBy: string }> } {
+  const settle: FeedTx[] = [];
+  const held: Array<{ txId: string; heldBy: string }> = [];
+  for (const row of rows) {
+    if (!(row.comment ?? '').startsWith(IN_TRANSIT_COMMENT_PREFIX) || row.pending) continue;
+    if (ctx.feedTxIds.has(row.txId)) continue;
+    if (row.sourceGroupId || row.flowExternal === false || ctx.leaveAlone(row)) continue;
+    const signed = OUTFLOW_TYPES.has(row.type) ? -row.absCents : row.absCents;
+    const base: FeedTx = {
+      txId: row.txId, wfAccountId: ctx.wfAccountId, absCents: row.absCents,
+      type: expiredTransferLegType(ctx.accountType, signed), date: row.date, pending: false,
+    };
+    if (ctx.notTransfer(row.txId)) { settle.push(base); continue; }
+    const posted = Date.parse(bankDayInstant(row.date)) / 1000;
+    if (!(ctx.nowSec - posted > IN_TRANSIT_TIMEOUT_SECONDS)) continue;
+    const heldBy = expiryHoldAccount(ctx.sfinAccountId, posted, ctx.mappedSfinIds, ctx.feedAliveEpoch, {
+      nowSec: ctx.nowSec, legDescription: descriptionFromComment(row.comment), nameWords: ctx.nameWords,
+    });
+    if (heldBy !== null) held.push({ txId: row.txId, heldBy });
+    else settle.push({ ...base, needsReview: true });
+  }
+  return { settle, held };
 }
 
 /** A feed silent longer than this is treated as disconnected rather than
@@ -3273,7 +3329,23 @@ async function runSyncPass(
         const row = storedByTxId.get(t.txId);
         return keepLinkedLegAsStored(t, row, !!row && isLinkedRow(row));
       });
-    const plan = planReconciliation(planFeed, planExisting.filter((r) => !unlinkingIds.has(r.wfId)));
+    // ── 1.65 A: in-transit rows outside this download ──
+    const staleTransit = planStaleInTransit(planExisting.filter((r) => !unlinkingIds.has(r.wfId)), {
+      wfAccountId, sfinAccountId: sfAccount.id, accountType: wfTypes.get(wfAccountId) ?? '',
+      feedTxIds: new Set(feed.map((t) => t.txId)), nowSec, mappedSfinIds, feedAliveEpoch, nameWords,
+      leaveAlone: (r) => isLinkedRow(r) || skippedTxKeys.has(accountTxKey(sfAccount.id, r.txId))
+        || hasTxOverride(overrides, accountTxKey(sfAccount.id, r.txId), 'asReimbursement'),
+      notTransfer: (txId) => notTransferKey(accountTxKey(sfAccount.id, txId)),
+    });
+    for (const h of staleTransit.held) {
+      console.info(
+        `[simplefin-sync] in-transit hold: stored leg ${h.txId} (account ${sfAccount.id}) is past the timeout and outside this download, but account ${h.heldBy} has published nothing past its pairing window — keeping the placeholder`,
+      );
+    }
+    for (const t of staleTransit.settle) {
+      descByKey.set(accountTxKey(sfAccount.id, t.txId), descriptionFromComment(storedByTxId.get(t.txId)?.comment));
+    }
+    const plan = planReconciliation([...planFeed, ...staleTransit.settle], planExisting.filter((r) => !unlinkingIds.has(r.wfId)));
     // A held card placeholder keeps the shape it is stored in when anything
     // else about it changes (pending to posted, amount, date): the two writers
     // would otherwise flip it per change, and a 3.8/3.9-written WITHDRAWAL that

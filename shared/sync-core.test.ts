@@ -3359,7 +3359,8 @@ describe('legacy fee-side placeholders (pre-v1.49 CREDIT amount 0 / fee X)', () 
       'balance-date': Math.floor(Date.now() / 1000),
       transactions: [],
     }] },
-    mapping: { 'sfin-1': 'wf-a' },
+    // 'sfin-2' is mapped but absent from the download: a feed with no life at all, so it holds the aged placeholder(s) below (1.65 A would otherwise settle them).
+    mapping: { 'sfin-1': 'wf-a', 'sfin-2': 'wf-b' },
     accountTypes: { 'wf-a': 'CASH' },
     existing: new Map([['wf-a', rows]]),
   });
@@ -3805,7 +3806,8 @@ describe("the sync's own unlinked transfer rows are marked external (v1.54)", ()
     accountSet: { errors: [], accounts: [{
       id: 'sfin-1', name: 'Card', currency: 'USD', balance: '0', 'balance-date': 1, transactions: [],
     }] },
-    mapping: { 'sfin-1': 'wf-a' },
+    // 'sfin-2' is mapped but absent from the download: a feed with no life at all, so it holds the aged placeholder(s) below (1.65 A would otherwise settle them).
+    mapping: { 'sfin-1': 'wf-a', 'sfin-2': 'wf-b' },
     accountTypes: { 'wf-a': accountType },
     existing: new Map([['wf-a', rows]]),
   });
