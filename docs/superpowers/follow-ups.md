@@ -1596,18 +1596,36 @@ branches.
 - **The app's list is the companion's last snapshot.** A "Not a transfer"
   tapped there shows as marked at once (the view reads the overrides), but
   the collapsed card's count and the daily report count it until the next
-  sync settles it. Home's "Checks: N to look at" counts Health only.
-- **The app's re-check honours the add-on's write lock, not the
-  companion's**: a tap moments before the companion's own sync links the
-  pair can still be undone by the next sync's unlink. On a host that reports
-  links but for an account outside Spending, a stale `linked_groups` entry
-  makes the app refuse ("That one has changed…") — the same rule Link uses;
-  Telegram still works.
+  sync settles it.
+- **Each writer's "Not a transfer" honours its own lock only** (the app the
+  add-on's write lock, Telegram the companion's fix lock): a tap moments
+  before the OTHER writer's sync links the pair can still be undone by the
+  next sync's unlink. On a host that reports links but for an account
+  outside Spending, a stale `linked_groups` entry makes the app refuse
+  ("That one has changed…") — the same rule Link uses; Telegram still
+  works.
 - **`held` is not trimmed** in the audit snapshot (personal scale). A very
   long list would stop the snapshot publishing.
 - **The override's label names the SimpleFin account**; Undo's names the
   Wealthfolio account first, so Settings → overrides can show both for one
   account.
+- **A first-time transfer between own accounts worded only generically can
+  raise a large-spend alert** (R4): it is a withdrawal until its other half
+  pairs on a later run; before 1.65 it was a placeholder, which never
+  alerts. Learned names shrink this; skipping the alert for rows B demoted
+  is the cheap fix if it bites.
+- **A run whose account list fails** (unknown account types) leaves a young
+  generic-wording payment out held as before; the next run demotes it again,
+  logging "Held…" then "Stopped waiting…" (shared with bank-first and learned
+  typing).
+- **A permanently held row logs its hold on every sync**; one line per
+  account would be quieter.
+- **Untested guards**: the add-on's `isLinkedRow` exclusion from the stale
+  sweep and the sweep's frozen-key leave-alone are correct on reading but
+  have no test.
+- **A 1.64 writer beside a 1.65 one** flips every young generic payment out
+  between a placeholder and a withdrawal on each writer's sync (the relink
+  re-creates it under a new id). The CHANGELOG says to update both together.
 
 ## Reference: name mismatches between the database, the REST API, and the SDK
 
