@@ -1,3 +1,4 @@
+import { postedLedgerTotal } from './ledger-total.js';
 import type { AccountMapping, MappingRule, SimplefinAccountSet } from './types.js';
 import type { AmazonLedger } from './amazon-ledger.js';
 import type { VenmoLedger } from './venmo-ledger.js';
@@ -77,6 +78,8 @@ export interface FakeHostSeed {
    *  valuations API omits. Absent means the host lacks the capability, which is
    *  the addon's shape. */
   ledgerBalances?: Map<string, number>;
+  /** Give the host `postedLedgerTotals`, computed over its LIVE rows. */
+  cardTotals?: boolean;
   /**
    * Model two Wealthfolio 3.8 write rules that only do damage together
    * (activities_service.rs), off by default so older tests keep their simpler host:
@@ -333,6 +336,19 @@ export function createFakeHost(seed: FakeHostSeed = {}): FakeHost {
             const out = new Map<string, number>();
             for (const id of accountIds) {
               if (seed.ledgerBalances!.has(id)) out.set(id, seed.ledgerBalances!.get(id)!);
+            }
+            return out;
+          },
+        }
+      : {}),
+
+    ...(seed.cardTotals
+      ? {
+          async postedLedgerTotals(accounts: Array<{ wfAccountId: string; accountType: string }>) {
+            const out = new Map<string, number>();
+            for (const a of accounts) {
+              const total = postedLedgerTotal(rowsFor(a.wfAccountId), a.accountType);
+              if (total !== null) out.set(a.wfAccountId, total);
             }
             return out;
           },

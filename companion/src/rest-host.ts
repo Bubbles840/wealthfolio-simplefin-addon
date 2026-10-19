@@ -96,6 +96,23 @@ export class RestSyncHost implements SyncHost {
     return out;
   }
 
+  /**
+   * Each requested account's posted total, read LIVE from the database after
+   * the run's saves (1.64, B2). Only a live open is allowed: when just the
+   * stale `immutable` snapshot opens, nothing is returned and every card stays
+   * "not checked" rather than showing a verdict from days ago.
+   */
+  async postedLedgerTotals(accounts: Array<{ wfAccountId: string; accountType: string }>): Promise<Map<string, number>> {
+    const out = new Map<string, number>();
+    if (!this.dbPath) return out;
+    const all = getNativeAccountBalances(this.dbPath, { liveOnly: true });
+    for (const a of accounts) {
+      const balance = all.get(a.wfAccountId);
+      if (balance !== undefined) out.set(a.wfAccountId, balance);
+    }
+    return out;
+  }
+
   async fetchSimplefin(
     accessUrl: string,
     since: Date,

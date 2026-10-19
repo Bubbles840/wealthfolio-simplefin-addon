@@ -587,6 +587,24 @@ export interface SyncOptions {
    * append is caught here and never alters the result.
    */
   changeLog?: ChangeLogSink;
+  /**
+   * A person asked for this run (the Sync button, Deep scan, the companion's
+   * `/sync`). In 1.64 it only turns on the add-on's whole-history card read,
+   * so a manual Sync can total every card after its own saves; a scheduled run
+   * leaves cards "not checked" (R7).
+   */
+  manual?: boolean;
+}
+
+/**
+ * The badge's verdict for a card totalled AFTER a run's own saves: `d` is the
+ * bank's figure minus Wealthfolio's, to the cent; inside the display threshold
+ * it is "in sync" (drift null). Always `measured`: the caller only asks once it
+ * has a trustworthy posted total.
+ */
+export function badgeVerdict(bankBalance: number, wealthfolioFigure: number): { drift: number | null; measured: true } {
+  const d = Math.round((bankBalance - wealthfolioFigure) * 100) / 100;
+  return { drift: Math.abs(d) > DRIFT_THRESHOLD_DOLLARS ? d : null, measured: true };
 }
 
 /** Distinct marker so the UI can recognise an interval skip and offer to
@@ -1968,6 +1986,9 @@ async function runSyncPass(
   } catch {
     errors.push('Could not read account balances — starting-balance checks skipped this run');
   }
+  // The accounts Wealthfolio itself VALUED, before the ledger fallback fills
+  // the gaps: the after-save card check below is for the rest.
+  const valuedWfIds = new Set(wfBalances?.keys() ?? []);
   // Fill the gaps the valuations API leaves, which in practice is every credit
   // card: Wealthfolio reports valuations for CASH accounts only, so a card had
   // no balance to compare against, the one-time starting-balance correction
@@ -4414,6 +4435,33 @@ async function runSyncPass(
     }
   }
 
+  // The badge for every card Wealthfolio does not value, totalled AFTER this
+  // run's own saves. Live case (2026-10-18): after an in-app Sync every card
+  // said "not checked", because the valuations API is cash-only and the add-on
+  // had no ledger figure. B3: a POSTED-only total is comparable to the bank's
+  // posted balance whatever is pending, so pending rows no longer block it.
+  // R15: the BADGE ONLY. Alerts, the starting balance, auto-heal, the
+  // baseline-fix offer and every write keep the before-save figure, which
+  // subtracts this run's rows from a before-save read and would count them
+  // twice if fed this one. A verdict the run already measured stands.
+  if (host.postedLedgerTotals && wfBalances !== null) {
+    const unchecked = accountSet.accounts.filter((sf) => {
+      const wf = mapping[sf.id];
+      const snap = accountBalances[sf.id];
+      return !!wf && !valuedWfIds.has(wf) && !!snap && snap.measured !== true && snap.balance !== null;
+    });
+    if (unchecked.length > 0) {
+      const wanted = [...new Set(unchecked.map((sf) => mapping[sf.id]))]
+        .map((wfAccountId) => ({ wfAccountId, accountType: wfTypes.get(wfAccountId) ?? '' }));
+      const totals = await host.postedLedgerTotals(wanted).catch(() => null);
+      for (const sf of unchecked) {
+        const total = totals?.get(mapping[sf.id]);
+        const snap = accountBalances[sf.id];
+        if (total === undefined || snap.balance === null) continue;
+        Object.assign(snap, badgeVerdict(snap.balance, total));
+      }
+    }
+  }
   await store.setAccountBalances(accountBalances);
   // Persisted as well as returned: the sync that discovers a new account is
   // normally the COMPANION's, and the addon's UI has no way to see a return

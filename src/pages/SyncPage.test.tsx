@@ -56,6 +56,15 @@ describe('SyncPage', () => {
     await waitFor(() => expect(screen.getByRole('button', { name: /sync now/i })).toBeInTheDocument());
   });
 
+  it('tells the sync a person asked for it — Sync now and Deep scan both (1.64)', async () => {
+    render(<SyncPage {...makeProps()} />);
+    await waitFor(() => screen.getByRole('button', { name: /sync now/i }));
+    fireEvent.click(screen.getByRole('button', { name: /sync now/i }));
+    await waitFor(() => expect(runSync).toHaveBeenLastCalledWith(expect.anything(), expect.anything(), expect.objectContaining({ manual: true })));
+    fireEvent.click(headerButton(/deep scan/i));
+    await waitFor(() => expect(runSync).toHaveBeenLastCalledWith(expect.anything(), expect.anything(), expect.objectContaining({ heal: true, manual: true })));
+  });
+
   it('shows sync result after clicking Sync Now', async () => {
     render(<SyncPage {...makeProps()} />);
     await waitFor(() => screen.getByRole('button', { name: /sync now/i }));
