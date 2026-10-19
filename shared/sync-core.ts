@@ -18,7 +18,7 @@ import type { AmazonLedger } from './amazon-ledger.js';
 import {
   consumeVenmoMatch, isReadableVenmoLedger, matchVenmoPayments, venmoDescription, type VenmoLedger, type VenmoMatch,
 } from './venmo-ledger.js';
-import type { ActivityType, SimplefinAccount, SimplefinTransaction, UnmappedAccount } from './types.js';
+import type { AccountMapping, ActivityType, SimplefinAccount, SimplefinTransaction, UnmappedAccount } from './types.js';
 import type { ActivityWrite, HoldingsSyncOutcome, HostActivity, ImportRow, LinkLeg, LinkResult, SaveManyRequest, SaveManyResult, SyncHost, SyncStore } from './sync-host.js';
 import { unlinkPairByRecreate, type UnlinkLeg, type UnlinkResult } from './link-pair.js';
 import { ledgerGroupId } from './link-in-place.js';
@@ -643,6 +643,15 @@ interface AccountBalanceSnapshot {
    * that raise banners, plugs or report findings must ignore a tagged drift.
    */
   checkedAfterSave?: true;
+  /**
+   * Epoch ms when the download that produced `balance`/`date` was sent. A
+   * check-only pass (C3) compares these figures against Wealthfolio's current
+   * state only while no NEWER request has been sent (R16): the figures are the
+   * bank's as of this moment, and a request in flight may already be changing
+   * the ledger under them. A snapshot written by an older build lacks it and is
+   * therefore never compared.
+   */
+  fetchedAt?: number;
   /**
    * Present when this run PROVED the drift belongs to the starting-balance
    * baseline rather than to any transaction: the reconciliation plan came back
@@ -1730,6 +1739,82 @@ export async function runSyncCore(
   }
 }
 
+/**
+ * A manual Sync that lands inside the gap since the last download (C3): nothing
+ * is asked of SimpleFin. Every mapped account's badge is re-checked against the
+ * figures the last download kept, with Wealthfolio's CURRENT state. Writes only
+ * `account_balances`; alerts, corrections and the drift-episode ledger are
+ * untouched (R15), and every verdict filled is tagged badge-only like the
+ * after-save check's. A stale baseline-fix offer is dropped (a Deep scan
+ * re-offers it); unmapped entries are kept as they were.
+ *
+ * A stored figure is compared only when it carries a `fetchedAt` at or after
+ * `newestRequestAt` (R16: a newer request in flight may be changing the ledger
+ * under older figures) and a numeric balance. A valued account is compared with
+ * its valuation less the asset-backed TRANSFER_OUT legs, unless a pending row
+ * makes that unsafe; any other account against the posted-ledger total.
+ * Returns the newest `fetchedAt` among the compared-fresh accounts (how old the
+ * bank data is), or null when none was fresh.
+ */
+export async function checkBalancesOnly(
+  host: SyncHost,
+  store: SyncStore,
+  opts: { mapping: AccountMapping; newestRequestAt: number | null },
+): Promise<{ dataAt: number | null }> {
+  const stored = ((await store.getAccountBalances().catch(() => ({}))) ?? {}) as Record<string, AccountBalanceSnapshot>;
+  const { mapping, newestRequestAt } = opts;
+  const fresh = (snap: AccountBalanceSnapshot): boolean =>
+    typeof snap.fetchedAt === 'number' && (newestRequestAt === null || snap.fetchedAt >= newestRequestAt) &&
+    typeof snap.balance === 'number';
+  const freshIds = Object.keys(stored).filter((id) => !!mapping[id] && fresh(stored[id]));
+  const wfIds = [...new Set(freshIds.map((id) => mapping[id]))];
+
+  const types = new Map<string, string>();
+  if (wfIds.length > 0) {
+    for (const a of await host.listAccounts().catch(() => [])) types.set(a.id, a.accountType);
+  }
+  const valuations = wfIds.length > 0
+    ? await host.latestValuations(wfIds).catch(() => null)
+    : new Map<string, number>();
+
+  // Valued accounts: valuation less asset-backed TRANSFER_OUT legs, unless pending.
+  const figures = new Map<string, number>();
+  if (valuations !== null) {
+    for (const wfId of wfIds) {
+      const valuation = valuations.get(wfId);
+      if (valuation === undefined) continue;
+      const rows = await host.listActivities(wfId).catch(() => null);
+      if (rows === null || rows.some((r) => (r.comment ?? '').endsWith(PENDING_SUFFIX))) continue;
+      const assetBackedOut = rows
+        .filter((r) => r.activityType === 'TRANSFER_OUT' && !!r.assetId)
+        .reduce((sum, r) => sum + Math.abs(parseFloat(String(r.amount ?? '0')) || 0), 0);
+      figures.set(wfId, valuation - assetBackedOut);
+    }
+    const unvalued = wfIds.filter((id) => !valuations.has(id));
+    if (unvalued.length > 0 && host.postedLedgerTotals) {
+      const totals = await host.postedLedgerTotals(unvalued.map((wfAccountId) => ({ wfAccountId, accountType: types.get(wfAccountId) ?? '' })))
+        .catch(() => null);
+      for (const [id, total] of totals ?? []) figures.set(id, total);
+    }
+  }
+
+  const next: Record<string, AccountBalanceSnapshot> = {};
+  let dataAt: number | null = null;
+  for (const [id, snap] of Object.entries(stored)) {
+    if (!mapping[id]) { next[id] = snap; continue; }
+    const { baselineFix: _dropped, checkedAfterSave: _tag, ...rest } = snap;
+    const figure = freshIds.includes(id) ? figures.get(mapping[id]) : undefined;
+    if (figure !== undefined && typeof snap.balance === 'number') {
+      next[id] = { ...rest, ...badgeVerdict(snap.balance, figure), checkedAfterSave: true };
+      dataAt = Math.max(dataAt ?? 0, snap.fetchedAt as number);
+    } else {
+      next[id] = { ...rest, drift: null, measured: false };
+    }
+  }
+  await store.setAccountBalances(next);
+  return { dataAt };
+}
+
 /** Records one change-log entry for a write that succeeded. */
 type RecordChange = (build: () => ChangeDraft) => void;
 
@@ -1927,6 +2012,8 @@ async function runSyncPass(
         ? THIRTY_DAYS_AGO
         : new Date(lastSync.getTime() - SYNC_LOOKBACK_OVERLAP_MS);
   const authKey = await store.getAuthB64Key();
+  // Task 7 moves this up and sets it from the recorded request time.
+  const fetchedAt = Date.now();
   const accountSet = await host.fetchSimplefin(accessUrl, startDate, authKey);
 
   for (const sfErr of accountSet.errors) {
@@ -3378,6 +3465,7 @@ async function runSyncPass(
       // the account was comparable — so it, not `drift`, decides this. `drift`
       // additionally goes null for "in sync" and for "plugged this run".
       measured: measuredDrift !== null,
+      fetchedAt,
       ...(baselineFix ? { baselineFix } : {}),
     };
 

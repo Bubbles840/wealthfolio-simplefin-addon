@@ -2253,8 +2253,8 @@ describe('runSyncCore with ONE SimpleFin tx id in two accounts', () => {
 
       // Both accounts measured as in sync, and neither was alerted about.
       expect(await store.getAccountBalances()).toEqual({
-        'sfin-sav': { balance: 610.65, currency: 'USD', date: expect.any(Number), drift: null, driftSince: null, measured: true },
-        'sfin-spend': { balance: 3475.23, currency: 'USD', date: expect.any(Number), drift: null, driftSince: null, measured: true },
+        'sfin-sav': { balance: 610.65, currency: 'USD', date: expect.any(Number), drift: null, driftSince: null, measured: true, fetchedAt: expect.any(Number) },
+        'sfin-spend': { balance: 3475.23, currency: 'USD', date: expect.any(Number), drift: null, driftSince: null, measured: true, fetchedAt: expect.any(Number) },
       });
       expect(result.balanceDriftAlerts).toEqual([]);
     });
@@ -2352,8 +2352,8 @@ describe('runSyncCore with ONE SimpleFin tx id in two accounts', () => {
     // comparable here, and "verified in sync" is now a different claim from
     // "nothing to report".
     expect(await store.getAccountBalances()).toEqual({
-      'sfin-sav': { balance: 610.65, currency: 'USD', date: expect.any(Number), drift: null, driftSince: null, measured: true },
-      'sfin-spend': { balance: 3475.23, currency: 'USD', date: expect.any(Number), drift: null, driftSince: null, measured: true },
+      'sfin-sav': { balance: 610.65, currency: 'USD', date: expect.any(Number), drift: null, driftSince: null, measured: true, fetchedAt: expect.any(Number) },
+      'sfin-spend': { balance: 3475.23, currency: 'USD', date: expect.any(Number), drift: null, driftSince: null, measured: true, fetchedAt: expect.any(Number) },
     });
     expect(result.balanceDriftAlerts).toEqual([]);
   });
