@@ -2653,6 +2653,37 @@ describe('buildTelegramCommandHandler', () => {
     expect(sent[1]).toContain('Sync finished with errors: SimpleFin: token revoked');
   });
 
+  it('runs /sync as a manual action, and answers a run the SimpleFin budget refused with just its one line (1.64, C3, C6)', async () => {
+    vi.mocked(runSyncCore).mockClear();
+    vi.mocked(runSyncCore).mockResolvedValueOnce({
+      ...FAKE_SYNC_RESULT, download: { kind: 'skipped', line: "SimpleFin's daily limit is used up — next sync at 3:10 PM." },
+    });
+    const secrets = new Map<string, string>([['simplefin_access_url', 'https://user:pass@bridge.simplefin.org/simplefin']]);
+    const client: any = {
+      login: vi.fn(async () => {}),
+      getAddonSecret: vi.fn(async (_a: string, k: string) => secrets.get(k) ?? null),
+      setAddonSecret: vi.fn(async (_a: string, k: string, v: string) => { secrets.set(k, v); }),
+    };
+    const { WealthfolioClient } = await import('./wealthfolio.js');
+    vi.mocked(WealthfolioClient).mockImplementation(function () { return client; } as any);
+    const { sent, reply } = collector();
+    await buildTelegramCommandHandler(client)({ command: 'sync', args: '' }, reply);
+    await waitFor('the sync summary', () => sent.length >= 2);
+    expect(vi.mocked(runSyncCore).mock.calls[0][2]).toMatchObject({ force: true, manual: true });
+    expect(sent[1]).toBe("SimpleFin's daily limit is used up — next sync at 3:10 PM.");
+  });
+
+  it('/status shows the day\'s SimpleFin count quietly, and no line when the record cannot be read (1.64, C4)', async () => {
+    const recent = (m: number) => new Date(Date.now() - m * 60_000).toISOString();
+    const { client } = clientFor([['simplefin_requests', JSON.stringify([recent(5), recent(90), recent(26 * 60)])]]);
+    expect((await run(client, 'status'))[0]).toContain('SimpleFin: 2 of 20 today');
+    client.getAddonSecret.mockImplementation(async (_a: string, k: string) => {
+      if (k === 'simplefin_requests') throw new Error('401');
+      return null;
+    });
+    expect((await run(client, 'status'))[0]).not.toContain('SimpleFin:');
+  });
+
   it('runs /sync FORCED, so a command typed minutes after the cron tick is not refused by the interval guard', async () => {
     // The addon's Sync Now offers a "Sync anyway" button when the interval guard
     // skips a run. A chat command has no second click, so an explicitly
