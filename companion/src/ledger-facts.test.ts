@@ -138,12 +138,14 @@ describe('getLedgerFacts', () => {
       INSERT INTO activities VALUES ('x3','sav','TRANSFER_OUT',NULL,'2026-09-01','0','${P}FEE SIDE · x3',NULL,0);
       INSERT INTO activities VALUES ('x4','sav','TRANSFER_OUT',NULL,'2026-09-01','80','${P}LINKED BY FLAG · x4',NULL,0);
       INSERT INTO activities VALUES ('x5','sav','TRANSFER_OUT',NULL,'2026-09-01','80','${P}FEE COLUMN · x5',NULL,0);
+      INSERT INTO activities VALUES ('k3','sav','TRANSFER_OUT',NULL,'2026-09-01','70','${P}BAD METADATA · k3',NULL,0);
     `, [], `
       UPDATE activities SET metadata = '{"flow":{"is_external":false}}' WHERE id = 'x4';
       UPDATE activities SET fee = '1.5' WHERE id = 'x5';
+      UPDATE activities SET metadata = '{not json' WHERE id = 'k3';
       UPDATE activities SET metadata = '{"flow":{"is_external":true}}' WHERE id = 'k1';
     `);
-    expect(f.heldTransfers.map((h) => [h.id, h.direction])).toEqual([['k1', 'out'], ['k2', 'in']]);
+    expect(f.heldTransfers.map((h) => [h.id, h.direction])).toEqual([['k1', 'out'], ['k2', 'in'], ['k3', 'out']]);
   });
 
   it('finds a DEPOSIT inside a transfer group, and accepts a bare CREDIT there', () => {
