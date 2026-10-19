@@ -1512,9 +1512,14 @@ branches.
   skipped** with a status line, a failed request included (final-review F4,
   amends R8 for automatic runs only: they also stop at 16 of the 20, keeping
   4 for Syncs a person presses). The spec's table covers manual runs and the
-  daily limit only. A companion cron set to exactly hourly (or
-  `MIN_SYNC_INTERVAL_HOURS` under 1) lands seconds either side of the hour
-  and so skips about every other run; the default is every 6 hours.
+  daily limit only. A companion cron set to exactly hourly with
+  `MIN_SYNC_INTERVAL_HOURS=0` lands seconds either side of the hour and so
+  skips about every other run (any value above 0 already kept the core's
+  fixed one-hour wall, which did the same); the default is every 6 hours.
+- **Check-only still compares a typed, unvalued non-card account** (a loan,
+  say) that the after-save check now skips (cards only, final-review F5).
+  Badge-only and tagged; align with `=== 'CREDIT_CARD'` at the check-only
+  unvalued branch in sync-core.ts (one line).
 - **"Next sync at"** is when the request holding the window at the limit
   leaves it — the oldest one at exactly 20; later when Setup used the
   headroom above 20; for a scheduled run, when the count drops under 16.
