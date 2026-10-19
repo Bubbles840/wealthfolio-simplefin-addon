@@ -1,6 +1,6 @@
 import React from 'react';
 import { describe, it, expect, vi } from 'vitest';
-import { act, fireEvent, render, screen } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { buildTxStory } from '../../shared/tx-story';
 import type { PaybackCategory } from '../../shared/payback-app';
 import type { AppPaybackOutcome } from '../../shared/payback-app-file';
@@ -89,9 +89,11 @@ describe('PaybackAction — focus, loading and empty states (W11-C)', () => {
     render(<PaybackAction activityId="act-7" actions={actions()} />);
     fireEvent.click(screen.getByRole('button', { name: "It's a payback…" }));
     const select = await screen.findByRole('combobox', { name: 'Spending category' });
-    expect(select).toHaveFocus();
+    // Focus moves in an effect AFTER the render these queries see, so each check
+    // waits for it: asserted at once, it failed on CI's slower runner (2026-10-18).
+    await waitFor(() => expect(select).toHaveFocus());
     fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
-    expect(screen.getByRole('button', { name: "It's a payback…" })).toHaveFocus();
+    await waitFor(() => expect(screen.getByRole('button', { name: "It's a payback…" })).toHaveFocus());
   });
 
   it('focuses the action button again after a refusal', async () => {
@@ -99,7 +101,7 @@ describe('PaybackAction — focus, loading and empty states (W11-C)', () => {
     await pick();
     fireEvent.click(screen.getByRole('button', { name: 'File it' }));
     await screen.findByText(PAYBACK_NOT_IN_SPENDING);
-    expect(screen.getByRole('button', { name: /It's a payback…/ })).toHaveFocus();
+    await waitFor(() => expect(screen.getByRole('button', { name: /It's a payback…/ })).toHaveFocus());
   });
 
   it('leaves out the aria-label while "Loading categories…" shows (the name is then what it says)', async () => {
