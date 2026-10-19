@@ -199,3 +199,23 @@ describe('runSyncCore — in-transit rows outside the download settle like in-fe
     expect(log.entries().filter((e) => e.kind === 'transfer-type')).toHaveLength(1);
   });
 });
+
+describe('runSyncCore — each feed\'s proven-alive time is stored for the held-transfer finding (1.65 C)', () => {
+  beforeEach(() => {
+    VALUATION_POLL.delayMs = 1;
+    VALUATION_POLL.attempts = 1;
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(NOW);
+  });
+  afterEach(() => { vi.useRealTimers(); });
+
+  it('stores aliveThrough: the later of the balance date and the newest transaction', async () => {
+    const seed = seedOf([], {}, '2026-09-30T12:00:00Z');
+    seed.accountSet!.accounts[1].transactions = [tx('s-1', '2026-10-18T12:00:00Z', '5.00', 'INTEREST PAID')];
+    const fh = createFakeHost(seed);
+    await runSyncCore(fh.host, fh.store, {});
+    const balances = await fh.store.getAccountBalances() as Record<string, { date: number; aliveThrough?: number }>;
+    expect(balances['sfin-sav']).toMatchObject({ date: epoch('2026-09-30T12:00:00Z'), aliveThrough: epoch('2026-10-18T12:00:00Z') });
+    expect(balances['sfin-chk'].aliveThrough).toBe(epoch('2026-10-19T12:00:00Z'));
+  });
+});

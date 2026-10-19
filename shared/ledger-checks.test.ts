@@ -4,6 +4,13 @@ import { evaluateLedgerChecks, nextLedgerCheckSeen, type LedgerFacts } from './l
 const NOW = new Date('2026-09-20T13:00:00Z');
 const daysAgo = (n: number) => new Date(NOW.getTime() - n * 86_400_000).toISOString();
 
+/** Harbor Savings has published nothing since Sep 2, before an Aug 31 leg's Sep 5 pairing deadline. */
+const HELD_FEEDS = {
+  mapping: { 'sfin-chk': 'wf-chk', 'sfin-sav': 'wf-sav' },
+  balances: { 'sfin-chk': { aliveThrough: NOW.getTime() / 1000 }, 'sfin-sav': { aliveThrough: Date.parse('2026-09-02T12:00:00Z') / 1000 } },
+  names: { 'sfin-chk': 'Checking', 'sfin-sav': 'Harbor Savings' },
+};
+
 const clean = (): LedgerFacts => ({
   month: '2026-09',
   cardBalances: [],
@@ -140,14 +147,25 @@ describe('evaluateLedgerChecks', () => {
     expect(findings[0].message).toContain('DEPOSIT');
   });
 
-  it('mentions a long-held transfer once, not every day its counterpart stays missing', () => {
+  it('shows a transfer held past 14 days every day it stays held, saying why (1.65 C, R7)', () => {
     const f = clean();
-    f.heldTransfers = [{ id: 'h1', description: 'Payment to Discover', amount: 87.26, ageDays: 31 }];
-    expect(evaluateLedgerChecks(f, {}, NOW).findings).toHaveLength(1);
-    expect(evaluateLedgerChecks(f, { 'held-transfer:h1': daysAgo(5) }, NOW).findings).toEqual([]);
+    f.heldTransfers = [{
+      id: 'h1', description: 'WIRE TRANSFER TO ACME LLC', amount: 250, ageDays: 20,
+      wfAccountId: 'wf-chk', date: '2026-08-31', txId: 'w-old', direction: 'out',
+    }];
+    const { findings } = evaluateLedgerChecks(f, { 'held-transfer:h1': daysAgo(5) }, NOW, HELD_FEEDS);
+    expect(findings).toEqual([expect.objectContaining({
+      key: 'held-transfer:h1',
+      message: "WIRE TRANSFER TO ACME LLC ($250.00) has waited 20 days for its other half — Harbor Savings's feed is behind, so it stays on hold",
+      label: 'WIRE TRANSFER TO … $250.00 still in transit',
+    })]);
+    // Without the stored feeds (an older caller) it cannot tell why, and does not guess.
+    expect(evaluateLedgerChecks(f, {}, NOW).findings[0].message).toBe(
+      'WIRE TRANSFER TO ACME LLC ($250.00) has waited 20 days for its other half',
+    );
     // Young holds are the normal case and say nothing at all.
     f.heldTransfers[0].ageDays = 3;
-    expect(evaluateLedgerChecks(f, {}, NOW).keys).toEqual([]);
+    expect(evaluateLedgerChecks(f, {}, NOW, HELD_FEEDS).keys).toEqual([]);
   });
 
   it('counts rows Wealthfolio flagged for review in one line', () => {
