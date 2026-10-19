@@ -3,14 +3,15 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
-import { getLedgerFacts } from './ledger-facts.js';
+import { runAudit, companionAuditReaders } from './audit-facts.js';
+import { getHeldRows, getLedgerFacts } from './ledger-facts.js';
 
 const NOW = new Date(2026, 8, 20, 9, 0, 0); // 2026-09-20, local — the reader buckets by local month
 const made: string[] = [];
 afterEach(() => { for (const d of made.splice(0)) rmSync(d, { recursive: true, force: true }); });
 
 /** A ledger shaped like the one these checks were derived from. */
-function ledger(rows: string): string {
+function ledger(rows: string, after = ''): string {
   const dir = mkdtempSync(join(tmpdir(), 'sfin-facts-'));
   made.push(dir);
   const path = join(dir, 'wealthfolio.db');
@@ -34,6 +35,8 @@ function ledger(rows: string): string {
     ALTER TABLE accounts ADD COLUMN is_archived INTEGER DEFAULT 0;
     ALTER TABLE activities ADD COLUMN activity_type_override TEXT;
     ALTER TABLE activities ADD COLUMN currency TEXT;
+    ALTER TABLE activities ADD COLUMN fee TEXT;
+    ALTER TABLE activities ADD COLUMN metadata TEXT;
     ALTER TABLE activity_taxonomy_assignments ADD COLUMN taxonomy_id TEXT;
     ALTER TABLE activity_taxonomy_assignments ADD COLUMN source TEXT;
     ALTER TABLE activity_taxonomy_assignments ADD COLUMN id TEXT;
@@ -42,11 +45,12 @@ function ledger(rows: string): string {
     CREATE TABLE spending_activity_splits (id TEXT, activity_id TEXT, taxonomy_id TEXT, category_id TEXT, amount TEXT, sort_order INTEGER);
     CREATE TABLE app_settings (setting_key TEXT PRIMARY KEY, setting_value TEXT);
     INSERT INTO app_settings VALUES ('timezone', 'UTC'), ('spending.enabled', 'true'), ('spending.account_ids', '["cash","sav","card","card2"]');
+    ${after}
   `);
   db.close();
   return path;
 }
-const facts = (rows: string, bank: Array<[string, number | null]> = []) => getLedgerFacts(ledger(rows), NOW, new Map(bank))!;
+const facts = (rows: string, bank: Array<[string, number | null]> = [], after = '') => getLedgerFacts(ledger(rows, after), NOW, new Map(bank))!;
 
 describe('getLedgerFacts', () => {
   it('is null, not an exception, when the database is not there', () => {
@@ -113,13 +117,60 @@ describe('getLedgerFacts', () => {
     const f = facts(`
       INSERT INTO activities VALUES ('u1','cash','TRANSFER_IN',NULL,'2026-09-10','1300','Transfer from Capital One · t1',NULL,0);
       INSERT INTO activities VALUES ('u2','cash','TRANSFER_OUT',NULL,'2026-09-10','500','Payment to Citi · t2','grp',0);
-      INSERT INTO activities VALUES ('u3','sav','TRANSFER_OUT',NULL,'2026-09-18','600','↔️ In-transit transfer · PNC BANK · t3',NULL,0);
+      INSERT INTO activities VALUES ('u3','sav','TRANSFER_OUT',NULL,'2026-09-18','175','↔️ In-transit transfer · NORTHWIND BANK TRANSFER · t3',NULL,0);
       INSERT INTO activities VALUES ('u4','card','TRANSFER_IN',NULL,'2026-04-20','235.4','Starting balance · sf-card',NULL,0);
       INSERT INTO activities VALUES ('u5','cash','TRANSFER_OUT',NULL,'2026-06-26','700','Payment to Citibank · t5',NULL,0);
     `);
     // u5 is the hand-repaired June leg: real, known, and not to be re-litigated daily.
     expect(f.unlinkedTransfers).toEqual([{ id: 'u1', description: 'Transfer from Capital One', amount: 1300, direction: 'in', ageDays: 10 }]);
-    expect(f.heldTransfers).toEqual([{ id: 'u3', description: 'PNC BANK', amount: 600, ageDays: 2 }]);
+    // 1.65 C: with what "Not a transfer" and the reason need — the account, the bank day, the tx id, the direction.
+    expect(f.heldTransfers).toEqual([{
+      id: 'u3', description: 'NORTHWIND BANK TRANSFER', amount: 175, ageDays: 2, wfAccountId: 'sav', date: '2026-09-18', txId: 't3', direction: 'out',
+    }]);
+  });
+
+  it('lists only placeholders the stale sweep could settle, and reads the direction (1.65 C fix)', () => {
+    const P = '↔️ In-transit transfer · ';
+    const f = facts(`
+      INSERT INTO activities VALUES ('k1','sav','TRANSFER_OUT',NULL,'2026-09-01','80','${P}WIRE TO ACME LLC · k1',NULL,0);
+      INSERT INTO activities VALUES ('k2','sav','TRANSFER_IN',NULL,'2026-09-01','90','${P}WIRE FROM ACME LLC · k2',NULL,0);
+      INSERT INTO activities VALUES ('x1','sav','TRANSFER_OUT',NULL,'2026-09-01','80','${P}LINKED · x1','grp',0);
+      INSERT INTO activities VALUES ('x2','sav','TRANSFER_OUT',NULL,'2026-09-01','80','${P}PENDING · x2 · pending',NULL,0);
+      INSERT INTO activities VALUES ('x3','sav','TRANSFER_OUT',NULL,'2026-09-01','0','${P}FEE SIDE · x3',NULL,0);
+      INSERT INTO activities VALUES ('x4','sav','TRANSFER_OUT',NULL,'2026-09-01','80','${P}LINKED BY FLAG · x4',NULL,0);
+      INSERT INTO activities VALUES ('x5','sav','TRANSFER_OUT',NULL,'2026-09-01','80','${P}FEE COLUMN · x5',NULL,0);
+      INSERT INTO activities VALUES ('k3','sav','TRANSFER_OUT',NULL,'2026-09-01','70','${P}BAD METADATA · k3',NULL,0);
+    `, [], `
+      UPDATE activities SET metadata = '{"flow":{"is_external":false}}' WHERE id = 'x4';
+      UPDATE activities SET fee = '1.5' WHERE id = 'x5';
+      UPDATE activities SET metadata = '{not json' WHERE id = 'k3';
+      UPDATE activities SET metadata = '{"flow":{"is_external":true}}' WHERE id = 'k1';
+    `);
+    expect(f.heldTransfers.map((h) => [h.id, h.direction])).toEqual([['k1', 'out'], ['k2', 'in'], ['k3', 'out']]);
+  });
+
+  it('the app\'s audit lists exactly the rows the daily finding does, from one reader (1.65 C fix round 1)', async () => {
+    const P = '↔️ In-transit transfer · ';
+    const path = ledger(`
+      INSERT INTO activities VALUES ('k1','sav','TRANSFER_OUT',NULL,'2026-09-01','80','${P}WIRE TO ACME LLC · k1',NULL,0);
+      INSERT INTO activities VALUES ('x1','sav','TRANSFER_OUT',NULL,'2026-09-01','80','${P}LINKED · x1','grp',0);
+      INSERT INTO activities VALUES ('x2','sav','TRANSFER_OUT',NULL,'2026-09-01','80','${P}PENDING · x2 · pending',NULL,0);
+      INSERT INTO activities VALUES ('x3','sav','TRANSFER_OUT',NULL,'2026-09-01','0','${P}FEE SIDE · x3',NULL,0);
+      INSERT INTO activities VALUES ('x4','sav','TRANSFER_OUT',NULL,'2026-09-01','80','${P}EXTERNAL FALSE · x4',NULL,0);
+      INSERT INTO activities VALUES ('x5','sav','TRANSFER_OUT',NULL,'2026-09-01','80','${P}FEE COLUMN · x5',NULL,0);
+      INSERT INTO activities VALUES ('x6','sav','TRANSFER_OUT',NULL,'2026-09-15','80','${P}YOUNG · x6',NULL,0);
+    `, `
+      UPDATE activities SET metadata = '{"flow":{"is_external":false}}' WHERE id = 'x4';
+      UPDATE activities SET fee = '1.5' WHERE id = 'x5';
+    `);
+    const client = {
+      getAddonSecret: async (_a: string, k: string) => (k === 'account_mapping' ? JSON.stringify({ 'sfin-sav': 'sav' }) : null),
+      getLatestValuations: async () => [], getAccounts: async () => [], getSpendingInsightSpent: async () => 0,
+    };
+    const out = await runAudit(companionAuditReaders(client as never, path), NOW);
+    expect(out.held?.map((h) => h.activityId)).toEqual(['k1']);
+    expect(getHeldRows(path, NOW).map((h) => h.id)).toEqual(['k1', 'x6']);
+    expect(() => getHeldRows('/nope/missing.db', NOW)).toThrow();
   });
 
   it('finds a DEPOSIT inside a transfer group, and accepts a bare CREDIT there', () => {

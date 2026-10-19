@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { mapTransaction, mapTransactionWithSource, CARD_PAYMENT_KEYWORDS } from './mapper';
+import { mapTransaction, mapTransactionWithSource, CARD_PAYMENT_KEYWORDS, BANK_TRANSFER_KEYWORDS, GENERIC_TRANSFER_KEYWORDS, INSTITUTION_TRANSFER_KEYWORDS } from './mapper';
 import type { MappingRule } from './types';
 
 describe('mapTransaction', () => {
@@ -205,5 +205,29 @@ describe('mapTransactionWithSource subtype', () => {
       { pattern: 'venmo', matchType: 'contains', activityType: 'CREDIT', subtype: 'REIMBURSEMENT' },
     ];
     expect(mapTransaction('VENMO PAYMENT', 25, rules)).toBe('CREDIT');
+  });
+});
+
+describe('the four generic transfer phrases (1.65 B)', () => {
+  it('flags money out typed only by a generic phrase', () => {
+    for (const d of ['WIRE TRANSFER TO ACME LLC', 'ONLINE TRANSFER TO 0000', 'BANK TRANSFER REF 12', 'MEMBER TRANSFER TO SHARE 01']) {
+      expect(mapTransactionWithSource(d, -10, [], 'CASH')).toEqual({ type: 'TRANSFER_OUT', fromRule: false, genericTransferWording: true });
+    }
+  });
+
+  it('the generic and institution phrase sets split the bank set exactly, with no overlap', () => {
+    for (const d of ['online transfer', 'wire transfer', 'bank transfer', 'member transfer', 'pnc bank', 'capital one transfer']) {
+      expect(BANK_TRANSFER_KEYWORDS.test(d)).toBe(true);
+      expect([GENERIC_TRANSFER_KEYWORDS.test(d), INSTITUTION_TRANSFER_KEYWORDS.test(d)].filter(Boolean)).toHaveLength(1);
+    }
+  });
+
+  it('does not flag money in, an institution phrase, a card-payment phrase or a rule', () => {
+    expect(mapTransactionWithSource('WIRE TRANSFER FROM ACME LLC', 10, [], 'CASH')).toEqual({ type: 'TRANSFER_IN', fromRule: false });
+    expect(mapTransactionWithSource('PNC BANK ONLINE TRANSFER', -10, [], 'CASH')).toEqual({ type: 'TRANSFER_OUT', fromRule: false });
+    expect(mapTransactionWithSource('CAPITAL ONE TRANSFER WIRE TRANSFER', -10, [], 'CASH')).toEqual({ type: 'TRANSFER_OUT', fromRule: false });
+    expect(mapTransactionWithSource('ONLINE TRANSFER CREDIT CARD PAYMENT', -10, [], 'CASH')).toEqual({ type: 'TRANSFER_OUT', fromRule: false });
+    const rules = [{ pattern: 'WIRE TRANSFER', matchType: 'contains' as const, activityType: 'TRANSFER_OUT' as const }];
+    expect(mapTransactionWithSource('WIRE TRANSFER TO ACME LLC', -10, rules, 'CASH')).toEqual({ type: 'TRANSFER_OUT', fromRule: true });
   });
 });

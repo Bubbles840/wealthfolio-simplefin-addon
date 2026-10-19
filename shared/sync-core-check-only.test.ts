@@ -56,6 +56,16 @@ describe('checkBalancesOnly — a Sync inside the gap re-checks against the last
     expect(s['sfin-citi']).toMatchObject({ balance: -161.2, measured: true, drift: null });
   });
 
+  it('keeps each account\'s aliveThrough through a check-only run (1.65 C)', async () => {
+    const seed = seedOf();
+    const fh = createFakeHost(seed);
+    await runSyncCore(fh.host, fh.store, { manual: true });
+    const before = (await snaps(fh))['sfin-spend'] as { aliveThrough?: number };
+    expect(typeof before.aliveThrough).toBe('number');
+    await checkBalancesOnly(fh.host, fh.store, { mapping: seed.mapping!, newestRequestAt: NOW.getTime() });
+    expect(((await snaps(fh))['sfin-spend'] as { aliveThrough?: number }).aliveThrough).toBe(before.aliveThrough);
+  });
+
   it('reports a cash account off by its difference from the valuation', async () => {
     const seed = seedOf();
     const fh = createFakeHost(seed);

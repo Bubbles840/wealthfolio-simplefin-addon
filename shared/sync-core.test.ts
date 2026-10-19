@@ -280,6 +280,8 @@ describe('runSyncCore', () => {
     }] },
     mapping: { 'sfin-1': 'wf-a' } as Record<string, string>,
     accountTypes: { 'wf-a': 'CASH' } as Record<string, string>,
+    // 1.65 B: generic wording alone no longer makes money out a transfer; the rule keeps this leg transfer-typed.
+    mappingRules: [{ pattern: 'Online Transfer to Savings', matchType: 'contains' as const, activityType: 'TRANSFER_OUT' as const }],
   });
 
   it('imports a solo transfer-typed leg as a spending-neutral placeholder, not a bare transfer', async () => {
@@ -450,6 +452,8 @@ describe('runSyncCore', () => {
       }] },
       mapping: { 'sfin-1': 'wf-a' },
       accountTypes: { 'wf-a': 'CASH' },
+      // 1.65 B: generic wording alone no longer makes money out a transfer; the rule keeps this leg transfer-typed.
+      mappingRules: [{ pattern: 'Online Transfer to Savings', matchType: 'contains' as const, activityType: 'TRANSFER_OUT' as const }],
     });
     const result = await runSyncCore(host, store, { force: true });
     expect(result.imported).toBe(1);
@@ -2253,8 +2257,8 @@ describe('runSyncCore with ONE SimpleFin tx id in two accounts', () => {
 
       // Both accounts measured as in sync, and neither was alerted about.
       expect(await store.getAccountBalances()).toEqual({
-        'sfin-sav': { balance: 610.65, currency: 'USD', date: expect.any(Number), drift: null, driftSince: null, measured: true, fetchedAt: expect.any(Number) },
-        'sfin-spend': { balance: 3475.23, currency: 'USD', date: expect.any(Number), drift: null, driftSince: null, measured: true, fetchedAt: expect.any(Number) },
+        'sfin-sav': { balance: 610.65, currency: 'USD', date: expect.any(Number), drift: null, driftSince: null, measured: true, fetchedAt: expect.any(Number), aliveThrough: expect.any(Number) },
+        'sfin-spend': { balance: 3475.23, currency: 'USD', date: expect.any(Number), drift: null, driftSince: null, measured: true, fetchedAt: expect.any(Number), aliveThrough: expect.any(Number) },
       });
       expect(result.balanceDriftAlerts).toEqual([]);
     });
@@ -2352,8 +2356,8 @@ describe('runSyncCore with ONE SimpleFin tx id in two accounts', () => {
     // comparable here, and "verified in sync" is now a different claim from
     // "nothing to report".
     expect(await store.getAccountBalances()).toEqual({
-      'sfin-sav': { balance: 610.65, currency: 'USD', date: expect.any(Number), drift: null, driftSince: null, measured: true, fetchedAt: expect.any(Number) },
-      'sfin-spend': { balance: 3475.23, currency: 'USD', date: expect.any(Number), drift: null, driftSince: null, measured: true, fetchedAt: expect.any(Number) },
+      'sfin-sav': { balance: 610.65, currency: 'USD', date: expect.any(Number), drift: null, driftSince: null, measured: true, fetchedAt: expect.any(Number), aliveThrough: expect.any(Number) },
+      'sfin-spend': { balance: 3475.23, currency: 'USD', date: expect.any(Number), drift: null, driftSince: null, measured: true, fetchedAt: expect.any(Number), aliveThrough: expect.any(Number) },
     });
     expect(result.balanceDriftAlerts).toEqual([]);
   });
@@ -3355,7 +3359,8 @@ describe('legacy fee-side placeholders (pre-v1.49 CREDIT amount 0 / fee X)', () 
       'balance-date': Math.floor(Date.now() / 1000),
       transactions: [],
     }] },
-    mapping: { 'sfin-1': 'wf-a' },
+    // 'sfin-2' is mapped but absent from the download: a feed with no life at all, so it holds the aged placeholder(s) below (1.65 A would otherwise settle them).
+    mapping: { 'sfin-1': 'wf-a', 'sfin-2': 'wf-b' },
     accountTypes: { 'wf-a': 'CASH' },
     existing: new Map([['wf-a', rows]]),
   });
@@ -3412,12 +3417,14 @@ describe('legacy fee-side placeholders (pre-v1.49 CREDIT amount 0 / fee X)', () 
 
   it('a placeholder still in the feed is rewritten once, not twice', async () => {
     const posted = Math.floor(Date.now() / 1000) - 3600;
-    // Keyword-typed as a transfer leg (the mapper's wording), so the feed side
+    // Rule-typed as a transfer leg (a mapping rule), so the feed side
     // is a young placeholder too and the only difference is the legacy shape.
     const s = seed([{ ...agedPlaceholder, id: 'ph-live', comment: '↔️ In-transit transfer · Online Transfer to Savings · tx-live', date: new Date(posted * 1000).toISOString().slice(0, 10) }]);
     s.accountSet!.accounts[0].transactions = [{
       id: 'tx-live', posted, amount: '-429.71', description: 'Online Transfer to Savings',
     }];
+    // 1.65 B: generic wording alone no longer makes money out a transfer; the rule keeps this leg transfer-typed.
+    s.mappingRules = [{ pattern: 'Online Transfer to Savings', matchType: 'contains' as const, activityType: 'TRANSFER_OUT' as const }];
     const { host, store, saved } = createFakeHost(s);
     await runSyncCore(host, store, { force: true });
     const updates = saved.flatMap((r) => r.updates ?? []).filter((u) => u.id === 'ph-live');
@@ -3799,7 +3806,8 @@ describe("the sync's own unlinked transfer rows are marked external (v1.54)", ()
     accountSet: { errors: [], accounts: [{
       id: 'sfin-1', name: 'Card', currency: 'USD', balance: '0', 'balance-date': 1, transactions: [],
     }] },
-    mapping: { 'sfin-1': 'wf-a' },
+    // 'sfin-2' is mapped but absent from the download: a feed with no life at all, so it holds the aged placeholder(s) below (1.65 A would otherwise settle them).
+    mapping: { 'sfin-1': 'wf-a', 'sfin-2': 'wf-b' },
     accountTypes: { 'wf-a': accountType },
     existing: new Map([['wf-a', rows]]),
   });
@@ -3849,6 +3857,8 @@ describe("the sync's own unlinked transfer rows are marked external (v1.54)", ()
     s.accountSet!.accounts[0].transactions = [{
       id: 'tx-live', posted, amount: '-429.71', description: 'Online Transfer to Savings',
     }];
+    // 1.65 B: generic wording alone no longer makes money out a transfer; the rule keeps this leg transfer-typed.
+    s.mappingRules = [{ pattern: 'Online Transfer to Savings', matchType: 'contains' as const, activityType: 'TRANSFER_OUT' as const }];
     const { host, store, saved } = createFakeHost(s);
     await runSyncCore(host, store, { force: true });
     const create = saved.flatMap((r) => r.creates ?? []).find((c) => c.comment.includes('tx-live'))!;

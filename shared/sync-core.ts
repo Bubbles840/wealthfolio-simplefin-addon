@@ -1,6 +1,6 @@
-import { bankFirstTransferOut } from './bank-first-payment.js';
+import { bankFirstTransferOut, genericTransferNeedsCorroboration } from './bank-first-payment.js';
 import { learnedNameKeys, learnedTransferType } from './transfer-names.js';
-import { mapTransactionWithSource } from './mapper.js';
+import { mapTransactionWithSource, type MappedType } from './mapper.js';
 import { REIMBURSEMENT_SUBTYPE } from './cash-flow-bucket.js';
 import { accountTxKey, detectTransferPairs, TRANSFER_MATCH_WINDOW_SECONDS } from './transfers.js';
 import type { TransferCandidate } from './transfers.js';
@@ -658,6 +658,11 @@ interface AccountBalanceSnapshot {
    * that raise banners, plugs or report findings must ignore a tagged drift.
    */
   checkedAfterSave?: true;
+  /** 1.65 C: the epoch this account's feed has proven itself alive through — the
+   *  later of `date` and its newest datable transaction, exactly what the
+   *  in-transit hold reads; lets the companion name the feed that holds a
+   *  transfer open without a download. Absent = an older writer stored it. */
+  aliveThrough?: number;
   /**
    * Epoch ms when the download that produced `balance`/`date` was sent. A
    * check-only pass (C3) compares these figures against Wealthfolio's current
@@ -1423,12 +1428,12 @@ export function expiredTransferLegType(accountType: string, signedAmount: number
  * row; the demotion it prevents costs phantom spending in every report and a
  * manual repair.
  */
-function expiryHoldAccount(
+export function expiryHoldAccount(
   legSfinAccountId: string,
   legPostedEpoch: number,
-  mappedSfinIds: string[],
-  feedAliveEpoch: Map<string, number>,
-  dead: { nowSec: number; legDescription: string; nameWords: Map<string, string[]> },
+  mappedSfinIds: readonly string[],
+  feedAliveEpoch: ReadonlyMap<string, number>,
+  dead: { nowSec: number; legDescription: string; nameWords: ReadonlyMap<string, readonly string[]> },
 ): string | null {
   const caughtUpBy = legPostedEpoch + TRANSFER_MATCH_WINDOW_SECONDS;
   const description = dead.legDescription.toLowerCase();
@@ -1449,6 +1454,69 @@ function expiryHoldAccount(
     return id;
   }
   return null;
+}
+
+export interface StaleTransitContext {
+  wfAccountId: string;
+  sfinAccountId: string;
+  accountType: string;
+  /** Every transaction id in this account's download (frozen keys included):
+   *  those rows take the in-feed path. */
+  feedTxIds: ReadonlySet<string>;
+  nowSec: number;
+  mappedSfinIds: readonly string[];
+  feedAliveEpoch: ReadonlyMap<string, number>;
+  nameWords: ReadonlyMap<string, readonly string[]>;
+  /** Linked, skip-listed or payback-flagged rows: not ours to settle. */
+  leaveAlone(row: ExistingRow & { sourceGroupId?: string | null; flowExternal?: boolean | null }): boolean;
+  notTransfer(txId: string): boolean;
+}
+
+/**
+ * Stored in-transit placeholders OUTSIDE this run's download get exactly the
+ * in-feed decision (issue #13). The 10-day give-up used to run only on rows in
+ * the download; an incremental sync re-downloads from the last sync minus
+ * SYNC_LOOKBACK_OVERLAP_MS (14 days), so a leg not re-evaluated between day 10
+ * and day 14 kept its placeholder shape forever. Same timeout, same
+ * expiryHoldAccount (an absent mapped account holds), same result: the prefix
+ * goes, the row is flagged Needs review (R1), and the companion's next pass
+ * takes the "Sync bookkeeping" filing back out (R2). A "not a transfer" row
+ * settles to ordinary at once with no hold and no flag (R3, as in the feed).
+ * Linked, pending, skip-listed and payback-flagged rows, and rows Wealthfolio
+ * linked in place (flow.is_external false), are left alone.
+ */
+export function planStaleInTransit(
+  rows: ReadonlyArray<ExistingRow & { sourceGroupId?: string | null; flowExternal?: boolean | null }>,
+  ctx: StaleTransitContext,
+): { settle: FeedTx[]; held: Array<{ txId: string; heldBy: string }> } {
+  const settle: FeedTx[] = [];
+  const held: Array<{ txId: string; heldBy: string }> = [];
+  // planReconciliation keys stored rows by tx id and the LAST copy wins, so
+  // only that copy can be settled (one update, not two).
+  const lastByTxId = new Map(rows.map((r) => [r.txId, r]));
+  for (const row of rows) {
+    if (lastByTxId.get(row.txId) !== row) continue;
+    if (!(row.comment ?? '').startsWith(IN_TRANSIT_COMMENT_PREFIX) || row.pending) continue;
+    // A pre-v1.49 fee-side placeholder (amount 0, fee X) belongs to the legacy
+    // rewrite alone: settling it here would book $0 and lose the outflow.
+    if (row.absCents === 0 || (row.feeCents ?? 0) > 0) continue;
+    if (ctx.feedTxIds.has(row.txId)) continue;
+    if (row.sourceGroupId || row.flowExternal === false || ctx.leaveAlone(row)) continue;
+    const signed = OUTFLOW_TYPES.has(row.type) ? -row.absCents : row.absCents;
+    const base: FeedTx = {
+      txId: row.txId, wfAccountId: ctx.wfAccountId, absCents: row.absCents,
+      type: expiredTransferLegType(ctx.accountType, signed), date: row.date, pending: false,
+    };
+    if (ctx.notTransfer(row.txId)) { settle.push(base); continue; }
+    const posted = Date.parse(bankDayInstant(row.date)) / 1000;
+    if (!(ctx.nowSec - posted > IN_TRANSIT_TIMEOUT_SECONDS)) continue;
+    const heldBy = expiryHoldAccount(ctx.sfinAccountId, posted, ctx.mappedSfinIds, ctx.feedAliveEpoch, {
+      nowSec: ctx.nowSec, legDescription: descriptionFromComment(row.comment), nameWords: ctx.nameWords,
+    });
+    if (heldBy !== null) held.push({ txId: row.txId, heldBy });
+    else settle.push({ ...base, needsReview: true });
+  }
+  return { settle, held };
 }
 
 /** A feed silent longer than this is treated as disconnected rather than
@@ -2393,10 +2461,19 @@ async function runSyncPass(
       const flagged = hasTxOverride(overrides, key, 'asReimbursement');
       const payback = flagged && amount > 0 && (!acctType || acctType === 'CASH');
       if (flagged && !payback) yieldedPaybackKeys.add(key);
-      const builtIn = mapTransactionWithSource(
+      const worded = mapTransactionWithSource(
         tx.description, amount, rules, wfTypes.get(wfAccountId), wfAccountId,
         txEpoch(tx) !== null ? new Date(txEpoch(tx)! * 1000).toISOString().split('T')[0] : undefined,
       );
+      // Issue #13: "WIRE TRANSFER TO ACME LLC" is a wire to a third party, but the
+      // generic phrase typed it a transfer and it waited forever for an other half.
+      // Money out of a cash account worded only generically is an ordinary
+      // WITHDRAWAL unless its text names another connected account (checked right
+      // here; learned names promote the row further down). A real own-account transfer
+      // still links: pairing by amount joins it to its other half within 5 days.
+      const builtIn: MappedType = genericTransferNeedsCorroboration(tx.description, amount, acctType, worded, otherAccountWords)
+        ? { type: 'WITHDRAWAL', fromRule: false }
+        : worded;
       // Live, 2026-10-17: a $42.40 Citi autopay posted at PNC before Citi's half
       // existed, read as plain spending, and asked for a category. A bank-account
       // payment whose raw text names another connected account is the paying half
@@ -3264,7 +3341,24 @@ async function runSyncPass(
         const row = storedByTxId.get(t.txId);
         return keepLinkedLegAsStored(t, row, !!row && isLinkedRow(row));
       });
-    const plan = planReconciliation(planFeed, planExisting.filter((r) => !unlinkingIds.has(r.wfId)));
+    // ── 1.65 A: in-transit rows outside this download ──
+    const staleTransit = planStaleInTransit(planExisting.filter((r) => !unlinkingIds.has(r.wfId)), {
+      wfAccountId, sfinAccountId: sfAccount.id, accountType: wfTypes.get(wfAccountId) ?? '',
+      // Every feed mapped to this account: a reissued card has two, both in the download.
+      feedTxIds: new Set([...preparedByAccount].filter(([id]) => mapping[id] === wfAccountId).flatMap(([, ps]) => ps.map((p) => p.tx.id))), nowSec, mappedSfinIds, feedAliveEpoch, nameWords,
+      leaveAlone: (r) => isLinkedRow(r) || frozenKeys.has(accountTxKey(sfAccount.id, r.txId)) || skippedTxKeys.has(accountTxKey(sfAccount.id, r.txId))
+        || hasTxOverride(overrides, accountTxKey(sfAccount.id, r.txId), 'asReimbursement'),
+      notTransfer: (txId) => notTransferKey(accountTxKey(sfAccount.id, txId)),
+    });
+    for (const h of staleTransit.held) {
+      console.info(
+        `[simplefin-sync] in-transit hold: stored leg ${h.txId} (account ${sfAccount.id}) is past the timeout and outside this download, but account ${h.heldBy} has published nothing past its pairing window — keeping the placeholder`,
+      );
+    }
+    for (const t of staleTransit.settle) {
+      descByKey.set(accountTxKey(sfAccount.id, t.txId), descriptionFromComment(storedByTxId.get(t.txId)?.comment));
+    }
+    const plan = planReconciliation([...planFeed, ...staleTransit.settle], planExisting.filter((r) => !unlinkingIds.has(r.wfId)));
     // A held card placeholder keeps the shape it is stored in when anything
     // else about it changes (pending to posted, amount, date): the two writers
     // would otherwise flip it per change, and a 3.8/3.9-written WITHDRAWAL that
@@ -3511,6 +3605,7 @@ async function runSyncPass(
       balance: Number.isFinite(sfBalance) ? sfBalance : null,
       currency: sfAccount.currency,
       date: sfAccount['balance-date'],
+      aliveThrough: feedAliveEpoch.get(sfAccount.id) ?? sfAccount['balance-date'],
       drift,
       // `measuredDrift` is the run's only trustworthy figure — non-null exactly when
       // the account was comparable — so it, not `drift`, decides this. `drift`

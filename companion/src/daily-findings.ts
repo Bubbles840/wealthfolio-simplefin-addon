@@ -13,6 +13,7 @@
  * tested without a running Wealthfolio.
  */
 import { evaluateSelfCheck, type SelfCheckFinding } from '../../shared/self-check.js';
+import { hasTxOverride, loadSyncOverrides } from '../../shared/sync-overrides.js';
 import { evaluateLedgerChecks, nextLedgerCheckSeen, type LedgerCheckSeen, type LedgerFacts } from '../../shared/ledger-checks.js';
 import { FINDING_SNOOZES_SECRET_KEY, parseSnoozes, partitionSnoozed, activeSnoozes } from '../../shared/findings.js';
 import { ADDON_VERSION_SECRET_KEY } from '../../shared/version.js';
@@ -46,6 +47,8 @@ interface StoredAccountBalance {
   driftSince?: string | null;
   /** Badge-only verdict from the after-save card check (R15): never a finding. */
   checkedAfterSave?: boolean;
+  /** 1.65 C: epoch the feed is proven alive through; absent from older writers. */
+  aliveThrough?: number;
 }
 
 function parseJson<T>(raw: string | null | undefined): T | null {
@@ -127,7 +130,13 @@ export async function gatherFindings(
       // sync's own drift measure stays its voice.
       for (const c of facts.cardBalances) if (c.wfId && !c.inFlight && c.bank !== null) cardWfIds.add(c.wfId);
       const seen = await read<LedgerCheckSeen>(LEDGER_CHECK_SEEN_SECRET_KEY) ?? {};
-      const judged = evaluateLedgerChecks(facts, seen, now);
+      // Already-marked "not a transfer" transactions; an unreadable document
+      // means none (the button stays, and tapping it says why).
+      const overrides = await loadSyncOverrides((k) => deps.getSecret(k)).catch(() => null);
+      const marked = new Set(
+        overrides ? Object.keys(overrides.overrides.tx).filter((k) => hasTxOverride(overrides.overrides, k, 'notTransfer')) : [],
+      );
+      const judged = evaluateLedgerChecks(facts, seen, now, { mapping, balances, names: accountNames }, marked);
       ledgerFindings = judged.findings;
       const next = nextLedgerCheckSeen(seen, judged.keys, now);
       // Written only when it changed: most mornings nothing did, and a secret

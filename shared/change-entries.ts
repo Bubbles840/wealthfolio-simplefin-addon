@@ -314,7 +314,7 @@ export function transferTypeChange(f: TransferTypeFacts): ChangeDraft {
       : f.undone
         ? `Counted ${what(f.description)} as ${f.amountCents < 0 ? 'spending' : 'money in'} — you said it isn't a transfer`
         : `Stopped waiting for the other half of ${what(f.description)} — now counted as ${f.amountCents < 0 ? 'spending' : 'money in'}`,
-    why: f.held ? 'Looks like a transfer; waiting for the other half' : f.undone ? 'You undid the transfer' : 'No other half arrived within 10 days',
+    why: f.held ? 'Looks like a transfer; waiting for the other half' : f.undone ? "You said it isn't a transfer" : 'No other half arrived within 10 days',
     before: { activityType: f.previousType, inTransit: !f.held },
     after: { activityType: f.activityType, inTransit: f.held },
     undoable: f.held,

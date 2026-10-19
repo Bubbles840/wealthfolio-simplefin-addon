@@ -7,7 +7,7 @@ import { Button, SectionLabel, Why } from '../components/ui';
 import { SetupChecklist } from '../components/SetupChecklist';
 import { UncategorizedList, useDismissals } from '../components/UncategorizedList';
 import { WhyCard } from '../components/WhyCard';
-import { healthIssueCount } from '../components/AuditViews';
+import { checksToLookAt } from '../components/AuditViews';
 import type { AuditSnapshotRead } from '../../shared/audit-snapshot';
 import { snapshotTripwire, tripwireLine } from '../../shared/spending-tripwire';
 import { ForecastDetail, ForecastTile } from '../components/ForecastViews';
@@ -129,7 +129,7 @@ export function HomeTab({
   onDismissChecklist, onNavigate, poolStatus, onOpenPool, renderTxStory, auditSnapshot, cashForecast,
   payback, paidBack, paybackNote,
 }: Props) {
-  const checksToLook = healthIssueCount(auditSnapshot);
+  const checksToLook = checksToLookAt(auditSnapshot);
   // 1.62 (W5): the last sync found the report and Wealthfolio's Spending page
   // more than a cent apart this month. Nothing when they agree, or when a
   // figure could not be read.

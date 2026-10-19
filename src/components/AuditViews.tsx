@@ -9,6 +9,7 @@ import {
   linkablePair, linkablePairs, linkAllButton, LINK_BUTTON, LINK_UNREACHABLE, type LinkPair, type LinkRun,
 } from '../../shared/audit-link';
 import { auditSnapshotStatus, AUDIT_CORRUPT, type AuditSnapshotRead } from '../../shared/audit-snapshot';
+import { heldTransferMessage, type HeldTransfer } from '../../shared/held-transfers';
 import { Button } from './ui';
 
 /**
@@ -236,13 +237,85 @@ export function HealthView({ report, fix, at }: { report: HealthReport; fix?: He
   );
 }
 
+export const HELD_TITLE = 'Still in transit';
+export const NOT_TRANSFER_BUTTON = 'Not a transfer';
+
+/** What "Not a transfer" answers: `ok` only when the mark was saved. */
+export interface NotTransferResult { ok: boolean; message: string }
+
+/** Transfers held 14+ days (1.65 C), each with why and, when it can be written, "Not a transfer".
+ *  `loadMarked`: the bank-transaction keys already marked, read when the card opens (it unmounts
+ *  when collapsed, and the snapshot can lag); null/failed changes nothing. */
+export function HeldTransfersView({ held, notTransfer, loadMarked }: {
+  held: readonly HeldTransfer[];
+  notTransfer?: (h: HeldTransfer) => Promise<NotTransferResult>;
+  loadMarked?: () => Promise<ReadonlySet<string> | null>;
+}) {
+  const [busy, setBusy] = useState(false);
+  const [done, setDone] = useState<ReadonlySet<string>>(new Set());
+  const [markedKeys, setMarkedKeys] = useState<ReadonlySet<string>>(new Set());
+  const [status, setStatus] = useState('');
+  const running = useRef(false);
+  useEffect(() => {
+    let live = true;
+    void (async () => {
+      try {
+        const keys = await loadMarked?.();
+        if (live && keys) setMarkedKeys(keys);
+      } catch { /* unchanged */ }
+    })();
+    return () => { live = false; };
+  }, [loadMarked]);
+  const run = async (h: HeldTransfer) => {
+    if (!notTransfer || running.current) return;
+    running.current = true;
+    setBusy(true);
+    try {
+      const res = await notTransfer(h);
+      setStatus(res.message);
+      if (res.ok) setDone((d) => new Set(d).add(h.activityId));
+    } catch {
+      setStatus('');
+    } finally {
+      running.current = false;
+      setBusy(false);
+    }
+  };
+  return (
+    <div className="sfin-audit-body sfin-audit-held">
+      <div className="sfin-audit-head">{HELD_TITLE}</div>
+      <ul className="sfin-audit-issues">
+        {held.map((h) => {
+          const marked = h.marked === true || (h.txKey !== null && markedKeys.has(h.txKey));
+          const shown = marked ? { ...h, marked: true as const } : h;
+          return (
+            <li key={h.activityId} className="sfin-audit-issue">
+              <div className="sfin-subtle" id={`sfin-held-${h.activityId}`}>{heldTransferMessage(shown)}</div>
+              {notTransfer && h.txKey && !marked && !done.has(h.activityId) && (
+                <div className="sfin-audit-fix">
+                  <Button variant="ghost" disabled={busy} aria-busy={busy} aria-describedby={`sfin-held-${h.activityId}`} onClick={() => void run(h)}>{NOT_TRANSFER_BUTTON}</Button>
+                </div>
+              )}
+            </li>
+          );
+        })}
+      </ul>
+      {/* Mounted from the first render, so what lands in it is announced. */}
+      {notTransfer && <div role="status" className="sfin-subtle">{status}</div>}
+    </div>
+  );
+}
+
 /** Settings → Checks: what Health flags, and where the checks came from.
  *  R2: `link` adds Link; `onFixed` reads the snapshot again after a fix. */
-export function ChecksCard({ link, onFixed, ...source }: AuditSource & Partial<HealthFix>) {
+export function ChecksCard({ link, onFixed, notTransfer, loadMarked, ...source }: AuditSource & Partial<HealthFix> & { notTransfer?: (h: HeldTransfer) => Promise<NotTransferResult>; loadMarked?: () => Promise<ReadonlySet<string> | null> }) {
   return (
     <div className="sfin-audit-checks">
       <AuditBoundary read={source.read}>
         {source.read.kind === 'ok' && <HealthView report={source.read.snapshot.health} fix={link ? { link, onFixed } : undefined} at={source.read.snapshot.at} />}
+        {source.read.kind === 'ok' && source.read.snapshot.held && source.read.snapshot.held.length > 0 && (
+          <HeldTransfersView held={source.read.snapshot.held} notTransfer={notTransfer} loadMarked={loadMarked} />
+        )}
         <AuditStatusLine {...source} />
       </AuditBoundary>
     </div>
@@ -253,13 +326,16 @@ export function ChecksCard({ link, onFixed, ...source }: AuditSource & Partial<H
 export function checksSummary(read: AuditSnapshotRead, companionVersion: string | null): string {
   if (read.kind === 'corrupt') return "Couldn't read";
   if (read.kind === 'absent') return companionVersion ? 'Arrive with the next sync' : 'Need the companion';
-  const n = healthCount(read.snapshot.health);
-  return n === null ? 'Health not checked' : n === 0 ? 'Nothing found' : `${n} to look at`;
+  if (healthCount(read.snapshot.health) === null && unmarkedHeld(read.snapshot) === 0) return 'Health not checked';
+  const total = checksToLookAt(read);
+  return total === 0 ? 'Nothing found' : `${total} to look at`;
 }
 
-/** How many things Health flags, for Home's Accounts tile; 0 when unknown. */
-export function healthIssueCount(read: AuditSnapshotRead | null | undefined): number {
-  return read?.kind === 'ok' ? healthCount(read.snapshot.health) ?? 0 : 0;
+const unmarkedHeld = (snapshot: { held?: Array<{ marked?: boolean }> }): number => (snapshot.held ?? []).filter((h) => !h.marked).length;
+
+/** Everything the Checks card says to look at: Health issues plus held transfers not yet marked. Home counts with this too. */
+export function checksToLookAt(read: AuditSnapshotRead | null | undefined): number {
+  return read?.kind === 'ok' ? (healthCount(read.snapshot.health) ?? 0) + unmarkedHeld(read.snapshot) : 0;
 }
 
 /** The Budget tab's "Why is this different from Wealthfolio?", opening in place. */

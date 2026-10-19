@@ -1565,6 +1565,72 @@ branches.
   so the check-only pass has nothing fresh to compare until the first
   download.
 
+## 21. In-transit rows always settle; generic wording needs corroboration (2026-10-19, plan `2026-10-19-in-transit-expiry-and-generic-wording.md`)
+
+- **The expiry has no Undo.** A settled placeholder logs the in-feed expiry's
+  own entry ("Stopped waiting for the other half…"), which is not undoable:
+  there is no "it is a transfer after all" override. The entry written when
+  the row was first held keeps its Undo (`notTransfer`).
+- **An expired row keeps `flow.is_external: true`**, in-feed and out alike:
+  an update that omits metadata leaves it. Nothing reads it on a
+  non-transfer row; if one ever does, clear it in the expiry write (both
+  paths at once).
+- **A placeholder older than its account's newest 500 rows is reached by
+  neither writer**: both read a 500-row recent page (R3). The held finding
+  reads the whole database, so such a row is listed, and "the next sync
+  settles it" (or, once marked, "marked not a transfer") stays untrue until
+  a Deep scan reaches it — never, past 90 days. New placeholders settle long
+  before they leave the page; only old stuck rows are affected.
+- **The first 1.65 sync retypes a young generic-wording placeholder** to a
+  withdrawal and logs it as "No other half arrived within 10 days": a
+  one-time, wrongly worded entry.
+- **The finding's reason reads account names without the institution** (the
+  sync also uses the org name), so under the 21-day dead-feed rule a leg
+  that names only the institution can read "the next sync settles it" while
+  the sync still holds it.
+- **A row the sync leaves alone for a reason only the secrets know** (skip
+  list, a frozen key, `asReimbursement`) is still listed as held.
+- **An account whose sync step fails stores no `aliveThrough`** that run, so
+  the finding can name a live feed as behind until the next run (it errs
+  toward holding).
+- **The app's list is the companion's last snapshot.** A "Not a transfer"
+  tapped there shows as marked at once (the view reads the overrides), but
+  the collapsed card's count and the daily report count it until the next
+  sync settles it.
+- **Each writer's "Not a transfer" honours its own lock only** (the app the
+  add-on's write lock, Telegram the companion's fix lock): a tap moments
+  before the OTHER writer's sync links the pair can still be undone by the
+  next sync's unlink. On a host that reports links but for an account
+  outside Spending, a stale `linked_groups` entry makes the app refuse
+  ("That one has changed…") — the same rule Link uses; Telegram still
+  works.
+- **`held` is not trimmed** in the audit snapshot (personal scale). A very
+  long list would stop the snapshot publishing.
+- **The override's label names the SimpleFin account**; Undo's names the
+  Wealthfolio account first, so Settings → overrides can show both for one
+  account.
+- **A first-time transfer between own accounts worded only generically can
+  raise a large-spend alert** (R4): it is a withdrawal until its other half
+  pairs on a later run; before 1.65 it was a placeholder, which never
+  alerts. Learned names shrink this; skipping the alert for rows B demoted
+  is the cheap fix if it bites.
+- **A run whose account list fails** (unknown account types) leaves a young
+  generic-wording payment out held as before; the next run demotes it again,
+  logging "Held…" then "Stopped waiting…" (shared with bank-first and learned
+  typing).
+- **A permanently held row logs its hold on every sync**; one line per
+  account would be quieter.
+- **Untested guards**: the add-on's `isLinkedRow` exclusion from the stale
+  sweep and the sweep's frozen-key leave-alone are correct on reading but
+  have no test.
+- **A 1.64 writer beside a 1.65 one** flips every young generic payment out
+  between a placeholder and a withdrawal on each writer's sync (the relink
+  re-creates it under a new id). The CHANGELOG says to update both together.
+- **Two feeds on one account**: an out-of-window row's `notTransfer`,
+  skip-list and payback keys are looked up under whichever feed's pass runs
+  first, so a "Not a transfer" filed under the other feed's key can settle
+  the row with Needs review instead of as an ordinary row (harmless).
+
 ## Reference: name mismatches between the database, the REST API, and the SDK
 
 Every one of these cost a diagnostic cycle against the live instance on

@@ -19,6 +19,7 @@
 import type { BalanceExplanation, BalanceReport } from './audit-balance.js';
 import { HEADLINE_REASON_KINDS, type HeadlineExplanation } from './audit-headline.js';
 import type { HealthReport } from './audit-health.js';
+import type { HeldTransfer } from './held-transfers.js';
 
 export const AUDIT_SNAPSHOT_SECRET_KEY = 'audit_snapshot';
 export const AUDIT_SNAPSHOT_MAX_BYTES = 100_000;
@@ -38,6 +39,8 @@ export interface AuditSnapshot {
   balanceNotes: string[];
   headline: HeadlineExplanation;
   health: HealthReport;
+  /** 1.65 C: transfers held 14+ days. Absent from an older companion, or when the ledger could not be read. */
+  held?: HeldTransfer[];
 }
 
 /** What one run of the three checks produced. */
@@ -45,6 +48,8 @@ export interface AuditResults {
   balances: BalanceReport;
   headline: HeadlineExplanation;
   health: HealthReport;
+  /** 1.65 C; absent when the ledger could not be read. */
+  held?: HeldTransfer[];
 }
 
 const utf8Bytes = (s: string) => new TextEncoder().encode(s).length;
@@ -86,6 +91,8 @@ export function buildAuditSnapshot(results: AuditResults, now: Date): AuditSnaps
       balanceNotes: capNote ? capNotes(results.balances.notes) : results.balances.notes,
       headline: capNote ? { ...headline, notes: capNotes(headline.notes) } : headline,
       health: capNote ? { ...health, notes: capNotes(health.notes) } : health,
+      // Not trimmed: personal scale, and a list this long would be its own finding.
+      ...(results.held ? { held: results.held } : {}),
     };
   };
   for (const [rowCap, issueCap] of CAPS) {
@@ -197,7 +204,15 @@ export function parseAuditSnapshot(raw: string | null | undefined): AuditSnapsho
     ...health, issues,
     ...(unnamedIssues > 0 ? { more: (health.more ?? 0) + unnamedIssues } : {}),
   };
-  return { kind: 'ok', snapshot: { ...v, headline, health: checked } as AuditSnapshot };
+  // A malformed held list is dropped (read as absent), never allowed to blank the other views.
+  const goodHeld = (x: unknown) => isObject(x) && typeof x.activityId === 'string' && typeof x.description === 'string' && typeof x.label === 'string'
+    && isNum(x.amount) && isNum(x.ageDays) && (x.direction === 'in' || x.direction === 'out')
+    && (x.txKey === null || typeof x.txKey === 'string')
+    && (x.heldBy === undefined || x.heldBy === null || typeof x.heldBy === 'string')
+    && (x.marked === undefined || x.marked === true);
+  const { held, ...others } = v;
+  const heldOk = Array.isArray(held) && held.every(goodHeld) ? { held } : {};
+  return { kind: 'ok', snapshot: { ...others, ...heldOk, headline, health: checked } as AuditSnapshot };
 }
 
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];

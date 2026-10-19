@@ -270,6 +270,14 @@ export function setTxOverride(
   return { ...o, tx: withKey(o.tx, txKey, entry) };
 }
 
+/**
+ * 1.65 C: marks one bank transaction "not a transfer" — the override the change
+ * log's Undo writes for a held leg. Pass to `editSyncOverrides`, which re-reads
+ * before writing (the add-on is a second writer).
+ */
+export const notTransferEdit = (txKey: string, label: string, now: Date): SyncOverridesEdit =>
+  (o) => setTxOverride(o, txKey, 'notTransfer', now, { label });
+
 /** Clears one flag; the entry goes when no flag is left. */
 export function clearTxOverride(o: SyncOverrides, txKey: string, flag: TxOverrideFlag): SyncOverrides {
   if (!own(o.tx, txKey)) return o;

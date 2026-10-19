@@ -218,6 +218,8 @@ describe('runSyncCore — a payback (asReimbursement)', () => {
         ] },
         mapping: { 'sfin-1': 'wf-a', 'sfin-2': 'wf-b' }, accountTypes: { 'wf-a': 'CASH', 'wf-b': 'CASH' },
         existing: new Map([['wf-a', stored().get('wf-a')!], ['wf-b', [partner]]]),
+        // 1.65 B: generic wording alone no longer makes money out a transfer; the rule keeps this leg transfer-typed.
+        mappingRules: [{ pattern: 'ONLINE TRANSFER TO CHK', matchType: 'contains' as const, activityType: 'TRANSFER_OUT' as const }],
       });
       await runSyncCore(fh.host, failing(fh), { force: true });
       expect(writes(fh)).toEqual([]);

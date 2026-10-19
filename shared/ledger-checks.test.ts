@@ -1,8 +1,16 @@
 import { describe, it, expect } from 'vitest';
 import { evaluateLedgerChecks, nextLedgerCheckSeen, type LedgerFacts } from './ledger-checks.js';
+import { accountTxKey } from './transfers.js';
 
 const NOW = new Date('2026-09-20T13:00:00Z');
 const daysAgo = (n: number) => new Date(NOW.getTime() - n * 86_400_000).toISOString();
+
+/** Harbor Savings has published nothing since Sep 2, before an Aug 31 leg's Sep 5 pairing deadline. */
+const HELD_FEEDS = {
+  mapping: { 'sfin-chk': 'wf-chk', 'sfin-sav': 'wf-sav' },
+  balances: { 'sfin-chk': { aliveThrough: NOW.getTime() / 1000 }, 'sfin-sav': { aliveThrough: Date.parse('2026-09-02T12:00:00Z') / 1000 } },
+  names: { 'sfin-chk': 'Checking', 'sfin-sav': 'Harbor Savings' },
+};
 
 const clean = (): LedgerFacts => ({
   month: '2026-09',
@@ -140,14 +148,70 @@ describe('evaluateLedgerChecks', () => {
     expect(findings[0].message).toContain('DEPOSIT');
   });
 
-  it('mentions a long-held transfer once, not every day its counterpart stays missing', () => {
+  it('offers "Not a transfer" for the bank transaction when the stored feeds name it (1.65 C)', () => {
     const f = clean();
-    f.heldTransfers = [{ id: 'h1', description: 'Payment to Discover', amount: 87.26, ageDays: 31 }];
-    expect(evaluateLedgerChecks(f, {}, NOW).findings).toHaveLength(1);
-    expect(evaluateLedgerChecks(f, { 'held-transfer:h1': daysAgo(5) }, NOW).findings).toEqual([]);
+    f.heldTransfers = [{
+      id: 'h1', description: 'WIRE TRANSFER TO ACME LLC', amount: 250, ageDays: 20,
+      wfAccountId: 'wf-chk', date: '2026-08-31', txId: 'w-old', direction: 'out',
+    }];
+    expect(evaluateLedgerChecks(f, {}, NOW, HELD_FEEDS).findings[0].fix).toEqual({
+      kind: 'not-transfer', txKey: accountTxKey('sfin-chk', 'w-old'), label: 'WIRE TRANSFER TO ACME LLC · Checking',
+      description: 'WIRE TRANSFER TO ACME LLC', amount: 250, direction: 'out',
+    });
+    // Without the stored feeds there is no transaction to name: no fix.
+    expect(evaluateLedgerChecks(f, {}, NOW).findings[0].fix).toBeUndefined();
+    expect(evaluateLedgerChecks(f, {}, NOW).findings[0].handled).toBeUndefined();
+  });
+
+  it('a held transfer already marked "not a transfer" says so and offers no fix (1.65 C)', () => {
+    const f = clean();
+    f.heldTransfers = [{
+      id: 'h1', description: 'WIRE TRANSFER TO ACME LLC', amount: 250, ageDays: 20,
+      wfAccountId: 'wf-chk', date: '2026-08-31', txId: 'w-old', direction: 'out',
+    }];
+    const marked = new Set([accountTxKey('sfin-chk', 'w-old')]);
+    const { findings } = evaluateLedgerChecks(f, {}, NOW, HELD_FEEDS, marked);
+    expect(findings).toHaveLength(1);
+    expect(findings[0].message).toContain('marked not a transfer; the next sync settles it');
+    expect(findings[0].fix).toBeUndefined();
+    expect(findings[0].handled).toBe(true);
+  });
+
+  it('offers no fix when two feeds share the account, so the transaction cannot be named (1.65 C)', () => {
+    const f = clean();
+    f.heldTransfers = [{
+      id: 'h1', description: 'WIRE TRANSFER TO ACME LLC', amount: 250, ageDays: 20,
+      wfAccountId: 'wf-chk', date: '2026-08-31', txId: 'w-old', direction: 'out',
+    }];
+    const shared = {
+      ...HELD_FEEDS,
+      mapping: { ...HELD_FEEDS.mapping, 'sfin-chk2': 'wf-chk' },
+      balances: { ...HELD_FEEDS.balances, 'sfin-chk2': { aliveThrough: NOW.getTime() / 1000 } },
+    };
+    const { findings } = evaluateLedgerChecks(f, {}, NOW, shared);
+    expect(findings).toHaveLength(1);
+    expect(findings[0].fix).toBeUndefined();
+  });
+
+  it('shows a transfer held past 14 days every day it stays held, saying why (1.65 C, R7)', () => {
+    const f = clean();
+    f.heldTransfers = [{
+      id: 'h1', description: 'WIRE TRANSFER TO ACME LLC', amount: 250, ageDays: 20,
+      wfAccountId: 'wf-chk', date: '2026-08-31', txId: 'w-old', direction: 'out',
+    }];
+    const { findings } = evaluateLedgerChecks(f, { 'held-transfer:h1': daysAgo(5) }, NOW, HELD_FEEDS);
+    expect(findings).toEqual([expect.objectContaining({
+      key: 'held-transfer:h1',
+      message: "WIRE TRANSFER TO ACME LLC ($250.00) has waited 20 days for its other half — Harbor Savings's feed is behind, so it stays on hold",
+      label: 'WIRE TRANSFER TO … $250.00 still in transit',
+    })]);
+    // Without the stored feeds (an older caller) it cannot tell why, and does not guess.
+    expect(evaluateLedgerChecks(f, {}, NOW).findings[0].message).toBe(
+      'WIRE TRANSFER TO ACME LLC ($250.00) has waited 20 days for its other half',
+    );
     // Young holds are the normal case and say nothing at all.
     f.heldTransfers[0].ageDays = 3;
-    expect(evaluateLedgerChecks(f, {}, NOW).keys).toEqual([]);
+    expect(evaluateLedgerChecks(f, {}, NOW, HELD_FEEDS).keys).toEqual([]);
   });
 
   it('counts rows Wealthfolio flagged for review in one line', () => {

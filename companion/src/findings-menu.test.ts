@@ -1,6 +1,8 @@
 import { describe, it, expect, vi } from 'vitest';
 import type { SelfCheckFinding } from '../../shared/self-check.js';
 import { findingHandle, findingLabel } from '../../shared/findings.js';
+import { SYNC_OVERRIDES_UNREADABLE_MESSAGE, SyncOverridesUnreadableError } from '../../shared/sync-overrides.js';
+import { accountTxKey } from '../../shared/transfers.js';
 import type { GatheredFindings } from './daily-findings.js';
 import {
   createFindingsMenu,
@@ -44,6 +46,18 @@ const venmo: SelfCheckFinding = {
   fix: { kind: 'pick-category', activityId: 'r1' },
 };
 
+const held: SelfCheckFinding = {
+  kind: 'ledger',
+  severity: 'warning',
+  key: 'held-transfer:ph-1',
+  label: 'WIRE TRANSFER TO … $250.00 still in transit',
+  message: "WIRE TRANSFER TO ACME LLC ($250.00) has waited 20 days for its other half — Harbor Savings's feed is behind, so it stays on hold",
+  fix: {
+    kind: 'not-transfer', txKey: accountTxKey('sfin-chk', 'w-old'), label: 'WIRE TRANSFER TO ACME LLC · Checking',
+    description: 'WIRE TRANSFER TO ACME LLC', amount: 250, direction: 'out',
+  },
+};
+
 const failing: SelfCheckFinding = {
   kind: 'sync-failing',
   severity: 'problem',
@@ -61,6 +75,7 @@ function makeDeps(initialState: GatheredFindings = { visible: [], snoozed: [] })
     unsnoozeAll: vi.fn(async () => {}),
     makeTransfer: vi.fn(async () => {}),
     pickCategory: vi.fn(async () => {}),
+    markNotTransfer: vi.fn(async () => {}),
     now: () => NOW,
     log: vi.fn(),
   };
@@ -210,5 +225,154 @@ describe('findings-menu', () => {
     ).resolves.toBeUndefined();
     expect(deps.log).toHaveBeenCalledWith(expect.stringContaining('database unavailable'));
     expect(ui.answer).toHaveBeenCalledWith('Could not do that — check the companion logs.');
+  });
+
+  describe('"Not a transfer" on a held transfer (1.65 C)', () => {
+    const handle = findingHandle(held.key!);
+
+    it('the detail screen offers it', async () => {
+      const { deps } = makeDeps({ visible: [held], snoozed: [] });
+      const ui = makeUi();
+      await createFindingsMenu(deps).onCallback({ data: `cz:fx:d:${handle}`, chatId: 42 }, ui);
+      expect(ui.edit).toHaveBeenCalledWith(expect.stringContaining("Harbor Savings's feed is behind"), {
+        inline_keyboard: [
+          [{ text: '✋ Not a transfer', callback_data: `cz:fx:f:${handle}` }],
+          [{ text: '💤 Snooze 30 days', callback_data: `cz:fx:s:${handle}` }],
+          [{ text: '‹ Back', callback_data: 'cz:fx:l' }],
+        ],
+      });
+    });
+
+    it('asks before it writes: a confirm screen, nothing written yet', async () => {
+      const { deps } = makeDeps({ visible: [held], snoozed: [] });
+      const ui = makeUi();
+      await createFindingsMenu(deps).onCallback({ data: `cz:fx:f:${handle}`, chatId: 42 }, ui);
+      expect(ui.edit).toHaveBeenCalledWith(
+        'Count WIRE TRANSFER TO ACME LLC ($250.00) as spending and stop waiting for its other half? The next sync makes the change.',
+        { inline_keyboard: [
+          [{ text: '✋ Yes, not a transfer', callback_data: `cz:fx:n:${handle}` }],
+          [{ text: '‹ Back', callback_data: `cz:fx:d:${handle}` }],
+        ] },
+      );
+      expect(deps.markNotTransfer).not.toHaveBeenCalled();
+      expect(deps.makeTransfer).not.toHaveBeenCalled();
+      expect(deps.pickCategory).not.toHaveBeenCalled();
+    });
+
+    it('the confirm writes notTransfer for that transaction and shows the list again', async () => {
+      const { deps } = makeDeps({ visible: [held], snoozed: [] });
+      const ui = makeUi();
+      await createFindingsMenu(deps).onCallback({ data: `cz:fx:n:${handle}`, chatId: 42 }, ui);
+      expect(deps.markNotTransfer).toHaveBeenCalledWith(held.fix, NOW);
+      expect(ui.edit).toHaveBeenCalledTimes(1);
+      expect(ui.answer).toHaveBeenCalledWith('Done — the next sync counts it as spending');
+    });
+
+    it('a confirm for a finding that has since cleared writes nothing', async () => {
+      const { deps } = makeDeps({ visible: [], snoozed: [] });
+      const ui = makeUi();
+      await createFindingsMenu(deps).onCallback({ data: `cz:fx:n:${handle}`, chatId: 42 }, ui);
+      expect(deps.markNotTransfer).not.toHaveBeenCalled();
+      expect(ui.answer).toHaveBeenCalledWith('That one is already sorted — refreshing.');
+    });
+
+    it('a confirm on a finding with a different fix writes nothing and opens nothing', async () => {
+      const { deps } = makeDeps({ visible: [venmo], snoozed: [] });
+      const ui = makeUi();
+      await createFindingsMenu(deps).onCallback({ data: `cz:fx:n:${findingHandle(venmo.key!)}`, chatId: 42 }, ui);
+      expect(deps.markNotTransfer).not.toHaveBeenCalled();
+      expect(deps.pickCategory).not.toHaveBeenCalled();
+      expect(deps.makeTransfer).not.toHaveBeenCalled();
+    });
+
+    it('a confirm for a finding that no longer has a fix writes nothing', async () => {
+      const { fix: _gone, ...noFix } = held;
+      const { deps } = makeDeps({ visible: [noFix], snoozed: [] });
+      const ui = makeUi();
+      await createFindingsMenu(deps).onCallback({ data: `cz:fx:n:${handle}`, chatId: 42 }, ui);
+      expect(deps.markNotTransfer).not.toHaveBeenCalled();
+    });
+
+    it('after the confirm, the redrawn list shows it marked and no longer offers the button', async () => {
+      const marked: SelfCheckFinding = {
+        ...held,
+        message: 'WIRE TRANSFER TO ACME LLC ($250.00) has waited 20 days for its other half — marked not a transfer; the next sync settles it',
+        fix: undefined,
+      };
+      delete marked.fix;
+      const { deps, state } = makeDeps({ visible: [held], snoozed: [] });
+      deps.markNotTransfer = vi.fn(async () => { state.visible = [marked]; });
+      const ui = makeUi();
+      const menu = createFindingsMenu(deps);
+      await menu.onCallback({ data: `cz:fx:n:${handle}`, chatId: 42 }, ui);
+      expect(ui.edit).toHaveBeenCalledWith(expect.stringContaining('marked not a transfer'), expect.anything());
+      await menu.onCallback({ data: `cz:fx:d:${handle}`, chatId: 42 }, ui);
+      const detail = (ui.edit as ReturnType<typeof vi.fn>).mock.calls.at(-1)!;
+      expect(JSON.stringify(detail[1])).not.toContain('Not a transfer');
+    });
+
+    it('a refused write (a sync is running) says so and redraws nothing', async () => {
+      const { deps } = makeDeps({ visible: [held], snoozed: [] });
+      deps.markNotTransfer = vi.fn(async () => ({ refused: 'A sync is running — try again when it finishes.' }));
+      const ui = makeUi();
+      await createFindingsMenu(deps).onCallback({ data: `cz:fx:n:${handle}`, chatId: 42 }, ui);
+      expect(ui.answer).toHaveBeenCalledWith('A sync is running — try again when it finishes.');
+      expect(ui.answer).not.toHaveBeenCalledWith(expect.stringContaining('Done'));
+      expect(ui.edit).not.toHaveBeenCalled();
+    });
+
+    it('a finding already handled shows no "nothing can fix this" hint; an unhandled one keeps it', async () => {
+      const { fix: _f, ...bare } = held;
+      const marked: SelfCheckFinding = { ...bare, handled: true, message: 'WIRE TRANSFER TO ACME LLC ($250.00) — marked not a transfer; the next sync settles it' };
+      const { deps } = makeDeps({ visible: [marked], snoozed: [] });
+      const ui = makeUi();
+      await createFindingsMenu(deps).onCallback({ data: `cz:fx:d:${handle}`, chatId: 42 }, ui);
+      expect((ui.edit as ReturnType<typeof vi.fn>).mock.calls.at(-1)![0]).not.toContain('Nothing here can fix');
+      const { deps: deps2 } = makeDeps({ visible: [bare], snoozed: [] });
+      const ui2 = makeUi();
+      await createFindingsMenu(deps2).onCallback({ data: `cz:fx:d:${handle}`, chatId: 42 }, ui2);
+      expect((ui2.edit as ReturnType<typeof vi.fn>).mock.calls.at(-1)![0]).toContain('Nothing here can fix');
+    });
+
+    it('a failed redraw after a successful write still says it is done', async () => {
+      const { deps } = makeDeps({ visible: [held], snoozed: [] });
+      const ui = makeUi();
+      ui.edit = vi.fn().mockRejectedValue(new Error('message is not modified'));
+      await createFindingsMenu(deps).onCallback({ data: `cz:fx:n:${handle}`, chatId: 42 }, ui);
+      expect(deps.markNotTransfer).toHaveBeenCalledTimes(1);
+      expect(ui.answer).toHaveBeenCalledWith('Done — the next sync counts it as spending');
+      expect(ui.answer).not.toHaveBeenCalledWith('Could not do that — check the companion logs.');
+    });
+
+    describe('money in, and descriptors with markdown characters', () => {
+      const inbound: SelfCheckFinding = {
+        ...held,
+        key: 'held-transfer:ph-2',
+        fix: { ...held.fix!, direction: 'in', amount: 80, description: 'WIRE_FROM *ACME* LLC' } as SelfCheckFinding['fix'],
+      };
+      const h2 = findingHandle(inbound.key!);
+
+      it('the confirm and the toast say "money in", and the descriptor is escaped', async () => {
+        const { deps } = makeDeps({ visible: [inbound], snoozed: [] });
+        const ui = makeUi();
+        const menu = createFindingsMenu(deps);
+        await menu.onCallback({ data: `cz:fx:f:${h2}`, chatId: 42 }, ui);
+        expect(ui.edit).toHaveBeenCalledWith(
+          'Count WIRE\\_FROM \\*ACME\\* LLC ($80.00) as money in and stop waiting for its other half? The next sync makes the change.',
+          expect.anything(),
+        );
+        await menu.onCallback({ data: `cz:fx:n:${h2}`, chatId: 42 }, ui);
+        expect(ui.answer).toHaveBeenCalledWith('Done — the next sync counts it as money in');
+      });
+    });
+
+    it('says so when the overrides cannot be read', async () => {
+      const { deps } = makeDeps({ visible: [held], snoozed: [] });
+      deps.markNotTransfer = vi.fn().mockRejectedValue(new SyncOverridesUnreadableError());
+      const ui = makeUi();
+      await createFindingsMenu(deps).onCallback({ data: `cz:fx:n:${handle}`, chatId: 42 }, ui);
+      expect(ui.answer).toHaveBeenCalledWith(SYNC_OVERRIDES_UNREADABLE_MESSAGE);
+      expect(ui.edit).not.toHaveBeenCalled();
+    });
   });
 });
