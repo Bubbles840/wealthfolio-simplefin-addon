@@ -635,6 +635,15 @@ interface AccountBalanceSnapshot {
    */
   measured?: boolean;
   /**
+   * Set ONLY by the after-save card check (1.64, B2) when it fills a verdict.
+   * That figure is for the account-list BADGE alone (R15): it opened no drift
+   * episode, so it has no `driftSince`, and the Home banner would otherwise
+   * show it red with a one-click plug that skips the young-drift guard
+   * (plugging feed lag double-counts the moment the feed catches up). Readers
+   * that raise banners, plugs or report findings must ignore a tagged drift.
+   */
+  checkedAfterSave?: true;
+  /**
    * Present when this run PROVED the drift belongs to the starting-balance
    * baseline rather than to any transaction: the reconciliation plan came back
    * empty over the heal window, so every transaction the bank reports is already
@@ -4458,7 +4467,7 @@ async function runSyncPass(
         const total = totals?.get(mapping[sf.id]);
         const snap = accountBalances[sf.id];
         if (total === undefined || snap.balance === null) continue;
-        Object.assign(snap, badgeVerdict(snap.balance, total));
+        Object.assign(snap, badgeVerdict(snap.balance, total), { checkedAfterSave: true as const });
       }
     }
   }

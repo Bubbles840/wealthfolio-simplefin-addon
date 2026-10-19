@@ -87,6 +87,15 @@ export interface AccountBalanceInfo {
    *  cannot express, since it covers both "verified in sync" and "could not check".
    *  Absent means unmeasured (an older build's snapshot proves nothing either). */
   measured?: boolean;
+  /**
+   * Set ONLY by the after-save card check (1.64, B2) when it fills a verdict.
+   * That figure is for the account-list BADGE alone (R15): it opened no drift
+   * episode, so it has no `driftSince`, and the Home banner would otherwise
+   * show it red with a one-click plug that skips the young-drift guard
+   * (plugging feed lag double-counts the moment the feed catches up). Readers
+   * that raise banners, plugs or report findings must ignore a tagged drift.
+   */
+  checkedAfterSave?: true;
 }
 
 const KEYS = {

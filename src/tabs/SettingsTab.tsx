@@ -328,7 +328,7 @@ export function SettingsTab({
     (entry: ChangeLogItem, entries: ChangeLogItem[], op: UndoOp) => undoFromApp(ctx, store, entry, entries, op),
     [ctx, store],
   );
-  const syncNowForLog = useCallback(async () => syncNowSentence(await runSync(ctx, store, { force: true })), [ctx, store]);
+  const syncNowForLog = useCallback(async () => syncNowSentence(await runSync(ctx, store, { force: true, manual: true })), [ctx, store]);
   const loadOverrides = useCallback(
     async () => (store.readSyncOverrides ? store.readSyncOverrides() : { overrides: emptySyncOverrides(), unreadable: false }),
     [store],

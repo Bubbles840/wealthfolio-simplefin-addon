@@ -1,6 +1,8 @@
 import { render, screen, fireEvent, waitFor, within } from '@testing-library/react';
 import { describe, it, expect, vi } from 'vitest';
 import { SyncPage } from '../pages/SyncPage';
+import { importChange, stampChange } from '../../shared/change-entries';
+import { runSync } from '../utils/sync';
 
 /**
  * Integration-level, on purpose — moved here wholesale from SyncPage.test.tsx
@@ -21,6 +23,11 @@ vi.mock('../utils/sync', async (importOriginal) => {
     runSync: vi.fn(async () => ({ imported: 5, skipped: 1, errors: [] })),
   };
 });
+
+vi.mock('../utils/change-undo', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../utils/change-undo')>()),
+  undoFromApp: vi.fn(async () => ({ ok: true, message: 'Undone.', needsSync: true })),
+}));
 
 /** The Accounts card re-reads the live account list from the bridge. Mocked at
  *  the module boundary so the tests exercise the card's own logic (fetch →
@@ -411,6 +418,25 @@ describe('SettingsTab', () => {
     fireEvent.click(header);
     expect(await screen.findByText('Nothing recorded yet. Changes show here after the next sync.')).toBeInTheDocument();
     expect(props.store.getChangeLog).toHaveBeenCalledTimes(1);
+  });
+
+  it('the change log\'s Sync now is a person asking: manual (1.64)', async () => {
+    const props = makeProps();
+    const entry = stampChange(importChange({
+      account: { sfinId: 'sfin-1', wfId: 'wf-a', name: 'Checking' }, txKey: 'sfin-1\u0000tx-1', activityId: 'act-1',
+      description: 'SQ *BLUE_BOTTLE', amountCents: -650, date: '2026-10-12', pending: false, activityType: 'WITHDRAWAL',
+    }), 'companion', new Date());
+    props.store.getChangeLog = vi.fn(async () => ({ entries: [entry], gaps: [], trimmed: 0, unreadable: [] }));
+    render(<SyncPage {...props} />);
+    await switchTab(/settings/i);
+    fireEvent.click(await screen.findByRole('button', { name: /^Change log/ }));
+    fireEvent.click(await screen.findByRole('button', { name: /Imported SQ \*BLUE_BOTTLE/ }));
+    const detail = () => document.querySelector('.sfin-log-detail') as HTMLElement;
+    await waitFor(() => expect(detail()).not.toBeNull());
+    fireEvent.click(within(detail()).getByRole('button', { name: 'Undo' }));
+    // The change log's own button, not the page header's.
+    fireEvent.click(await within(detail()).findByRole('button', { name: 'Sync now' }));
+    await waitFor(() => expect(runSync).toHaveBeenLastCalledWith(expect.anything(), expect.anything(), { force: true, manual: true }));
   });
 
   it('reset requires an explicit confirmation step', async () => {
