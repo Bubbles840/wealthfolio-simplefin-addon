@@ -311,6 +311,29 @@ describe('findings-menu', () => {
       expect(JSON.stringify(detail[1])).not.toContain('Not a transfer');
     });
 
+    it('a refused write (a sync is running) says so and redraws nothing', async () => {
+      const { deps } = makeDeps({ visible: [held], snoozed: [] });
+      deps.markNotTransfer = vi.fn(async () => ({ refused: 'A sync is running — try again when it finishes.' }));
+      const ui = makeUi();
+      await createFindingsMenu(deps).onCallback({ data: `cz:fx:n:${handle}`, chatId: 42 }, ui);
+      expect(ui.answer).toHaveBeenCalledWith('A sync is running — try again when it finishes.');
+      expect(ui.answer).not.toHaveBeenCalledWith(expect.stringContaining('Done'));
+      expect(ui.edit).not.toHaveBeenCalled();
+    });
+
+    it('a finding already handled shows no "nothing can fix this" hint; an unhandled one keeps it', async () => {
+      const { fix: _f, ...bare } = held;
+      const marked: SelfCheckFinding = { ...bare, handled: true, message: 'WIRE TRANSFER TO ACME LLC ($250.00) — marked not a transfer; the next sync settles it' };
+      const { deps } = makeDeps({ visible: [marked], snoozed: [] });
+      const ui = makeUi();
+      await createFindingsMenu(deps).onCallback({ data: `cz:fx:d:${handle}`, chatId: 42 }, ui);
+      expect((ui.edit as ReturnType<typeof vi.fn>).mock.calls.at(-1)![0]).not.toContain('Nothing here can fix');
+      const { deps: deps2 } = makeDeps({ visible: [bare], snoozed: [] });
+      const ui2 = makeUi();
+      await createFindingsMenu(deps2).onCallback({ data: `cz:fx:d:${handle}`, chatId: 42 }, ui2);
+      expect((ui2.edit as ReturnType<typeof vi.fn>).mock.calls.at(-1)![0]).toContain('Nothing here can fix');
+    });
+
     it('a failed redraw after a successful write still says it is done', async () => {
       const { deps } = makeDeps({ visible: [held], snoozed: [] });
       const ui = makeUi();

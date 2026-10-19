@@ -2468,8 +2468,8 @@ async function runSyncPass(
       // Issue #13: "WIRE TRANSFER TO ACME LLC" is a wire to a third party, but the
       // generic phrase typed it a transfer and it waited forever for an other half.
       // Money out of a cash account worded only generically is an ordinary
-      // WITHDRAWAL unless its text names another connected account (bank-first
-      // below) or a learned out name promotes it. A real own-account transfer
+      // WITHDRAWAL unless its text names another connected account (checked right
+      // here; learned names promote the row further down). A real own-account transfer
       // still links: pairing by amount joins it to its other half within 5 days.
       const builtIn: MappedType = genericTransferNeedsCorroboration(tx.description, amount, acctType, worded, otherAccountWords)
         ? { type: 'WITHDRAWAL', fromRule: false }
@@ -3344,7 +3344,8 @@ async function runSyncPass(
     // ── 1.65 A: in-transit rows outside this download ──
     const staleTransit = planStaleInTransit(planExisting.filter((r) => !unlinkingIds.has(r.wfId)), {
       wfAccountId, sfinAccountId: sfAccount.id, accountType: wfTypes.get(wfAccountId) ?? '',
-      feedTxIds: new Set(feed.map((t) => t.txId)), nowSec, mappedSfinIds, feedAliveEpoch, nameWords,
+      // Every feed mapped to this account: a reissued card has two, both in the download.
+      feedTxIds: new Set([...preparedByAccount].filter(([id]) => mapping[id] === wfAccountId).flatMap(([, ps]) => ps.map((p) => p.tx.id))), nowSec, mappedSfinIds, feedAliveEpoch, nameWords,
       leaveAlone: (r) => isLinkedRow(r) || frozenKeys.has(accountTxKey(sfAccount.id, r.txId)) || skippedTxKeys.has(accountTxKey(sfAccount.id, r.txId))
         || hasTxOverride(overrides, accountTxKey(sfAccount.id, r.txId), 'asReimbursement'),
       notTransfer: (txId) => notTransferKey(accountTxKey(sfAccount.id, txId)),

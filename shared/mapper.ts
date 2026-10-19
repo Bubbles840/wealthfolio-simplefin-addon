@@ -90,7 +90,7 @@ export const BANK_TRANSFER_KEYWORDS = /pnc bank|online transfer|wire transfer|ba
 /** The four generic phrases: they say "a transfer" but not to whom (1.65 B). */
 export const GENERIC_TRANSFER_KEYWORDS = /online transfer|wire transfer|bank transfer|member transfer/i;
 /** Institution phrases that name a known transfer counterparty on their own. */
-const INSTITUTION_TRANSFER_KEYWORDS = /pnc bank|capital one transfer/i;
+export const INSTITUTION_TRANSFER_KEYWORDS = /pnc bank|capital one transfer/i;
 
 export function mapTransactionWithSource(
   description: string,
@@ -139,7 +139,7 @@ export function mapTransactionWithSource(
     return {
       type: amount >= 0 ? 'TRANSFER_IN' : 'TRANSFER_OUT',
       fromRule: false,
-      ...(amount < 0 && !INSTITUTION_TRANSFER_KEYWORDS.test(description) ? { genericTransferWording: true as const } : {}),
+      ...(amount < 0 && GENERIC_TRANSFER_KEYWORDS.test(description) && !INSTITUTION_TRANSFER_KEYWORDS.test(description) ? { genericTransferWording: true as const } : {}),
     };
   }
 

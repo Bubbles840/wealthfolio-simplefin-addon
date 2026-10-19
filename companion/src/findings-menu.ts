@@ -57,8 +57,9 @@ export interface FindingsMenuDeps {
   makeTransfer(fix: Extract<FindingFix, { kind: 'make-transfer' }>, ui: FindingsMenuUi): Promise<void>;
   /** Opens the category picker on one transaction, as a new message. */
   pickCategory(activityId: string, chatId: number, ui: FindingsMenuUi): Promise<void>;
-  /** Records "not a transfer" through the re-reading overrides writer. May throw an unreadable-overrides error. */
-  markNotTransfer(fix: Extract<FindingFix, { kind: 'not-transfer' }>, now: Date): Promise<void>;
+  /** Records "not a transfer" through the re-reading overrides writer. May throw an unreadable-overrides error.
+   *  `{ refused }` means nothing was written (the companion's sync is running); show it to the person. */
+  markNotTransfer(fix: Extract<FindingFix, { kind: 'not-transfer' }>, now: Date): Promise<void | { refused: string }>;
   now(): Date;
   log(msg: string): void;
 }
@@ -112,7 +113,7 @@ export function renderFindingDetail(f: SelfCheckFinding): { text: string; keyboa
   if (isSnoozable(f)) rows.push([{ text: `💤 Snooze ${SNOOZE_DAYS} days`, callback_data: `${SNOOZE}${handle}` }]);
   rows.push([{ text: '‹ Back', callback_data: LIST }]);
   const glyph = f.severity === 'problem' ? '🚨' : '⚠️';
-  const hint = f.fix
+  const hint = f.fix || f.handled
     ? ''
     : isSnoozable(f)
       ? '\n\n_Nothing here can fix this one for you. Snooze it if you already know._'
@@ -174,7 +175,8 @@ export function createFindingsMenu(deps: FindingsMenuDeps): FindingsMenu {
         if (prefix === NOT_TRANSFER) {
           if (fix.kind !== 'not-transfer') return void await ui.answer();
           try {
-            await deps.markNotTransfer(fix, deps.now());
+            const outcome = await deps.markNotTransfer(fix, deps.now());
+            if (outcome && 'refused' in outcome) return void await ui.answer(outcome.refused);
           } catch (err) {
             if (!isUnreadableOverridesError(err)) throw err;
             return void await ui.answer(SYNC_OVERRIDES_UNREADABLE_MESSAGE);

@@ -75,6 +75,10 @@ export interface SelfCheckFinding {
   label?: string;
   /** A repair the Telegram menu can offer for this finding, when one exists. */
   fix?: FindingFix;
+  /** True when the message already says the thing is dealt with (a held
+   *  transfer marked "not a transfer"), so the menu offers no "nothing can
+   *  fix this" hint. Optional: absent = an older writer or an open finding. */
+  handled?: true;
 }
 
 /**

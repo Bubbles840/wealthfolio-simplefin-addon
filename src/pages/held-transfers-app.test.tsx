@@ -9,7 +9,7 @@ import { emptySyncOverrides, SYNC_OVERRIDES_UNREADABLE_MESSAGE, SyncOverridesUnr
 import { accountTxKey } from '../../shared/transfers';
 import { NOT_TRANSFER_FAILED, NOT_TRANSFER_STALE } from '../utils/audit-fix';
 import { beginWrite, writeRefusal } from '../utils/write-lock';
-import { checksSummary, HeldTransfersView } from '../components/AuditViews';
+import { checksSummary, checksToLookAt, HeldTransfersView } from '../components/AuditViews';
 
 vi.mock('recharts', () => {
   const stub = (name: string) => (p: any) => React.createElement('div', { 'data-recharts': name }, p?.children ?? null);
@@ -239,6 +239,13 @@ describe('the collapsed Checks summary counts held transfers', () => {
     expect(checksSummary(read([HELD, { ...HELD, activityId: 'ph-2', marked: true }]), '1.65.0')).toBe('1 to look at');
     expect(checksSummary(read([{ ...HELD, marked: true }]), '1.65.0')).toBe('Nothing found');
     expect(checksSummary(read([]), '1.65.0')).toBe('Nothing found');
+  });
+
+  it('Home counts the same things: unmarked held rows join the Health issues', () => {
+    expect(checksToLookAt(read([HELD, { ...HELD, activityId: 'ph-2', marked: true }]))).toBe(1);
+    expect(checksToLookAt(read([{ ...HELD, marked: true }]))).toBe(0);
+    expect(checksToLookAt({ kind: 'corrupt' })).toBe(0);
+    expect(checksToLookAt(null)).toBe(0);
   });
 });
 

@@ -160,6 +160,7 @@ describe('evaluateLedgerChecks', () => {
     });
     // Without the stored feeds there is no transaction to name: no fix.
     expect(evaluateLedgerChecks(f, {}, NOW).findings[0].fix).toBeUndefined();
+    expect(evaluateLedgerChecks(f, {}, NOW).findings[0].handled).toBeUndefined();
   });
 
   it('a held transfer already marked "not a transfer" says so and offers no fix (1.65 C)', () => {
@@ -173,6 +174,7 @@ describe('evaluateLedgerChecks', () => {
     expect(findings).toHaveLength(1);
     expect(findings[0].message).toContain('marked not a transfer; the next sync settles it');
     expect(findings[0].fix).toBeUndefined();
+    expect(findings[0].handled).toBe(true);
   });
 
   it('offers no fix when two feeds share the account, so the transaction cannot be named (1.65 C)', () => {

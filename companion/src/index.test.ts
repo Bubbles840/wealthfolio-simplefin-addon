@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach, onTestFinished } from 'vitest';
-import { maskUrl, publishLiveReports, validateStartupEnv, startupWarnings, runCompanionSync, resolvePassword, sendDailyTelegramReport, sendWeeklyTelegramReport, sendMonthlyTelegramReport, previousYearMonth, sendImportNotice, readBudgetSnapshot, composeDailyDigestMessage, composeDailyDigest, composeWeeklyReportMessage, composeMonthlyWrapUpMessage, runCompanionSyncExclusive, FIX_SYNC_RUNNING, buildTelegramCommandHandler, applyTelegramDismissal, undoTelegramDismissal, formatDismissedReply, buildTelegramListenerDeps, buildCategorizeController, buildCategorizeDeps, rememberImportScope, sendUnmappedAccountsNotice, updateCheckDeps, buildAskSessions, cubeBuildDeps } from './index.js';
+import { maskUrl, publishLiveReports, validateStartupEnv, startupWarnings, runCompanionSync, resolvePassword, sendDailyTelegramReport, sendWeeklyTelegramReport, sendMonthlyTelegramReport, previousYearMonth, sendImportNotice, readBudgetSnapshot, composeDailyDigestMessage, composeDailyDigest, composeWeeklyReportMessage, composeMonthlyWrapUpMessage, runCompanionSyncExclusive, markNotTransferExclusive, FIX_SYNC_RUNNING, buildTelegramCommandHandler, applyTelegramDismissal, undoTelegramDismissal, formatDismissedReply, buildTelegramListenerDeps, buildCategorizeController, buildCategorizeDeps, rememberImportScope, sendUnmappedAccountsNotice, updateCheckDeps, buildAskSessions, cubeBuildDeps } from './index.js';
 import { findingHandle } from '../../shared/findings.js';
 import { whyRunHandle } from './why-menu.js';
 import { formatHelpReply, parseCommand } from '../../shared/telegram-commands.js';
@@ -3033,6 +3033,21 @@ describe('buildTelegramCommandHandler', () => {
       } finally {
         await sync.end();
       }
+    });
+
+    it('"Not a transfer" refuses while the companion syncs and writes nothing, then writes once it ends (1.65 C)', async () => {
+      const { client, secrets } = clientFor();
+      const fix = { txKey: 'sfin-1\u0000TRN-9', label: 'WIRE TRANSFER TO ACME LLC' };
+      const sync = occupy();
+      try {
+        expect(await markNotTransferExclusive(client, fix, new Date(2026, 9, 19, 9, 0, 0))).toEqual({ refused: FIX_SYNC_RUNNING });
+        expect(client.setAddonSecret).not.toHaveBeenCalled();
+        expect(secrets.size).toBe(0);
+      } finally {
+        await sync.end();
+      }
+      expect(await markNotTransferExclusive(client, fix, new Date(2026, 9, 19, 9, 0, 0))).toBeUndefined();
+      expect(client.setAddonSecret).toHaveBeenCalledTimes(1);
     });
 
     it('/changes Undo and Redo of a payback refuse while the companion syncs, and write nothing (PB-I m5)', async () => {

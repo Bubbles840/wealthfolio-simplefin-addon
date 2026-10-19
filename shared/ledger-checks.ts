@@ -126,8 +126,8 @@ export function evaluateLedgerChecks(
   marked?: ReadonlySet<string>,
 ): { findings: SelfCheckFinding[]; keys: string[] } {
   const candidates: Candidate[] = [];
-  const warn = (message: string, label: string, fix?: FindingFix): SelfCheckFinding => ({
-    kind: 'ledger', severity: 'warning', message, label, ...(fix ? { fix } : {}),
+  const warn = (message: string, label: string, fix?: FindingFix, handled?: boolean): SelfCheckFinding => ({
+    kind: 'ledger', severity: 'warning', message, label, ...(fix ? { fix } : {}), ...(handled ? { handled: true as const } : {}),
   });
 
   // ── ledger errors: these have a right answer ─────────────────────────────
@@ -276,6 +276,7 @@ export function evaluateLedgerChecks(
         h.txKey && !h.marked
           ? { kind: 'not-transfer', txKey: h.txKey, label: h.label, description: h.description, amount: h.amount, direction: h.direction }
           : undefined,
+        !!h.marked,
       ),
     });
   }
