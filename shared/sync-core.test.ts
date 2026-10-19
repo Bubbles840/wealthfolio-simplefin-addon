@@ -3417,7 +3417,7 @@ describe('legacy fee-side placeholders (pre-v1.49 CREDIT amount 0 / fee X)', () 
 
   it('a placeholder still in the feed is rewritten once, not twice', async () => {
     const posted = Math.floor(Date.now() / 1000) - 3600;
-    // Keyword-typed as a transfer leg (the mapper's wording), so the feed side
+    // Rule-typed as a transfer leg (a mapping rule), so the feed side
     // is a young placeholder too and the only difference is the legacy shape.
     const s = seed([{ ...agedPlaceholder, id: 'ph-live', comment: '↔️ In-transit transfer · Online Transfer to Savings · tx-live', date: new Date(posted * 1000).toISOString().slice(0, 10) }]);
     s.accountSet!.accounts[0].transactions = [{

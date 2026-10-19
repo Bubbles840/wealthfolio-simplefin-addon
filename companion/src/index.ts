@@ -1463,6 +1463,29 @@ export async function runCompanionFixExclusive<T>(fix: () => Promise<T>, refused
   }
 }
 
+/**
+ * 1.65 C: the findings menu's "Not a transfer" write. Holds the companion's fix
+ * lock like Link and Remove: while a companion sync runs it writes nothing and
+ * answers `{ refused }`. May throw an unreadable-overrides error.
+ */
+export function markNotTransferExclusive(
+  wfClient: Pick<WealthfolioClient, 'getAddonSecret' | 'setAddonSecret'>,
+  fix: { txKey: string; label: string },
+  now: Date,
+): Promise<void | { refused: string }> {
+  return runCompanionFixExclusive(
+    async (): Promise<void | { refused: string }> => {
+      await editSyncOverrides(
+        (k) => wfClient.getAddonSecret('simplefin-sync', k),
+        (k, v) => wfClient.setAddonSecret('simplefin-sync', k, v),
+        notTransferEdit(fix.txKey, fix.label, now),
+        now,
+      );
+    },
+    () => ({ refused: FIX_SYNC_RUNNING }),
+  );
+}
+
 function unionCategoryNames(spentMap: Record<string, number>, budgetMap: Record<string, number>): string[] {
   return Array.from(new Set([...Object.keys(spentMap), ...Object.keys(budgetMap)])).sort();
 }
@@ -3981,14 +4004,7 @@ export function buildTelegramListenerDeps(wfClient: WealthfolioClient): Telegram
     snooze: (key, now) => updateSnoozes(findingsDeps(wfClient), now, (current) => withSnooze(current, key, now)),
     unsnoozeAll: (now) => updateSnoozes(findingsDeps(wfClient), now, () => ({})),
     // 1.65 C: the override the change log's Undo writes, through the one re-reading writer.
-    markNotTransfer: async (fix, now) => {
-      await editSyncOverrides(
-        (k) => wfClient.getAddonSecret('simplefin-sync', k),
-        (k, v) => wfClient.setAddonSecret('simplefin-sync', k, v),
-        notTransferEdit(fix.txKey, fix.label, now),
-        now,
-      );
-    },
+    markNotTransfer: (fix, now) => markNotTransferExclusive(wfClient, fix, now),
     makeTransfer: (fix, ui) => transferLearning.openForCandidate({
       description: fix.description,
       amountCents: Math.round(fix.amount * 100),

@@ -2,7 +2,7 @@ import { render, screen, fireEvent, within } from '@testing-library/react';
 import { describe, it, expect, vi } from 'vitest';
 import React from 'react';
 import {
-  AccountAudit, ChecksCard, checksSummary, HeadlineAuditLink, healthIssueCount, AUDIT_ACCOUNT_NOT_COVERED, AUDIT_HEADLINE_LINK, AUDIT_HEALTH_NOT_CHECKED, HealthView,
+  AccountAudit, ChecksCard, checksSummary, HeadlineAuditLink, checksToLookAt, AUDIT_ACCOUNT_NOT_COVERED, AUDIT_HEADLINE_LINK, AUDIT_HEALTH_NOT_CHECKED, HealthView,
 } from './AuditViews';
 import {
   buildAuditSnapshot, parseAuditSnapshot, AUDIT_CORRUPT, AUDIT_NEEDS_COMPANION, AUDIT_NOT_YET, type AuditResults, type AuditSnapshotRead,
@@ -147,9 +147,9 @@ describe('ChecksCard', () => {
     expect(checksSummary({ kind: 'absent' }, null)).toBe('Need the companion');
     expect(checksSummary({ kind: 'absent' }, '1.60.0')).toBe('Arrive with the next sync');
     expect(checksSummary({ kind: 'corrupt' }, '1.61.0')).toBe("Couldn't read");
-    expect(healthIssueCount(ok())).toBe(1);
-    expect(healthIssueCount({ kind: 'corrupt' })).toBe(0);
-    expect(healthIssueCount(null)).toBe(0);
+    expect(checksToLookAt(ok())).toBe(1);
+    expect(checksToLookAt({ kind: 'corrupt' })).toBe(0);
+    expect(checksToLookAt(null)).toBe(0);
   });
 });
 

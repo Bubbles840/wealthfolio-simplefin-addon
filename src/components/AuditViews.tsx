@@ -326,16 +326,16 @@ export function ChecksCard({ link, onFixed, notTransfer, loadMarked, ...source }
 export function checksSummary(read: AuditSnapshotRead, companionVersion: string | null): string {
   if (read.kind === 'corrupt') return "Couldn't read";
   if (read.kind === 'absent') return companionVersion ? 'Arrive with the next sync' : 'Need the companion';
-  const n = healthCount(read.snapshot.health);
-  const held = (read.snapshot.held ?? []).filter((h) => !h.marked).length;
-  if (n === null && held === 0) return 'Health not checked';
-  const total = (n ?? 0) + held;
+  if (healthCount(read.snapshot.health) === null && unmarkedHeld(read.snapshot) === 0) return 'Health not checked';
+  const total = checksToLookAt(read);
   return total === 0 ? 'Nothing found' : `${total} to look at`;
 }
 
-/** How many things Health flags, for Home's Accounts tile; 0 when unknown. */
-export function healthIssueCount(read: AuditSnapshotRead | null | undefined): number {
-  return read?.kind === 'ok' ? healthCount(read.snapshot.health) ?? 0 : 0;
+const unmarkedHeld = (snapshot: { held?: Array<{ marked?: boolean }> }): number => (snapshot.held ?? []).filter((h) => !h.marked).length;
+
+/** Everything the Checks card says to look at: Health issues plus held transfers not yet marked. Home counts with this too. */
+export function checksToLookAt(read: AuditSnapshotRead | null | undefined): number {
+  return read?.kind === 'ok' ? (healthCount(read.snapshot.health) ?? 0) + unmarkedHeld(read.snapshot) : 0;
 }
 
 /** The Budget tab's "Why is this different from Wealthfolio?", opening in place. */
