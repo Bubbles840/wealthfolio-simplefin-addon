@@ -25,7 +25,6 @@
  * rest".
  */
 import type { SimplefinAccount } from './types.js';
-import { localIsoDay } from './subscription-roster.js';
 
 /** One line of a snapshot: a position, in the shape the host's snapshot import
  *  takes. Declared here rather than imported from the SDK so `shared/` stays
@@ -53,6 +52,111 @@ export interface HoldingsSnapshot {
   cashBalances: Record<string, string>;
 }
 
+/** Options for `toHoldingsSnapshot`. Both exist for determinism, not tuning. */
+export interface HoldingsSnapshotOptions {
+  /** IANA zone that names the snapshot's calendar day (Wealthfolio's own
+   *  timezone setting, when the caller has it). Omitted, the runtime's zone is
+   *  used: the browser's in the addon, `TZ` in the companion. */
+  timeZone?: string | null;
+  /** "Now", for the future-date clamp. Injectable so tests need no fake clock. */
+  now?: Date;
+}
+
+/** `YYYY-MM-DD` for an instant, read on the calendar of `timeZone`. */
+function calendarDay(instant: Date, timeZone?: string | null): string {
+  const build = (zone?: string | null) =>
+    new Intl.DateTimeFormat('en-US', {
+      ...(zone ? { timeZone: zone } : {}),
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+    });
+  let formatter: Intl.DateTimeFormat;
+  try {
+    formatter = build(timeZone);
+  } catch {
+    // An unknown zone name throws RangeError. A bad setting must not cost the
+    // account its snapshot; the runtime's own zone is the honest fallback.
+    formatter = build(null);
+  }
+  const parts: Record<string, string> = {};
+  for (const part of formatter.formatToParts(instant)) parts[part.type] = part.value;
+  return `${parts.year}-${parts.month}-${parts.day}`;
+}
+
+// Cash arithmetic is done on integers (millionths), never on floats: balances
+// and market values arrive as decimal strings, and the codebase keeps money out
+// of floating point.
+const MICROS = 1000000n;
+/** Slack, in millionths ($1.00), when deciding whether the holdings account for
+ *  the whole balance. A feed's balance and its positions are read at slightly
+ *  different moments, and brokers round market values per line. */
+const BALANCE_TOLERANCE = 1000000n;
+
+function parseMicros(value: string | number | null | undefined): bigint | null {
+  if (value === null || value === undefined) return null;
+  const match = /^([+-]?)(\d+)(?:\.(\d*))?$/.exec(String(value).trim());
+  if (!match) return null;
+  const fraction = (match[3] ?? '').padEnd(6, '0').slice(0, 6);
+  const micros = BigInt(match[2]) * MICROS + BigInt(fraction || '0');
+  return match[1] === '-' ? -micros : micros;
+}
+
+function formatMicros(micros: bigint): string {
+  const negative = micros < 0n;
+  const abs = negative ? -micros : micros;
+  let fraction = (abs % MICROS).toString().padStart(6, '0').replace(/0+$/, '');
+  if (fraction.length < 2) fraction = fraction.padEnd(2, '0');
+  return `${negative ? '-' : ''}${abs / MICROS}.${fraction}`;
+}
+
+/**
+ * The cash line of an investment account's snapshot.
+ *
+ * SimpleFin's `balance` means different things at different brokers. Fidelity
+ * (and most others) report the TOTAL account value: the positions plus any
+ * cash. Writing that figure as the cash line on top of the positions counts
+ * every holding twice, which is exactly what a Holdings-mode account showed:
+ * "cash" equal to the sum of the holdings, and a total about double the truth.
+ *
+ * The holdings' own `market_value`s settle which convention a given account
+ * uses, so the answer comes from the data instead of an assumption:
+ *
+ *  - balance accounts for the holdings, within a dollar: balance IS the total,
+ *    and the cash is whatever is left over, usually nothing.
+ *  - balance is smaller than the holdings by more than that: it cannot be a
+ *    total, so it is cash alone, and is written as before.
+ *  - balance exceeds the holdings by more than a dollar: the remainder is cash.
+ *
+ * Every holding counts toward the sum, including the ones the snapshot drops
+ * for lacking a symbol or share count: their value is still inside `balance`.
+ *
+ * When the comparison is impossible (a holding without a `market_value`, or in
+ * a different currency than the account) this returns `balance` unchanged. That
+ * is the behaviour before this function existed, and the only choice that
+ * invents nothing.
+ *
+ * Not decidable from here: an account whose `balance` is cash alone, in an
+ * amount larger than its holdings. It reads as a total with a cash remainder.
+ */
+function cashFor(account: SimplefinAccount, holdings: NonNullable<SimplefinAccount['holdings']>): string {
+  const balance = parseMicros(account.balance);
+  if (balance === null) return account.balance;
+
+  let held = 0n;
+  for (const holding of holdings) {
+    if (holding.currency && holding.currency !== account.currency) return account.balance;
+    const marketValue = parseMicros(holding.market_value);
+    if (marketValue === null) return account.balance;
+    held += marketValue;
+  }
+
+  const remainder = balance - held;
+  if (remainder < -BALANCE_TOLERANCE) return account.balance;
+  if (remainder <= BALANCE_TOLERANCE) return '0';
+  return formatMicros(remainder);
+}
+
 /**
  * The snapshot for one SimpleFin account, or `null` when there is nothing
  * honest to write.
@@ -76,7 +180,10 @@ export interface HoldingsSnapshot {
  * ENTIRE batch, which is why they are filtered rather than passed through and
  * left to fail: one junk line would cost the account its whole snapshot.
  */
-export function toHoldingsSnapshot(account: SimplefinAccount): HoldingsSnapshot | null {
+export function toHoldingsSnapshot(
+  account: SimplefinAccount,
+  options: HoldingsSnapshotOptions = {},
+): HoldingsSnapshot | null {
   const holdings = account.holdings;
   if (!Array.isArray(holdings) || holdings.length === 0) return null;
 
@@ -101,19 +208,23 @@ export function toHoldingsSnapshot(account: SimplefinAccount): HoldingsSnapshot 
   }
   if (positions.length === 0) return null;
 
+  // The BALANCE date, not today: a feed can be a day or more behind, and
+  // dating a snapshot today would attribute yesterday's positions to a day
+  // they were not held — then collide with the real snapshot for today.
+  //
+  // Read on the LOCAL calendar, not UTC. Wealthfolio refuses a snapshot dated
+  // after its own today, and a fresh balance timestamp in the evening west of
+  // UTC is already tomorrow in UTC: 22:08 on Oct 18 in Los Angeles is Oct 19
+  // 05:08Z, and `toISOString().slice(0, 10)` made every investment account fail
+  // with "Date 2026-10-19 can't be imported" until local midnight. The clamp is
+  // for a feed whose timestamp runs ahead of the clock; a snapshot is never
+  // dated in the future.
+  const day = calendarDay(new Date(account['balance-date'] * 1000), options.timeZone);
+  const today = calendarDay(options.now ?? new Date(), options.timeZone);
+
   return {
-    // The BALANCE date, not today: a feed can be a day or more behind, and
-    // dating a snapshot today would attribute yesterday's positions to a day
-    // they were not held — then collide with the real snapshot for today.
-    //
-    // Its LOCAL calendar day, not its UTC one: `balance-date` is a real
-    // instant, not a bank day, and Wealthfolio refuses a date after its own
-    // today. Live, 2026-10-18 at 10:43 PM Eastern: the balance was stamped
-    // 02:43 UTC on Oct 19, the snapshot asked for "2026-10-19", and every
-    // evening sync after 8 PM failed with "Use a date from 1970-01-01 to
-    // 2026-10-18". (Transaction dates stay as they are: `posted` IS a bank day.)
-    date: localIsoDay(new Date(account['balance-date'] * 1000)),
+    date: day > today ? today : day, // `YYYY-MM-DD` strings order lexically
     positions,
-    cashBalances: { [account.currency]: account.balance },
+    cashBalances: { [account.currency]: cashFor(account, holdings) },
   };
 }
