@@ -85,7 +85,7 @@ describe('runSyncCore — a card gets a real verdict after the run\'s own saves 
 
   it('asks about cards only: an unvalued account of another type is not asked (F5)', async () => {
     const seed = citiSeed('-161.20', [NEW_CHARGE], { cardTotals: true });
-    seed.accountSet.accounts.push({ id: 'sfin-loan', name: 'Car Loan', currency: 'USD', balance: '-900.00', 'balance-date': epoch('2026-10-18T12:00:00Z'), transactions: [] });
+    seed.accountSet!.accounts.push({ id: 'sfin-loan', name: 'Car Loan', currency: 'USD', balance: '-900.00', 'balance-date': epoch('2026-10-18T12:00:00Z'), transactions: [] });
     seed.mapping!['sfin-loan'] = 'wf-loan';
     seed.accountTypes!['wf-loan'] = 'LOAN';
     const fh = createFakeHost(seed);

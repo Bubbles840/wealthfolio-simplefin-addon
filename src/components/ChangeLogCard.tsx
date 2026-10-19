@@ -25,6 +25,7 @@ import { Button, Input, Select } from './ui';
 import type { ChangeLogItem, ChangeLogRead } from '../../shared/change-log';
 import { undoAvailability, UNDO_TAKES_EFFECT, UNDO_UNREACHABLE, type UndoOp } from '../../shared/change-undo';
 import type { UndoOutcome } from '../../shared/change-undo-run';
+import type { SyncResult } from '../../shared/sync-core';
 import { overrideRows, paybackUndoCovers, type LoadedSyncOverrides, type OverrideRow } from '../../shared/sync-overrides';
 import { changeDay } from '../../shared/change-entries';
 import { shortDateTime } from '../../shared/telegram';
@@ -67,7 +68,7 @@ export interface ChangeLogCardProps {
  *  A run the SimpleFin budget stopped (inside 5 minutes of a download, or the
  *  day's limit used) downloaded nothing, so the Undo has not taken effect yet:
  *  it says the budget's one line, never "Synced". */
-export function syncNowSentence(r: { imported: number; errors: string[]; download?: { line: string } }): string {
+export function syncNowSentence(r: Pick<SyncResult, 'imported' | 'errors' | 'download'>): string {
   if (r.download) return r.download.line;
   return r.errors.length ? `Synced, with a problem: ${r.errors[0]}` : `Synced — ${r.imported} imported.`;
 }
