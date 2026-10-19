@@ -114,6 +114,8 @@ describe("It's a payback… on the needs-a-category list (W11)", () => {
     await screen.findByText('Needs a category');
     if (!screen.queryByText('Row b')) fireEvent.click(await screen.findByRole('button', { name: /^1 need/i }));
     await screen.findByText('Row b');
-    expect(screen.queryByText(FILED)).toBeNull();
+    // The line is cleared by an effect keyed on the publish time, one render
+    // after the new rows show: wait for it (failed on CI's runner, 2026-10-18).
+    await waitFor(() => expect(screen.queryByText(FILED)).toBeNull());
   });
 });

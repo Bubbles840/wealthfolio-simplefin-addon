@@ -1433,6 +1433,59 @@ branches.
   it could now be half of a pair; the detector still never pairs one);
   `findTransferMatchCandidates`, `saveTransferPair`, alternative assets.
 
+## 19. Bank-first card payments (2026-10-18, plan `2026-10-18-bank-first-payments.md`)
+
+- **Yearly subscriptions (R10).** Not detected: an annual plan (one charge,
+  about 365 days after the last) stays invisible, as before.
+- **Product words in account names (R2).** `double`, `freedom`, `unlimited`
+  and `individual` name an account (`accountNameWords`). A bill that uses one
+  of them with payment wording is held up to 10 days, then counts as spending
+  marked "Needs review". If that happens live, add the word to
+  `GENERIC_ACCOUNT_WORDS` (sync-core.ts), which also narrows the dead-feed hold.
+- **Money in still waits for its other half (R1).** A deposit that names an
+  account (Robinhood's "…transferred to Robinhood Brokerage account" cashback)
+  is left to pairing and `NOT_AWAITING_TRANSFER_HALF`.
+- **The relink sweep drops the in-transit marker.** A row stored as a
+  WITHDRAWAL that a later sync retypes as a held transfer (A, a new rule) is
+  re-created asset-free from the comment it was READ with, so the marker and
+  the external metadata land one sync later; in between it is a bare
+  TRANSFER_OUT. Carry the planned comment and metadata into `relinkCreates`.
+- **Renames and reminders under an old key.** R6 compares hidden, confirmed,
+  linked and declined names through `normalizeRosterKey`; `names`, `prevNames`
+  and `remind` are still exact, so one stored under a key with a leading
+  reference is lost once.
+- **The reference keeps its slot in the six-token cap.** `categoryRulePattern`
+  strips the leading reference after the cap, so a stored key normalizes to
+  exactly the new key; a long descriptor's pattern is one token shorter than
+  it could be. Payback patterns strip it before the cap, as they always did.
+- **A one-sided `notTransfer`** on a pair whose cash leg names the card now
+  holds the cash leg as a transfer for 10 days (pinned in
+  sync-core-not-transfer.test.ts). Undo marks both legs, so only a hand-made
+  override reaches it.
+- **The fake host restarts its ids per host** (`fh-1`, …): a test that builds a
+  new host on an earlier host's activities can collide ids. Run repeated syncs
+  on one host.
+- **A degraded run can un-hold a payment for one sync.** A's decision depends on the whole run: when `listAccounts` fails (every account type unknown) or a mapped account is missing from the SimpleFin fetch (its words missing), a stored in-transit TRANSFER_OUT still inside the 10 days is retyped WITHDRAWAL for that run and back on the next. The mapper already degrades the same way on unknown types. Option: keep a stored in-transit row as stored when the account types are unknown.
+- **Sibling accounts share institution words (R2).** "The row's own account
+  never counts" leaves out the row's own entry, not its institution: 360
+  Checking sees `capital` through 360 Performance Savings' org "Capital One",
+  so any 360 outflow that mentions Capital One in payment words is held as a
+  transfer. Almost always right (it IS a transfer between them), but not by
+  design.
+- **The dead-feed hold stretches R2's cost.** A bill that names an account
+  whose feed is dead is held for as long as the feed stays dead, not 10 days
+  at most. And the first heal or deep scan after deploy turns older unpaired
+  payments that name such an account (a dead Discover feed) from WITHDRAWAL
+  into held placeholders, so past spending drops. Intended for card payments.
+- **Choices stored under a renamed charge's own key (C1 aliases).** A hide
+  stored under the new name hides the joined row and Restore clears it, but
+  accepting a link to the joined entry does not move that hide to the
+  hand-added key (`acceptLink` matches `link.merchant` only), so it lingers
+  with no effect until the join breaks. And a rename or reminder saved under
+  the new name is dropped once the charge joins its old name (`naming` /
+  `reminder` read only the joined entry's name). Reachable only when the new
+  name was hidden, renamed or given a reminder as its own row before the join.
+
 ## Reference: name mismatches between the database, the REST API, and the SDK
 
 Every one of these cost a diagnostic cycle against the live instance on

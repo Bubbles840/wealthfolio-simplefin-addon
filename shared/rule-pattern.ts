@@ -9,12 +9,12 @@
  * from the full description matches exactly one transaction forever; the fix
  * is to trim the trailing junk and keep the stable head.
  *
- * Unlike the transfer flow's `rulePatternFor` (companion/src/
- * transfer-learning.ts), this MUST return a verbatim substring of the
- * description: Wealthfolio's categorization rules are a `contains` match
- * against the RAW text, so stripping punctuation ("Amazon.com" → "Amazon
- * com") would build a rule that never matches anything, including the very
- * charge it was made from.
+ * Both pattern builders (this one and the transfer flow's `rulePatternFor` in
+ * companion/src/transfer-learning.ts, built from this one since 1.63) return a
+ * verbatim substring of the description: Wealthfolio's categorization rules are
+ * a case-insensitive `contains` match against the RAW text, so stripping
+ * punctuation ("Amazon.com" → "Amazon com") would build a rule that never
+ * matches anything, including the very charge it was made from.
  */
 
 /** A trailing token that is reference noise, not merchant identity: no letters
@@ -31,6 +31,35 @@ const isJunkToken = (token: string): boolean =>
  *  charge would fail to contain it. Matches the transfer flow's cap. */
 const MAX_TOKENS = 6;
 
+/** A leading token that is the bank's per-charge reference, not the payee: a
+ *  `*`/`#` token with a digit ("*0082", "#4471"), a run of 3+ digits ("4090"),
+ *  or a 6+ character code with at least 3 digits ("RT08C248B2E7C8B", "XX9257"). */
+const isLeadingReference = (token: string): boolean =>
+  /^[*#]\S*\d/.test(token)
+  || /^\d{3,}$/.test(token)
+  || (/^[A-Za-z0-9]{6,}$/.test(token) && (token.match(/\d/g) ?? []).length >= 3);
+
+/**
+ * `text` without the bank's leading reference tokens.
+ *
+ * Since ~2026-09-22 PNC puts a fresh reference in front of each charge
+ * (`*0062 PAYMENT CITI AUTOPAY …` in September, `*0082 …` on Oct 17), so a rule
+ * built with the reference in it matched last month's payment never again.
+ * Strips every reference token from the front, but never the last token that
+ * has a letter: a description that is only a reference keeps it. The result is
+ * a verbatim suffix of `text` (same casing, spacing and punctuation), which a
+ * `contains` rule needs.
+ */
+export function stripLeadingReference(text: string): string {
+  const tokens: Array<{ start: number; text: string }> = [];
+  for (const m of text.matchAll(/\S+/g)) tokens.push({ start: m.index, text: m[0] });
+  let lastLettered = -1;
+  tokens.forEach((t, i) => { if (/[a-zA-Z]/.test(t.text)) lastLettered = i; });
+  let first = 0;
+  while (first < lastLettered && isLeadingReference(tokens[first].text)) first += 1;
+  return first === 0 ? text : text.slice(tokens[first].start);
+}
+
 export function categoryRulePattern(description: string): string {
   const tokens: Array<{ start: number; end: number; text: string }> = [];
   for (const m of description.matchAll(/\S+/g)) {
@@ -41,8 +70,14 @@ export function categoryRulePattern(description: string): string {
   // All junk (a bare reference number): the description itself is the only
   // possible pattern, and a one-charge rule beats no button at all.
   if (last < 0) return description;
-  const end = Math.min(last, MAX_TOKENS - 1);
-  return description.slice(tokens[0].start, tokens[end].end);
+  // The six-token cap counts a leading reference too, so a key stored before
+  // references were stripped ("*8712 PAYMENT LOUISVILLE GAS & ACH") normalizes
+  // to exactly the key the same charge gets today.
+  let end = Math.min(last, MAX_TOKENS - 1);
+  // The cap can land on a junk token ("… FIVE 1234 SEVEN"); walk back off it so
+  // the pattern never ends on one, which also keeps this idempotent.
+  while (end > 0 && isJunkToken(tokens[end].text)) end -= 1;
+  return stripLeadingReference(description.slice(tokens[0].start, tokens[end].end));
 }
 
 /** The marks the sync appends to a bank description (a Venmo note, an Amazon label). */
@@ -57,12 +92,11 @@ export function bankWords(description: string): string {
 }
 
 /** The pattern "Make every … deposit a payback" (W10) is built from: the
- *  bank's words, trimmed as a category rule's are, and also without a leading
- *  reference token ("*1234") and a trailing " ON MM/DD" with whatever follows it
- *  ("REF # …"). Category rules keep their own, unchanged cleanup. */
+ *  bank's words, without a leading reference (`stripLeadingReference`: "*1234",
+ *  "4090", …) and a trailing " ON MM/DD" with whatever follows it
+ *  ("REF # …"), then trimmed as a category rule's is. */
 export function paybackRulePattern(description: string): string {
-  const words = bankWords(description).trim()
-    .replace(/^[*#]\S*\d\S*\s+/, '')
+  const words = stripLeadingReference(bankWords(description).trim())
     .replace(/\s+ON\s+\d{1,2}\/\d{1,2}(?:\/\d{2,4})?(?:\s.*)?$/i, '');
   return categoryRulePattern(words);
 }

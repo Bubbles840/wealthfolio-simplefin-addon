@@ -22,6 +22,7 @@
 import { formatDollars, type InlineKeyboard } from '../../shared/telegram.js';
 import { mappingRuleCreatedChange, type ChangeDraft } from '../../shared/change-entries.js';
 import { MENU_CALLBACK_PREFIX } from '../../shared/categorize-menu.js';
+import { bankWords, categoryRulePattern } from '../../shared/rule-pattern.js';
 import type { MappingRule, ActivityType } from '../../shared/types.js';
 
 const OPEN_PREFIX = `${MENU_CALLBACK_PREFIX}tl:`;
@@ -94,23 +95,20 @@ export interface TransferLearning {
 }
 
 /**
- * The rule pattern for a description.
+ * The rule pattern for a description: the bank's own words, trimmed as a
+ * category rule's are (`categoryRulePattern`).
  *
- * A bank repeats the payee wording verbatim between payments but appends
- * varying reference numbers and dates, so the pattern is the leading run of
- * WORDS — letters, digits and spaces — with trailing digit-only tokens
- * dropped. "Payment to Ccb Credit Card Payments" survives whole; "ACH
- * WITHDRAWAL 0821 REF 99182" becomes "ACH WITHDRAWAL", which still identifies
- * the payee without pinning the rule to one day's reference.
+ * It must be a verbatim substring of the text: `ruleApplies` is a
+ * case-insensitive `contains` on the RAW description, so the old word-cleaning
+ * ("WEB-RECUR" → "WEB RECUR") built rules that matched nothing, not even the
+ * transaction they were made from. It also drops the bank's leading reference:
+ * on 2026-10-17 the rule written from `*0082 PAYMENT CITI AUTOPAY ACH WEB` was
+ * "0082 PAYMENT CITI AUTOPAY ACH WEB", which September's `*0062 …` never matched.
  */
 export function rulePatternFor(description: string): string {
-  const cleaned = description.replace(/[^\p{L}\p{N} ]+/gu, ' ').replace(/\s+/g, ' ').trim();
-  if (!cleaned) return '';
-  const words = cleaned.split(' ');
-  while (words.length > 1 && /^\d+$/.test(words[words.length - 1])) words.pop();
-  // Capped so one long descriptor does not become a rule so specific that the
-  // next payment fails to match it.
-  return words.slice(0, 6).join(' ');
+  const words = bankWords(description).trim();
+  if (!/[\p{L}\p{N}]/u.test(words)) return '';
+  return categoryRulePattern(words);
 }
 
 export function createTransferLearning(deps: TransferLearningDeps): TransferLearning {

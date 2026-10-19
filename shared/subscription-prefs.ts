@@ -18,7 +18,7 @@
 import {
   CONFIRMED_SUBSCRIPTIONS_SECRET_KEY, HIDDEN_SUBSCRIPTIONS_SECRET_KEY, parseHiddenSubscriptions,
 } from './subscriptions.js';
-import { addPeriod, isManualKey, manualKey, type Cadence } from './subscription-roster.js';
+import { addPeriod, isManualKey, manualKey, normalizeDeclinedLink, normalizeRosterKey, type Cadence } from './subscription-roster.js';
 
 export const SUBSCRIPTION_PREFS_SECRET_KEY = 'subscription_prefs';
 /** Days a deleted hand-added entry is kept for ↩ Undo. */
@@ -222,8 +222,11 @@ export async function editSubscriptionPrefs(
   return next;
 }
 
-const without = (list: string[], key: string) => list.filter((k) => k !== key);
-const withKey = (list: string[], key: string) => (list.includes(key) ? list : [...list, key]);
+// R6: a key saved before 1.63 (`*8712 PAYMENT …`) is the same entry as today's
+// (`PAYMENT …`); hand-added keys compare exactly (normalizeRosterKey keeps them).
+const sameKey = (a: string, b: string) => a === b || normalizeRosterKey(a) === normalizeRosterKey(b);
+const without = (list: string[], key: string) => list.filter((k) => !sameKey(k, key));
+const withKey = (list: string[], key: string) => (list.some((k) => sameKey(k, key)) ? list : [...list, key]);
 
 export function hideKey(p: SubscriptionPrefs, key: string): SubscriptionPrefs {
   return { ...p, hidden: withKey(p.hidden, key) };
@@ -231,6 +234,13 @@ export function hideKey(p: SubscriptionPrefs, key: string): SubscriptionPrefs {
 
 export function unhideKey(p: SubscriptionPrefs, key: string): SubscriptionPrefs {
   return { ...p, hidden: without(p.hidden, key) };
+}
+
+/** Restores a roster row: its key, and each alias a hide may be stored under
+ *  (F1). A renamed charge's key (`GOOGLE *G1AI101M …`) hides the entry it was
+ *  joined into, so unhiding only the entry's own key left it hidden for good. */
+export function unhideEntry(p: SubscriptionPrefs, entry: { key: string; aliases?: readonly string[] }): SubscriptionPrefs {
+  return [entry.key, ...(entry.aliases ?? [])].reduce((acc, key) => unhideKey(acc, key), p);
 }
 
 export function confirmKey(p: SubscriptionPrefs, key: string): SubscriptionPrefs {
@@ -315,7 +325,7 @@ export function acceptLink(
   const entry = p.manual.find((m) => m.id === link.manualId);
   if (!entry) return p;
   const key = manualKey(entry.id);
-  const hidden = p.hidden.includes(link.merchant) ? withKey(without(p.hidden, link.merchant), key) : p.hidden;
+  const hidden = p.hidden.some((k) => sameKey(k, link.merchant)) ? withKey(without(p.hidden, link.merchant), key) : p.hidden;
   const remind = { ...p.remind };
   if (own(remind, link.merchant)) {
     if (!own(remind, key)) remind[key] = remind[link.merchant];
@@ -332,7 +342,11 @@ export function acceptLink(
 }
 
 export function declineLink(p: SubscriptionPrefs, manualId: string, merchant: string): SubscriptionPrefs {
-  return { ...p, declinedLinks: withKey(p.declinedLinks, `${manualId}|${merchant}`) };
+  // Not withKey: that would normalize the whole `id|merchant` string.
+  const entry = `${manualId}|${merchant}`;
+  const probe = normalizeDeclinedLink(entry);
+  if (p.declinedLinks.some((l) => normalizeDeclinedLink(l) === probe)) return p;
+  return { ...p, declinedLinks: [...p.declinedLinks, entry] };
 }
 
 /** Drops tombstones older than DELETED_KEEP_DAYS, with every name, reminder,

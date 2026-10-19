@@ -1,3 +1,4 @@
+import { bankFirstTransferOut } from './bank-first-payment.js';
 import { mapTransactionWithSource } from './mapper.js';
 import { REIMBURSEMENT_SUBTYPE } from './cash-flow-bucket.js';
 import { accountTxKey, detectTransferPairs, TRANSFER_MATCH_WINDOW_SECONDS } from './transfers.js';
@@ -2158,6 +2159,15 @@ async function runSyncPass(
     })))
     : new Map();
 
+  // Each mapped account's name words, built once and BEFORE typing: typing needs
+  // them to see a payment that names another connected account (spec A), and the
+  // in-transit expiry hold below reads the same map.
+  const nameWords = new Map<string, string[]>();
+  for (const sfAccount of accountSet.accounts) {
+    if (!mapping[sfAccount.id]) continue;
+    nameWords.set(sfAccount.id, accountNameWords(sfAccount.name, sfAccount.org?.name));
+  }
+
   for (const sfAccount of accountSet.accounts) {
     const wfAccountId = mapping[sfAccount.id];
     if (!wfAccountId) {
@@ -2174,6 +2184,8 @@ async function runSyncPass(
     // Datable, not skipped, one copy per id (see `feedOf` above).
     const transactions = feedOf.get(sfAccount) ?? [];
     const prepared: PreparedTx[] = [];
+    // The row's own account never counts as "another account" (R2).
+    const otherAccountWords = [...nameWords].filter(([id]) => id !== sfAccount.id).map(([, words]) => words);
     for (const tx of transactions) {
       const amount = parseFloat(tx.amount);
       const key = accountTxKey(sfAccount.id, tx.id);
@@ -2194,10 +2206,21 @@ async function runSyncPass(
       const flagged = hasTxOverride(overrides, key, 'asReimbursement');
       const payback = flagged && amount > 0 && (!acctType || acctType === 'CASH');
       if (flagged && !payback) yieldedPaybackKeys.add(key);
-      const mapped = mapTransactionWithSource(
+      const builtIn = mapTransactionWithSource(
         tx.description, amount, rules, wfTypes.get(wfAccountId), wfAccountId,
         txEpoch(tx) !== null ? new Date(txEpoch(tx)! * 1000).toISOString().split('T')[0] : undefined,
       );
+      // Live, 2026-10-17: a $42.40 Citi autopay posted at PNC before Citi's half
+      // existed, read as plain spending, and asked for a category. A bank-account
+      // payment whose raw text names another connected account is the paying half
+      // of a transfer, so it is typed one now and the in-transit path does the rest
+      // (placeholder, link when the other half posts, expiry, dead-feed hold).
+      // Decided HERE, before the payback and `notTransfer` handling below, so both
+      // still win (R4); a mapping rule already won inside the helper.
+      // `tx.description` is the bank's raw text — enrichment comes later.
+      const mapped = bankFirstTransferOut(tx.description, amount, acctType, builtIn, otherAccountWords)
+        ? { ...builtIn, type: 'TRANSFER_OUT' as ActivityType }
+        : builtIn;
       const { type, fromRule, subtype } = payback
         ? { type: 'CREDIT' as ActivityType, fromRule: true, subtype: REIMBURSEMENT_SUBTYPE as string | undefined }
         : notTransfer && isTransferType(mapped.type)
@@ -2347,7 +2370,6 @@ async function runSyncPass(
   // proven itself alive through — see expiryHoldAccount. Built once per run,
   // from data this run already fetched; no new I/O.
   const feedAliveEpoch = new Map<string, number>();
-  const nameWords = new Map<string, string[]>();
   for (const sfAccount of accountSet.accounts) {
     if (!mapping[sfAccount.id]) continue;
     let alive = sfAccount['balance-date'] ?? 0;
@@ -2356,7 +2378,6 @@ async function runSyncPass(
       if (e !== null && e > alive) alive = e;
     }
     feedAliveEpoch.set(sfAccount.id, alive);
-    nameWords.set(sfAccount.id, accountNameWords(sfAccount.name, sfAccount.org?.name));
   }
   const mappedSfinIds = Object.keys(mapping);
   const nowSec = Math.floor(Date.now() / 1000);

@@ -1334,7 +1334,7 @@ export function getNativeMerchantRows(
   startInclusive: string,
   endExclusive: string,
   strict = false,
-): Array<{ month: string; date: string; notes: string; amount: number }> {
+): Array<{ month: string; date: string; notes: string; amount: number; accountId: string }> {
   let read: ReturnType<typeof readSpendLines> | null;
   if (strict) {
     if (!validDateBounds(startInclusive, endExclusive)) throw new NativeDbUnreadableError(`merchant rows: bounds ${startInclusive}..${endExclusive}`);
@@ -1343,7 +1343,8 @@ export function getNativeMerchantRows(
     read = spendLinesOrNull(dbPath, startInclusive, endExclusive);
   }
   if (!read) return [];
-  return read.lines.map((line) => ({ month: line.month, date: line.day, notes: line.row.notes, amount: toDollars(line.cents) }));
+  // accountId: the subscription detector joins a renamed charge only on the same account (1.63, C1).
+  return read.lines.map((line) => ({ month: line.month, date: line.day, notes: line.row.notes, amount: toDollars(line.cents), accountId: line.row.accountId }));
 }
 
 /** One drill-down row. Since 1.61 it carries what the cube needs to open the

@@ -12,10 +12,11 @@
  * one candidate; two merchants is ambiguous, and an ambiguous match is worse
  * than none (the Amazon lesson), so nothing is offered.
  */
-import { categoryRulePattern } from './rule-pattern.js';
-import type { SubscriptionCharge } from './subscriptions.js';
+import { subscriptionKey, type SubscriptionCharge } from './subscriptions.js';
 import type { SubscriptionPrefs } from './subscription-prefs.js';
-import { addDaysIso, addPeriod, daysBetween, localIsoDay, type Cadence, type CubeLink } from './subscription-roster.js';
+import {
+  addDaysIso, addPeriod, daysBetween, declinedLinkEntry, localIsoDay, type Cadence, type CubeLink,
+} from './subscription-roster.js';
 
 export const LINK_WINDOW_DAYS = 45;
 export const LINK_DATE_SLACK_DAYS = 3;
@@ -37,17 +38,29 @@ function dueDatesBetween(anchor: string, cadence: Cadence, from: string, to: str
   return out;
 }
 
+/**
+ * `aliasOf` (aliasNames of this build's detection) maps a renamed charge's
+ * key to the entry it was joined into (F1). Without it, on Oct 25 Google's
+ * renamed `GOOGLE *G1AI101M …` was offered for a hand-added Google One;
+ * accepting it absorbed nothing, the roster held both, and the forecast
+ * scheduled two bills.
+ */
 export function findLinkSuggestions(
   charges: readonly SubscriptionCharge[],
   prefs: SubscriptionPrefs,
   now: Date,
+  aliasOf: ReadonlyMap<string, string> = new Map(),
 ): CubeLink[] {
   const today = localIsoDay(now);
   const since = addDaysIso(today, -LINK_WINDOW_DAYS);
   const recent = charges.filter((c) => c.merchant && c.cents > 0 && c.date >= since && c.date <= today);
+  const entryOf = (key: string) => aliasOf.get(key) ?? key;
   // A merchant linked to ANY hand-added entry is never offered again (R2-16).
-  const claimed = new Set(prefs.manual.flatMap((m) => (m.merchant ? [m.merchant] : [])));
-  const declined = new Set(prefs.declinedLinks);
+  // Both sets compare under today's key: a link or a decline saved before 1.63 may
+  // carry the bank's leading reference, which no longer names the merchant (R6);
+  // one saved under a renamed charge's key names the entry it was joined into (F1).
+  const claimed = new Set(prefs.manual.flatMap((m) => (m.merchant ? [entryOf(subscriptionKey(m.merchant))] : [])));
+  const declined = new Set(prefs.declinedLinks.map((l) => declinedLinkEntry(l, aliasOf)));
   const out: CubeLink[] = [];
   for (const m of prefs.manual) {
     if (m.merchant) continue;
@@ -59,8 +72,9 @@ export function findLinkSuggestions(
     for (const c of recent) {
       if (Math.abs(c.cents - m.cents) > m.cents * LINK_AMOUNT_TOLERANCE) continue;
       if (!dues.some((d) => Math.abs(daysBetween(d, c.date)) <= LINK_DATE_SLACK_DAYS)) continue;
-      // The detector's key, so accepting the link absorbs the detected row.
-      const merchant = categoryRulePattern(c.merchant) || c.merchant;
+      // The detector's key — the joined entry's, for a renamed charge — so
+      // accepting the link absorbs the detected row.
+      const merchant = entryOf(subscriptionKey(c.merchant));
       if (claimed.has(merchant) || declined.has(`${m.id}|${merchant}`)) continue;
       const seen = byMerchant.get(merchant);
       if (!seen || c.date > seen.date) byMerchant.set(merchant, { date: c.date, cents: c.cents });

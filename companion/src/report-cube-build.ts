@@ -31,7 +31,7 @@ import {
   type CubeMerchant, type ReportCube,
 } from '../../shared/report-cube.js';
 import type { SemesterPoolConfig } from '../../shared/pool.js';
-import { detectSubscriptions, type SubscriptionCharge } from '../../shared/subscriptions.js';
+import { aliasNames, detectSubscriptions, type SubscriptionCharge } from '../../shared/subscriptions.js';
 import { findLinkSuggestions } from '../../shared/subscription-links.js';
 import type { SubscriptionPrefs } from '../../shared/subscription-prefs.js';
 
@@ -222,19 +222,21 @@ export async function buildReportCube(
   // date comes from an older reader, and no dates at all means "could not
   // look" (null), which must stay distinguishable from "none found" ([]).
   const datedCharges: SubscriptionCharge[] = [];
-  for (const r of merchantRows as Array<{ date?: string; notes: string; amount: number }>) {
+  for (const r of merchantRows as Array<{ date?: string; notes: string; amount: number; accountId?: string }>) {
     if (!r.date) continue;
     const name = descriptionFromComment(r.notes);
     if (!name) continue;
-    datedCharges.push({ date: r.date, merchant: name, cents: cents(r.amount) });
+    // The account rides along so a renamed charge joins its old name only on the same account.
+    datedCharges.push({ date: r.date, merchant: name, cents: cents(r.amount), ...(r.accountId ? { accountId: r.accountId } : {}) });
   }
   const subscriptions = datedCharges.length > 0 ? detectSubscriptions(datedCharges, now) : null;
   // Link suggestions ride the same dated charges. A failed read costs the
-  // suggestions, never the cube.
+  // suggestions, never the cube. A renamed charge is offered under the entry
+  // it was joined into, so accepting it absorbs that row (F1).
   let subscriptionLinks: ReportCube['subscriptionLinks'] = null;
   if (deps.subscriptionPrefs && datedCharges.length > 0) {
     const prefs = await deps.subscriptionPrefs().catch(() => null);
-    if (prefs) subscriptionLinks = findLinkSuggestions(datedCharges, prefs, now);
+    if (prefs) subscriptionLinks = findLinkSuggestions(datedCharges, prefs, now, aliasNames(subscriptions));
   }
 
   // Drill-down: the newest month only, per category, newest first, capped.
