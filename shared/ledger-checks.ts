@@ -122,6 +122,8 @@ export function evaluateLedgerChecks(
   now: Date,
   /** What the sync stored; absent, a held transfer cannot say why. */
   feeds?: StoredFeeds,
+  /** Bank-transaction keys already marked "not a transfer": those findings say so and offer no fix. */
+  marked?: ReadonlySet<string>,
 ): { findings: SelfCheckFinding[]; keys: string[] } {
   const candidates: Candidate[] = [];
   const warn = (message: string, label: string, fix?: FindingFix): SelfCheckFinding => ({
@@ -263,7 +265,7 @@ export function evaluateLedgerChecks(
   }
   for (const row of facts.heldTransfers) {
     if (row.ageDays < HELD_MIN_AGE_DAYS) continue;
-    const h = judgeHeldTransfer(row, feeds, now);
+    const h = judgeHeldTransfer(row, feeds, now, marked);
     candidates.push({
       key: `held-transfer:${row.id}`,
       // R7: shown while it is held, because it now has a way out.
@@ -271,7 +273,7 @@ export function evaluateLedgerChecks(
       finding: warn(
         heldTransferMessage(h),
         `${short(h.description)} ${money(h.amount)} still in transit`,
-        h.txKey
+        h.txKey && !h.marked
           ? { kind: 'not-transfer', txKey: h.txKey, label: h.label, description: h.description, amount: h.amount, direction: h.direction }
           : undefined,
       ),

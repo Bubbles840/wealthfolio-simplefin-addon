@@ -179,7 +179,14 @@ export function createFindingsMenu(deps: FindingsMenuDeps): FindingsMenu {
             if (!isUnreadableOverridesError(err)) throw err;
             return void await ui.answer(SYNC_OVERRIDES_UNREADABLE_MESSAGE);
           }
-          return void await showList(ui, 'edit', `Done — the next sync counts it as ${spendingWord(fix)}`);
+          // The write is done: a failed redraw must not read as a failed write.
+          const done = `Done — the next sync counts it as ${spendingWord(fix)}`;
+          try {
+            return void await showList(ui, 'edit', done);
+          } catch (err) {
+            deps.log(`Findings menu: redraw after "Not a transfer" failed: ${err instanceof Error ? err.message : String(err)}`);
+            return void await ui.answer(done).catch(() => {});
+          }
         }
         // FIX
         if (fix.kind === 'not-transfer') {
