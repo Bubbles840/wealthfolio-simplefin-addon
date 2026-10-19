@@ -73,25 +73,81 @@ describe('checkBalancesOnly — a Sync inside the gap re-checks against the last
     expect((await snaps(fh))['sfin-spend']).toMatchObject({ measured: false, drift: null });
   });
 
-  it('checks nothing while a newer download than the stored figures is in flight (R16)', async () => {
+  it('a newer request than the stored figures (a download in flight, a Setup) leaves every snapshot untouched (R16, F3)', async () => {
     const seed = seedOf();
     const fh = createFakeHost(seed);
     await runSyncCore(fh.host, fh.store, { manual: true });
+    const before = await snaps(fh);
+    const set = vi.spyOn(fh.store, 'setAccountBalances');
     const { dataAt } = await checkBalancesOnly(fh.host, fh.store, { mapping: seed.mapping!, newestRequestAt: NOW.getTime() + 60_000 });
     expect(dataAt).toBeNull();
-    const s = await snaps(fh);
-    expect([s['sfin-spend'].measured, s['sfin-citi'].measured]).toEqual([false, false]);
+    expect(set).not.toHaveBeenCalled();
+    expect(await snaps(fh)).toEqual(before);
   });
 
-  it('never calls a snapshot written without fetchedAt (an older writer) in sync', async () => {
+  it('leaves a snapshot written without fetchedAt (an older writer) exactly as it was, and writes nothing (F3)', async () => {
     const seed = seedOf();
     const fh = createFakeHost(seed);
     await runSyncCore(fh.host, fh.store, { manual: true });
     const s = await snaps(fh);
-    const { fetchedAt: _old, ...olderWriter } = s['sfin-spend'];
-    await fh.store.setAccountBalances({ ...s, 'sfin-spend': { ...olderWriter, measured: true, drift: null } });
+    const olderWriter = Object.fromEntries(Object.entries(s).map(([id, { fetchedAt: _old, ...snap }]) => [id, { ...snap, measured: true, drift: 12.5 }]));
+    await fh.store.setAccountBalances(olderWriter);
+    const set = vi.spyOn(fh.store, 'setAccountBalances');
+    expect((await checkBalancesOnly(fh.host, fh.store, { mapping: seed.mapping!, newestRequestAt: NOW.getTime() })).dataAt).toBeNull();
+    expect(set).not.toHaveBeenCalled();
+    expect(await snaps(fh)).toEqual(olderWriter);
+  });
+
+  it('keeps a measured drift the download found exactly as stored when the check agrees — untagged, so Home keeps its banner (F3)', async () => {
+    const seed = seedOf();
+    const fh = createFakeHost(seed);
+    await runSyncCore(fh.host, fh.store, { manual: true });
+    const s = await snaps(fh);
+    // What a download that measured Spend $50 off leaves: no tag, an episode date, a fix offer.
+    const measured = { ...s['sfin-spend'], measured: true, drift: 50, driftSince: '2026-10-17T15:00:00.000Z',
+      baselineFix: { activityId: 'sb-1', currentAmount: 10, suggestedAmount: 60 } };
+    await fh.store.setAccountBalances({ ...s, 'sfin-spend': measured });
+    seed.valuations!.set('wf-spend', 450);
+    const { dataAt } = await checkBalancesOnly(fh.host, fh.store, { mapping: seed.mapping!, newestRequestAt: NOW.getTime() });
+    expect(dataAt).toBe(NOW.getTime());
+    expect((await snaps(fh))['sfin-spend']).toEqual(measured);
+  });
+
+  it('writes only a verdict that changed, tagged badge only, dropping that account\'s fix offer (F3)', async () => {
+    const seed = seedOf();
+    const fh = createFakeHost(seed);
+    await runSyncCore(fh.host, fh.store, { manual: true });
+    const s = await snaps(fh);
+    const measured = { ...s['sfin-spend'], measured: true, drift: 50, baselineFix: { activityId: 'sb-1', currentAmount: 10, suggestedAmount: 60 } };
+    await fh.store.setAccountBalances({ ...s, 'sfin-spend': measured });
+    // The valuation caught up: Spend now matches the bank.
     await checkBalancesOnly(fh.host, fh.store, { mapping: seed.mapping!, newestRequestAt: NOW.getTime() });
-    expect((await snaps(fh))['sfin-spend']).toMatchObject({ measured: false, drift: null });
+    const after = (await snaps(fh)) as Record<string, Snap & { checkedAfterSave?: true }>;
+    const { baselineFix: _gone, ...rest } = measured;
+    expect(after['sfin-spend']).toEqual({ ...rest, drift: null, measured: true, checkedAfterSave: true });
+  });
+
+  it('writes nothing when every verdict it re-checks is unchanged (F3)', async () => {
+    const seed = seedOf();
+    const fh = createFakeHost(seed);
+    await runSyncCore(fh.host, fh.store, { manual: true });
+    await checkBalancesOnly(fh.host, fh.store, { mapping: seed.mapping!, newestRequestAt: NOW.getTime() });
+    const set = vi.spyOn(fh.store, 'setAccountBalances');
+    const { dataAt } = await checkBalancesOnly(fh.host, fh.store, { mapping: seed.mapping!, newestRequestAt: NOW.getTime() });
+    expect(dataAt).toBe(NOW.getTime());
+    expect(set).not.toHaveBeenCalled();
+  });
+
+  it('leaves a fresh account it cannot compare this time as the download left it (F3)', async () => {
+    const seed = seedOf();
+    const fh = createFakeHost(seed);
+    await runSyncCore(fh.host, fh.store, { manual: true });
+    const s = await snaps(fh);
+    const measured = { ...s['sfin-spend'], measured: true, drift: 50 };
+    await fh.store.setAccountBalances({ ...s, 'sfin-spend': measured });
+    fh.host.listActivities = async () => { throw new Error('offline'); };
+    await checkBalancesOnly(fh.host, fh.store, { mapping: seed.mapping!, newestRequestAt: NOW.getTime() });
+    expect((await snaps(fh))['sfin-spend']).toEqual(measured);
   });
 
   it('keeps every other snapshot and drops a stale baseline-fix offer', async () => {
@@ -133,6 +189,21 @@ describe('checkBalancesOnly — a Sync inside the gap re-checks against the last
     expect(set).not.toHaveBeenCalled();
     vi.restoreAllMocks();
     expect(await snaps(fh)).toEqual(before);
+  });
+
+  it('compares no unvalued account whose type could not be read (F5)', async () => {
+    const seed = seedOf();
+    const fh = createFakeHost(seed);
+    await runSyncCore(fh.host, fh.store, { manual: true });
+    const s = await snaps(fh);
+    await fh.store.setAccountBalances({ ...s, 'sfin-citi': { ...s['sfin-citi'], measured: false, drift: null } });
+    const asked: string[][] = [];
+    const read = fh.host.postedLedgerTotals!.bind(fh.host);
+    fh.host.postedLedgerTotals = async (accounts) => { asked.push(accounts.map((a) => a.wfAccountId)); return read(accounts); };
+    fh.host.listAccounts = async () => { throw new Error('offline'); };
+    await checkBalancesOnly(fh.host, fh.store, { mapping: seed.mapping!, newestRequestAt: NOW.getTime() });
+    expect(asked.flat()).not.toContain('wf-citi');
+    expect((await snaps(fh))['sfin-citi']).toMatchObject({ measured: false, drift: null });
   });
 
   it('nets only asset-backed TRANSFER_OUT rows that carry a bank tx id, as the main path does', async () => {
