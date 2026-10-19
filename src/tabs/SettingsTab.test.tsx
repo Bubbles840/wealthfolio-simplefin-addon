@@ -319,6 +319,46 @@ describe('SettingsTab', () => {
     ]));
   });
 
+  it('never stores an empty rule: "+ Add rule" saves nothing until the new row has a pattern', async () => {
+    // It used to save { pattern: '', activityType: 'DEPOSIT' } at once, which
+    // typed every transaction a deposit.
+    const props = makeProps();
+    props.store.getMappingRules = vi.fn(async () => [{ pattern: 'ATM', matchType: 'contains', activityType: 'WITHDRAWAL' }]);
+    render(<SyncPage {...props} />);
+    await switchTab(/settings/i);
+    await openSection(/^Transaction rules/i);
+
+    fireEvent.click(screen.getByText('+ Add rule'));
+    await waitFor(() => expect(props.store.setMappingRules).toHaveBeenCalled());
+    expect(props.store.setMappingRules).toHaveBeenLastCalledWith([{ pattern: 'ATM', matchType: 'contains', activityType: 'WITHDRAWAL' }]);
+    expect(screen.getByText(/empty rule is not saved/)).toBeInTheDocument();
+
+    // The stored list is now what was saved, so the next save is not "changed elsewhere".
+    props.store.getMappingRules = vi.fn(async () => [{ pattern: 'ATM', matchType: 'contains', activityType: 'WITHDRAWAL' }]);
+    const inputs = screen.getAllByPlaceholderText('pattern');
+    fireEvent.change(inputs[inputs.length - 1], { target: { value: 'PAYROLL' } });
+    await waitFor(() => expect(props.store.setMappingRules).toHaveBeenLastCalledWith([
+      { pattern: 'ATM', matchType: 'contains', activityType: 'WITHDRAWAL' },
+      { pattern: 'PAYROLL', matchType: 'contains', activityType: 'DEPOSIT' },
+    ]));
+  });
+
+  it('drops an empty rule already stored the next time the rules are saved', async () => {
+    const props = makeProps();
+    const stored = [
+      { pattern: '', matchType: 'contains', activityType: 'DEPOSIT' },
+      { pattern: 'ATM', matchType: 'contains', activityType: 'WITHDRAWAL' },
+    ];
+    props.store.getMappingRules = vi.fn(async () => stored as any);
+    render(<SyncPage {...props} />);
+    await switchTab(/settings/i);
+    await openSection(/^Transaction rules/i);
+    fireEvent.change(screen.getByDisplayValue('ATM'), { target: { value: 'ATM WITHDRAWAL' } });
+    await waitFor(() => expect(props.store.setMappingRules).toHaveBeenCalledWith([
+      { pattern: 'ATM WITHDRAWAL', matchType: 'contains', activityType: 'WITHDRAWAL' },
+    ]));
+  });
+
   it('PB-K: refuses to save when the rules changed elsewhere since they were loaded (the companion added a payback rule)', async () => {
     const props = makeProps();
     const loaded = [{ pattern: 'PAYROLL', matchType: 'contains', activityType: 'DEPOSIT' }];
