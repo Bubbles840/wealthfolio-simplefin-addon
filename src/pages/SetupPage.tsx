@@ -6,6 +6,7 @@ import { AccountMapper } from '../components/AccountMapper';
 import { Button, Card, ErrorBox, Input } from '../components/ui';
 import type { SecretsStore } from '../utils/secrets';
 import { accountCreatedChange } from '../../shared/change-entries';
+import { directCallLine } from '../../shared/simplefin-budget';
 import { BudgetPreview } from '../tabs/BudgetTab';
 
 /** Two steps since 1.57: connect, then map. Rules start empty and the schedule
@@ -38,6 +39,10 @@ export function SetupPage({ ctx, store, onComplete }: Props) {
     setError('');
     setLoading(true);
     try {
+      // Asked BEFORE the one-time token is claimed, so a refusal costs nothing:
+      // the token stays unspent and the person can simply try again later.
+      const refused = await directCallLine(store, 'setup');
+      if (refused) { setError(refused); return; }
       const accessUrl = await claimToken(token.trim(), ctx.api.network);
       await store.setAccessUrl(accessUrl);
 

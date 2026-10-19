@@ -32,12 +32,13 @@ async function bookkeepingHost(
   ctx: AddonContext,
   store: Partial<Pick<SecretsStore, 'getWealthfolioVersion' | 'getSyncHealth'>>,
   log?: (message: string) => void,
+  fullCardHistory = false,
 ): Promise<AddonSyncHost> {
   // The published version is trusted only while the companion that wrote it
   // is alive (synced within 2 days); a stale one may predate a downgrade.
   const fresh = await companionSyncedRecently(store);
   const version = fresh ? await Promise.resolve(store.getWealthfolioVersion?.()).catch(() => null) : null;
-  return new AddonSyncHost(ctx, { cardTransferOut: hostTakesCardTransferOut(version), ...(log ? { log } : {}) });
+  return new AddonSyncHost(ctx, { cardTransferOut: hostTakesCardTransferOut(version), ...(log ? { log } : {}), ...(fullCardHistory ? { fullCardHistory } : {}) });
 }
 
 // The sync logic itself lives in shared/sync-core.ts so the Docker companion can
@@ -81,7 +82,7 @@ export function runSync(
       // The change log rides along when the store can keep one (an older store
       // or a test double cannot, and then nothing is recorded).
       const changeLog = opts.changeLog ?? store.changeLogSink?.();
-      const result = await runSyncCore(await bookkeepingHost(ctx, store, warn), store, { ...opts, ...(changeLog ? { changeLog } : {}) });
+      const result = await runSyncCore(await bookkeepingHost(ctx, store, warn, !!opts.manual), store, { ...opts, ...(changeLog ? { changeLog } : {}) });
       // Deliver INSIDE the single-flight lock and inside the returned promise, so
       // one run announces its own alerts exactly once and a caller that awaits the
       // sync has also awaited the sends. `deliverAddonAlerts` never rejects, so it

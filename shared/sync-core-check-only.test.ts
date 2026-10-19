@@ -1,0 +1,219 @@
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { createFakeHost, type FakeHostSeed } from './fake-host.js';
+import { checkBalancesOnly, runSyncCore, VALUATION_POLL } from './sync-core.js';
+import type { SimplefinTransaction } from './types.js';
+
+const NOW = new Date('2026-10-18T15:00:00Z');
+const epoch = (iso: string) => Date.parse(iso) / 1000;
+const tx = (id: string, iso: string, amount: string, description: string, pending = false): SimplefinTransaction =>
+  ({ id, posted: epoch(iso), amount, description, ...(pending ? { pending: true } : {}) });
+
+/** Spend (cash, valued at $500) and the Citi card (one charge stored), both with something new this run. */
+const seedOf = (spend: SimplefinTransaction[] = [tx('pay', '2026-10-17T12:00:00Z', '100.00', 'PAYROLL')]): FakeHostSeed => ({
+  accountSet: { errors: [], accounts: [
+    { id: 'sfin-spend', name: 'Spend', currency: 'USD', balance: '500.00', 'balance-date': epoch('2026-10-18T12:00:00Z'), transactions: spend },
+    { id: 'sfin-citi', name: 'Citi Double Cash® Card', currency: 'USD', balance: '-161.20', 'balance-date': epoch('2026-10-18T12:00:00Z'),
+      transactions: [tx('c-0', '2026-10-01T12:00:00Z', '-100.00', 'GROCERY'), tx('c-1', '2026-10-17T12:00:00Z', '-61.20', 'HARDWARE STORE')] },
+  ] },
+  mapping: { 'sfin-spend': 'wf-spend', 'sfin-citi': 'wf-citi' },
+  accountTypes: { 'wf-spend': 'CASH', 'wf-citi': 'CREDIT_CARD' },
+  valuations: new Map([['wf-spend', 500]]),
+  cardTotals: true,
+});
+type Snap = { balance: number | null; drift: number | null; measured?: boolean; fetchedAt?: number; baselineFix?: unknown };
+const snaps = async (fh: ReturnType<typeof createFakeHost>) => (await fh.store.getAccountBalances()) as Record<string, Snap>;
+
+describe('checkBalancesOnly — a Sync inside the gap re-checks against the last download (C3, R9, R16)', () => {
+  beforeEach(() => {
+    VALUATION_POLL.delayMs = 1;
+    VALUATION_POLL.attempts = 1;
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(NOW);
+  });
+  afterEach(() => { vi.useRealTimers(); });
+
+  it('stamps every bank figure a download keeps with when that download was sent', async () => {
+    const fh = createFakeHost(seedOf());
+    await runSyncCore(fh.host, fh.store, { manual: true });
+    const s = await snaps(fh);
+    expect([s['sfin-spend'].fetchedAt, s['sfin-citi'].fetchedAt]).toEqual([NOW.getTime(), NOW.getTime()]);
+    // The cash account imported a row this run, so its valuation was not trusted.
+    expect(s['sfin-spend'].measured).toBe(false);
+  });
+
+  it('checks every account without asking SimpleFin or writing a row, and says how old the bank data is', async () => {
+    const fh = createFakeHost(seedOf());
+    await runSyncCore(fh.host, fh.store, { manual: true });
+    const fetch = vi.spyOn(fh.host, 'fetchSimplefin');
+    const saves = fh.saved.length;
+    vi.setSystemTime(new Date(NOW.getTime() + 2 * 60_000));
+    const { dataAt } = await checkBalancesOnly(fh.host, fh.store, { mapping: { 'sfin-spend': 'wf-spend', 'sfin-citi': 'wf-citi' }, newestRequestAt: NOW.getTime() });
+    expect(dataAt).toBe(NOW.getTime());
+    expect(fetch).not.toHaveBeenCalled();
+    expect(fh.saved.length).toBe(saves);
+    const s = await snaps(fh);
+    expect(s['sfin-spend']).toMatchObject({ balance: 500, measured: true, drift: null, fetchedAt: NOW.getTime() });
+    expect(s['sfin-citi']).toMatchObject({ balance: -161.2, measured: true, drift: null });
+  });
+
+  it('reports a cash account off by its difference from the valuation', async () => {
+    const seed = seedOf();
+    const fh = createFakeHost(seed);
+    await runSyncCore(fh.host, fh.store, { manual: true });
+    seed.valuations!.set('wf-spend', 450);
+    await checkBalancesOnly(fh.host, fh.store, { mapping: seed.mapping!, newestRequestAt: NOW.getTime() });
+    expect((await snaps(fh))['sfin-spend']).toMatchObject({ measured: true, drift: 50 });
+  });
+
+  it('leaves a cash account with a pending row "not checked"', async () => {
+    const seed = seedOf([tx('pend', '2026-10-18T12:00:00Z', '-20.00', 'COFFEE', true)]);
+    const fh = createFakeHost(seed);
+    await runSyncCore(fh.host, fh.store, { manual: true });
+    await checkBalancesOnly(fh.host, fh.store, { mapping: seed.mapping!, newestRequestAt: NOW.getTime() });
+    expect((await snaps(fh))['sfin-spend']).toMatchObject({ measured: false, drift: null });
+  });
+
+  it('a newer request than the stored figures (a download in flight, a Setup) leaves every snapshot untouched (R16, F3)', async () => {
+    const seed = seedOf();
+    const fh = createFakeHost(seed);
+    await runSyncCore(fh.host, fh.store, { manual: true });
+    const before = await snaps(fh);
+    const set = vi.spyOn(fh.store, 'setAccountBalances');
+    const { dataAt } = await checkBalancesOnly(fh.host, fh.store, { mapping: seed.mapping!, newestRequestAt: NOW.getTime() + 60_000 });
+    expect(dataAt).toBeNull();
+    expect(set).not.toHaveBeenCalled();
+    expect(await snaps(fh)).toEqual(before);
+  });
+
+  it('leaves a snapshot written without fetchedAt (an older writer) exactly as it was, and writes nothing (F3)', async () => {
+    const seed = seedOf();
+    const fh = createFakeHost(seed);
+    await runSyncCore(fh.host, fh.store, { manual: true });
+    const s = await snaps(fh);
+    const olderWriter = Object.fromEntries(Object.entries(s).map(([id, { fetchedAt: _old, ...snap }]) => [id, { ...snap, measured: true, drift: 12.5 }]));
+    await fh.store.setAccountBalances(olderWriter);
+    const set = vi.spyOn(fh.store, 'setAccountBalances');
+    expect((await checkBalancesOnly(fh.host, fh.store, { mapping: seed.mapping!, newestRequestAt: NOW.getTime() })).dataAt).toBeNull();
+    expect(set).not.toHaveBeenCalled();
+    expect(await snaps(fh)).toEqual(olderWriter);
+  });
+
+  it('keeps a measured drift the download found exactly as stored when the check agrees — untagged, so Home keeps its banner (F3)', async () => {
+    const seed = seedOf();
+    const fh = createFakeHost(seed);
+    await runSyncCore(fh.host, fh.store, { manual: true });
+    const s = await snaps(fh);
+    // What a download that measured Spend $50 off leaves: no tag, an episode date, a fix offer.
+    const measured = { ...s['sfin-spend'], measured: true, drift: 50, driftSince: '2026-10-17T15:00:00.000Z',
+      baselineFix: { activityId: 'sb-1', currentAmount: 10, suggestedAmount: 60 } };
+    await fh.store.setAccountBalances({ ...s, 'sfin-spend': measured });
+    seed.valuations!.set('wf-spend', 450);
+    const { dataAt } = await checkBalancesOnly(fh.host, fh.store, { mapping: seed.mapping!, newestRequestAt: NOW.getTime() });
+    expect(dataAt).toBe(NOW.getTime());
+    expect((await snaps(fh))['sfin-spend']).toEqual(measured);
+  });
+
+  it('writes only a verdict that changed, tagged badge only, dropping that account\'s fix offer (F3)', async () => {
+    const seed = seedOf();
+    const fh = createFakeHost(seed);
+    await runSyncCore(fh.host, fh.store, { manual: true });
+    const s = await snaps(fh);
+    const measured = { ...s['sfin-spend'], measured: true, drift: 50, baselineFix: { activityId: 'sb-1', currentAmount: 10, suggestedAmount: 60 } };
+    await fh.store.setAccountBalances({ ...s, 'sfin-spend': measured });
+    // The valuation caught up: Spend now matches the bank.
+    await checkBalancesOnly(fh.host, fh.store, { mapping: seed.mapping!, newestRequestAt: NOW.getTime() });
+    const after = (await snaps(fh)) as Record<string, Snap & { checkedAfterSave?: true }>;
+    const { baselineFix: _gone, ...rest } = measured;
+    expect(after['sfin-spend']).toEqual({ ...rest, drift: null, measured: true, checkedAfterSave: true });
+  });
+
+  it('writes nothing when every verdict it re-checks is unchanged (F3)', async () => {
+    const seed = seedOf();
+    const fh = createFakeHost(seed);
+    await runSyncCore(fh.host, fh.store, { manual: true });
+    await checkBalancesOnly(fh.host, fh.store, { mapping: seed.mapping!, newestRequestAt: NOW.getTime() });
+    const set = vi.spyOn(fh.store, 'setAccountBalances');
+    const { dataAt } = await checkBalancesOnly(fh.host, fh.store, { mapping: seed.mapping!, newestRequestAt: NOW.getTime() });
+    expect(dataAt).toBe(NOW.getTime());
+    expect(set).not.toHaveBeenCalled();
+  });
+
+  it('leaves a fresh account it cannot compare this time as the download left it (F3)', async () => {
+    const seed = seedOf();
+    const fh = createFakeHost(seed);
+    await runSyncCore(fh.host, fh.store, { manual: true });
+    const s = await snaps(fh);
+    const measured = { ...s['sfin-spend'], measured: true, drift: 50 };
+    await fh.store.setAccountBalances({ ...s, 'sfin-spend': measured });
+    fh.host.listActivities = async () => { throw new Error('offline'); };
+    await checkBalancesOnly(fh.host, fh.store, { mapping: seed.mapping!, newestRequestAt: NOW.getTime() });
+    expect((await snaps(fh))['sfin-spend']).toEqual(measured);
+  });
+
+  it('keeps every other snapshot and drops a stale baseline-fix offer', async () => {
+    const seed = seedOf();
+    const fh = createFakeHost(seed);
+    await runSyncCore(fh.host, fh.store, { manual: true });
+    const s = await snaps(fh);
+    await fh.store.setAccountBalances({
+      ...s,
+      'sfin-spend': { ...s['sfin-spend'], baselineFix: { activityId: 'sb-1', currentAmount: 10, suggestedAmount: 12 } },
+      'sfin-old': { balance: 1, currency: 'USD', date: 0, drift: null },
+    });
+    await checkBalancesOnly(fh.host, fh.store, { mapping: seed.mapping!, newestRequestAt: NOW.getTime() });
+    const after = await snaps(fh);
+    expect(after['sfin-spend'].baselineFix).toBeUndefined();
+    expect(after['sfin-old']).toEqual({ balance: 1, currency: 'USD', date: 0, drift: null });
+  });
+
+  it('tags every verdict it fills badge only, so a check-only drift never gets the Home plug (R15)', async () => {
+    const seed = seedOf();
+    const fh = createFakeHost(seed);
+    await runSyncCore(fh.host, fh.store, { manual: true });
+    seed.valuations!.set('wf-spend', 450);
+    await checkBalancesOnly(fh.host, fh.store, { mapping: seed.mapping!, newestRequestAt: NOW.getTime() });
+    const s = (await snaps(fh)) as Record<string, Snap & { checkedAfterSave?: true }>;
+    expect(s['sfin-spend']).toMatchObject({ measured: true, drift: 50, checkedAfterSave: true });
+    expect(s['sfin-citi']).toMatchObject({ measured: true, checkedAfterSave: true });
+  });
+
+  it('writes nothing when the stored snapshots cannot be read', async () => {
+    const seed = seedOf();
+    const fh = createFakeHost(seed);
+    await runSyncCore(fh.host, fh.store, { manual: true });
+    const before = await snaps(fh);
+    const set = vi.spyOn(fh.store, 'setAccountBalances');
+    vi.spyOn(fh.store, 'getAccountBalances').mockRejectedValue(new Error('boom'));
+    const { dataAt } = await checkBalancesOnly(fh.host, fh.store, { mapping: seed.mapping!, newestRequestAt: NOW.getTime() });
+    expect(dataAt).toBeNull();
+    expect(set).not.toHaveBeenCalled();
+    vi.restoreAllMocks();
+    expect(await snaps(fh)).toEqual(before);
+  });
+
+  it('compares no unvalued account whose type could not be read (F5)', async () => {
+    const seed = seedOf();
+    const fh = createFakeHost(seed);
+    await runSyncCore(fh.host, fh.store, { manual: true });
+    const s = await snaps(fh);
+    await fh.store.setAccountBalances({ ...s, 'sfin-citi': { ...s['sfin-citi'], measured: false, drift: null } });
+    const asked: string[][] = [];
+    const read = fh.host.postedLedgerTotals!.bind(fh.host);
+    fh.host.postedLedgerTotals = async (accounts) => { asked.push(accounts.map((a) => a.wfAccountId)); return read(accounts); };
+    fh.host.listAccounts = async () => { throw new Error('offline'); };
+    await checkBalancesOnly(fh.host, fh.store, { mapping: seed.mapping!, newestRequestAt: NOW.getTime() });
+    expect(asked.flat()).not.toContain('wf-citi');
+    expect((await snaps(fh))['sfin-citi']).toMatchObject({ measured: false, drift: null });
+  });
+
+  it('nets only asset-backed TRANSFER_OUT rows that carry a bank tx id, as the main path does', async () => {
+    const seed = seedOf();
+    const fh = createFakeHost(seed);
+    await runSyncCore(fh.host, fh.store, { manual: true });
+    const row = (id: string, comment: string, amount: number) =>
+      ({ id, accountId: 'wf-spend', activityType: 'TRANSFER_OUT', date: '2026-10-17', amount, comment, assetId: 'AST' });
+    fh.activities.get('wf-spend')!.push(row('t1', 'MOVE · tx-1', 30), row('t2', 'MANUAL NOTE', 7));
+    await checkBalancesOnly(fh.host, fh.store, { mapping: seed.mapping!, newestRequestAt: NOW.getTime() });
+    expect((await snaps(fh))['sfin-spend']).toMatchObject({ measured: true, drift: 30 });
+  });
+});

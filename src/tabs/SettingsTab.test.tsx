@@ -1,6 +1,8 @@
 import { render, screen, fireEvent, waitFor, within } from '@testing-library/react';
 import { describe, it, expect, vi } from 'vitest';
 import { SyncPage } from '../pages/SyncPage';
+import { importChange, stampChange } from '../../shared/change-entries';
+import { runSync } from '../utils/sync';
 
 /**
  * Integration-level, on purpose — moved here wholesale from SyncPage.test.tsx
@@ -21,6 +23,11 @@ vi.mock('../utils/sync', async (importOriginal) => {
     runSync: vi.fn(async () => ({ imported: 5, skipped: 1, errors: [] })),
   };
 });
+
+vi.mock('../utils/change-undo', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../utils/change-undo')>()),
+  undoFromApp: vi.fn(async () => ({ ok: true, message: 'Undone.', needsSync: true })),
+}));
 
 /** The Accounts card re-reads the live account list from the bridge. Mocked at
  *  the module boundary so the tests exercise the card's own logic (fetch →
@@ -413,6 +420,25 @@ describe('SettingsTab', () => {
     expect(props.store.getChangeLog).toHaveBeenCalledTimes(1);
   });
 
+  it('the change log\'s Sync now is a person asking: manual (1.64)', async () => {
+    const props = makeProps();
+    const entry = stampChange(importChange({
+      account: { sfinId: 'sfin-1', wfId: 'wf-a', name: 'Checking' }, txKey: 'sfin-1\u0000tx-1', activityId: 'act-1',
+      description: 'SQ *BLUE_BOTTLE', amountCents: -650, date: '2026-10-12', pending: false, activityType: 'WITHDRAWAL',
+    }), 'companion', new Date());
+    props.store.getChangeLog = vi.fn(async () => ({ entries: [entry], gaps: [], trimmed: 0, unreadable: [] }));
+    render(<SyncPage {...props} />);
+    await switchTab(/settings/i);
+    fireEvent.click(await screen.findByRole('button', { name: /^Change log/ }));
+    fireEvent.click(await screen.findByRole('button', { name: /Imported SQ \*BLUE_BOTTLE/ }));
+    const detail = () => document.querySelector('.sfin-log-detail') as HTMLElement;
+    await waitFor(() => expect(detail()).not.toBeNull());
+    fireEvent.click(within(detail()).getByRole('button', { name: 'Undo' }));
+    // The change log's own button, not the page header's.
+    fireEvent.click(await within(detail()).findByRole('button', { name: 'Sync now' }));
+    await waitFor(() => expect(runSync).toHaveBeenLastCalledWith(expect.anything(), expect.anything(), { force: true, manual: true }));
+  });
+
   it('reset requires an explicit confirmation step', async () => {
     const props = makeProps();
     render(<SyncPage {...props} />);
@@ -583,6 +609,47 @@ describe('SettingsTab', () => {
       expect(row).not.toHaveTextContent('no longer exists');
       // The card's summary and the Home tile count the same mapping.
       expect(screen.getByRole('button', { name: /^Accounts/ })).toHaveTextContent('3 accounts');
+    });
+
+    it('counts a refresh against the SimpleFin budget: allowed into the headroom, refused at 24 with the one line (1.64, C5)', async () => {
+      const { fetchAccounts } = await import('../utils/simplefin');
+      const recent = (n: number) => JSON.stringify(Array.from({ length: n }, (_, i) => new Date(Date.now() - (60 + i) * 60_000).toISOString()));
+      const run = async (count: number) => {
+        vi.mocked(fetchAccounts).mockClear();
+        const props = makeProps();
+        let raw: string | null = recent(count);
+        props.store.getSimplefinRequests = vi.fn(async () => raw);
+        props.store.setSimplefinRequests = vi.fn(async (v: string) => { raw = v; });
+        const view = render(<SyncPage {...props} />);
+        await switchTab(/settings/i);
+        await openMapper();
+        return { view, raw: () => raw };
+      };
+      const allowed = await run(20);
+      await waitFor(() => expect(fetchAccounts).toHaveBeenCalledOnce());
+      expect(JSON.parse(allowed.raw()!)).toHaveLength(21);
+      allowed.view.unmount();
+
+      await run(24);
+      expect(await screen.findByText(/SimpleFin's daily limit is used up — next sync at/)).toBeInTheDocument();
+      expect(fetchAccounts).not.toHaveBeenCalled();
+    });
+
+    it('skips the automatic name backfill quietly once the day\'s 20 are used (1.64, C5)', async () => {
+      const { fetchAccounts } = await import('../utils/simplefin');
+      const recent = (n: number) => JSON.stringify(Array.from({ length: n }, (_, i) => new Date(Date.now() - (60 + i) * 60_000).toISOString()));
+      for (const [count, calls] of [[20, 0], [3, 1]] as const) {
+        vi.mocked(fetchAccounts).mockClear();
+        const props = makeProps();
+        props.store.getAccountNames = vi.fn(async () => ({}));
+        props.store.getSimplefinRequests = vi.fn(async () => recent(count));
+        props.store.setSimplefinRequests = vi.fn(async () => {});
+        const view = render(<SyncPage {...props} />);
+        await waitFor(() => expect(props.store.getSimplefinRequests).toHaveBeenCalled());
+        await waitFor(() => expect(fetchAccounts).toHaveBeenCalledTimes(calls));
+        expect(props.store.setSimplefinRequests).toHaveBeenCalledTimes(calls);
+        view.unmount();
+      }
     });
 
     it('reports a bridge failure instead of showing an empty mapper', async () => {

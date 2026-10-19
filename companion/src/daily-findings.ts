@@ -44,6 +44,8 @@ interface StoredAccountBalance {
   date?: number;
   drift?: number | null;
   driftSince?: string | null;
+  /** Badge-only verdict from the after-save card check (R15): never a finding. */
+  checkedAfterSave?: boolean;
 }
 
 function parseJson<T>(raw: string | null | undefined): T | null {
@@ -158,7 +160,7 @@ export async function gatherFindings(
       balanceDate: typeof info?.date === 'number' ? info.date : null,
       // Since 1.57 the daily report carries what the separate drift alert
       // said. Not for the cards `card-balance` above already judges.
-      drift: cardWfIds.has(mapping[id]) ? null : info?.drift ?? null,
+      drift: cardWfIds.has(mapping[id]) || info?.checkedAfterSave ? null : info?.drift ?? null,
       driftSince: info?.driftSince ?? null,
     })),
   }, now);

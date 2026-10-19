@@ -198,7 +198,7 @@ export function HomeTab({
 
   const mappedEntries = Object.entries(mapping);
   const mappedCount = mappedEntries.length;
-  const driftAccounts = mappedEntries.filter(([sfinId]) => balances[sfinId]?.drift != null);
+  const driftAccounts = mappedEntries.filter(([sfinId]) => balances[sfinId]?.drift != null && !balances[sfinId]?.checkedAfterSave);
 
   return (
     <>

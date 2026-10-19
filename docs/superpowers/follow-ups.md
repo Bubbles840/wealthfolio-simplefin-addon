@@ -1486,6 +1486,85 @@ branches.
   `reminder` read only the joined entry's name). Reachable only when the new
   name was hidden, renamed or given a reminder as its own row before the join.
 
+## 20. Learned transfer names, every account checked, a SimpleFin budget (2026-10-18, plan `2026-10-18-learned-transfers-and-sync-budget.md`)
+
+- **An Undo blocks a name only once the companion recomputes.** The
+  `notTransfer` block (A3, R4) is applied where the list is learned, at the
+  start of each companion sync. An app Sync before that still uses the name
+  for the account's other rows (the undone row itself is protected by its own
+  override).
+- **A stored payback outside the learned names can still pair.** R13 keeps a
+  learned-name row whose stored form is a payback out of learned typing and
+  pairing. Pairing itself ignores types, so a payback whose wording was never
+  learned can still meet a same-amount outflow in another account within 5
+  days (pre-existing).
+- **A blank `activity_type_override`.** The companion's SQL reads a blank
+  override as none; what `activities.search` hands the app for one is not
+  verified, so the two card totals could disagree on such a row.
+- **The request record has no lock.** Two writers recording in the same
+  instant can lose one entry (one request uncounted). A corrupt record blocks
+  one download and is reset to empty, forgetting the day's count (R8).
+- **A check-only Sync trusts the valuation as it stands.** Inside the gap a
+  cash account is compared with its current valuation; Wealthfolio
+  recomputes valuations asynchronously, and a valuation that has not caught
+  up with the previous run's imports reads as drift for a few minutes.
+- **A scheduled or automatic run within an hour of the last request is
+  skipped** with a status line, a failed request included (final-review F4,
+  amends R8 for automatic runs only: they also stop at 16 of the 20, keeping
+  4 for Syncs a person presses). The spec's table covers manual runs and the
+  daily limit only. A companion cron set to exactly hourly with
+  `MIN_SYNC_INTERVAL_HOURS=0` lands seconds either side of the hour and so
+  skips about every other run (any value above 0 already kept the core's
+  fixed one-hour wall, which did the same); the default is every 6 hours.
+- **Check-only still compares a typed, unvalued non-card account** (a loan,
+  say) that the after-save check now skips (cards only, final-review F5).
+  Badge-only and tagged; align with `=== 'CREDIT_CARD'` at the check-only
+  unvalued branch in sync-core.ts (one line).
+- **"Next sync at"** is when the request holding the window at the limit
+  leaves it — the oldest one at exactly 20; later when Setup used the
+  headroom above 20; for a scheduled run, when the count drops under 16.
+- **Learning reads the whole ledger** at the start of every companion sync
+  (`getNativeAuditLedger`, as the audits do). Fine at personal scale.
+- **A check-only run that changes an account's verdict drops its
+  baseline-fix offer**; the next Deep scan offers it again when it still
+  applies. An unchanged verdict keeps the offer (final-review F3).
+- **The 5-minute gap ignores a request stamped more than an hour ahead.** A
+  writer with a badly wrong clock would otherwise hold every download for as
+  long as its clock is ahead, with nothing in the app able to clear it. The
+  daily count still includes such a stamp, so it holds one of the 20 until it
+  ages out (token safety first).
+- **A check-only pass that changes a verdict can still overwrite the other
+  writer's fresh snapshot.** Narrowed by final-review F3: a pass that
+  compared nothing, or found every verdict unchanged, writes nothing, and
+  accounts it did not compare are left exactly as stored. When a verdict did
+  change it still writes the whole `account_balances` map it read, so a
+  download the other writer finished in between is replaced until the next
+  one. Fix: re-read before writing and drop the write when any mapped
+  `fetchedAt` changed.
+- **An Undo is matched through the current account mapping.** A `notTransfer`
+  saved under an old SimpleFin account id (a re-connected bank) or read with
+  an unreadable mapping no longer blocks its name. Fix: also block by the tx id
+  part of every `notTransfer` key.
+- **A list left by a removed companion keeps applying.** R6 says no companion
+  means no learning, but `transfer_names` stays until something clears it
+  (Reset does). Consider ignoring a list whose `computedAt` is old.
+- **A budget-skipped companion run still records `sync_health` success**, so
+  the app keeps folding its alerts into the companion. The companion is alive,
+  so this is judged fine.
+- **The app's card total pages by OFFSET.** If the other writer saves rows
+  while the app is paging a card's history, a row can be counted twice or
+  missed. Badge only (R15); the next Sync corrects it.
+- **Upgrade order matters for the card verdict.** A 1.63 app tab that was not
+  reloaded beside a 1.64 companion does not know the badge-only tag, so it
+  shows the companion's after-save card verdict as a Home banner with the
+  plug. Install the add-on, reload its tabs, then pull the companion.
+- **A 1.63 companion is outside the budget** until it is upgraded: it neither
+  records nor checks requests, so the day's count misses its downloads.
+- **Right after Setup, a Sync within 5 minutes reads "Balances not checked
+  this time…".** Setup's request is newer than any stored bank figures (R16),
+  so the check-only pass has nothing fresh to compare until the first
+  download.
+
 ## Reference: name mismatches between the database, the REST API, and the SDK
 
 Every one of these cost a diagnostic cycle against the live instance on

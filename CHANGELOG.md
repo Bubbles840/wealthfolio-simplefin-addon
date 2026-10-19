@@ -7,6 +7,55 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.64.0] - 2026-10-19
+
+### Added
+- **A transfer between your accounts is held whichever half posts first.**
+  The companion learns the bank wording of every transfer it has seen linked
+  in the last year (per account and direction, reference numbers left out),
+  and both the app and the companion hold the next one as a transfer while
+  its other half is on the way: a savings → PNC deposit that lands first, and
+  360 Checking's "Withdrawal to 360 Performance Savings". It links when the
+  other half posts and, as before, counts as ordinary money in or out marked
+  "Needs review" after 10 days. Card accounts, wording made only of generic
+  bank words, rows a rule types and stored paybacks are never touched, and
+  one "Not a transfer" Undo stops trusting that wording. Without the
+  companion nothing changes.
+- **Pressing Sync checks every bank account and card.** After the run's own
+  saves the app adds up each card's whole history and compares it with
+  SimpleFin's posted balance, so a card reads "in sync" or "off by $X"
+  instead of "not checked" — even with pending charges, and even when the
+  run imported a new charge. The companion does the same, reading the
+  database live. This changes the badge only; alerts and corrections work as
+  before. A card with a transfer still on its way stays "not checked".
+- **SimpleFin is never asked more often than it allows.** Both the app and
+  the companion share one record of SimpleFin requests: at most 20 a day,
+  5 minutes apart, failed requests included. Automatic syncs (scheduled ones
+  and the account-name fill-in) ask at most once an hour and at most 16
+  times a day, so a SimpleFin outage can't use up the day and 4 downloads
+  always stay for a Sync you press. When the day's 20 are used up, Sync and
+  `/sync` say so in one line ("SimpleFin's daily limit is used up — next
+  sync at 3:10 PM") and scheduled syncs skip quietly. Setup and Refresh
+  accounts may go up to 24. The Sync status and `/status` show
+  "SimpleFin: 7 of 20 today".
+
+### Changed
+- **No more "Sync anyway".** The one-hour wait no longer applies to Sync,
+  Deep scan or `/sync`. Pressed within 5 minutes of the last download, they
+  re-check every balance against that download instead of asking SimpleFin
+  again ("Balances checked · bank data is from 3 min ago."); a Deep scan then
+  says when it can run. "Sync now" in the change log and in a transaction's
+  story follows the same 5-minute rule and says so in the same one line.
+  Scheduled syncs keep their schedule and the one-hour minimum.
+- **The companion's card balances read Wealthfolio's own types.** A row whose
+  type you changed in Wealthfolio is now counted the way Wealthfolio counts
+  it, so a card with such a row may read differently than before.
+
+### Fixed
+- **Evening syncs no longer fail the Robinhood holdings snapshot.** The
+  snapshot is dated by your local day; after 8 PM Eastern it used the next UTC
+  day, which Wealthfolio refused.
+
 ## [1.63.0] - 2026-10-18
 
 ### Changed

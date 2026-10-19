@@ -3,6 +3,7 @@ import type { AmazonLedger } from './amazon-ledger.js';
 import type { VenmoLedger } from './venmo-ledger.js';
 import type { HoldingsSnapshot } from './holdings.js';
 import type { SkippedTransaction } from './skipped-transactions.js';
+import type { TransferNames } from './transfer-names.js';
 import type { LoadedSyncOverrides, SyncOverrides } from './sync-overrides.js';
 import type { UnlinkLeg, UnlinkResult } from './link-pair.js';
 
@@ -213,6 +214,18 @@ export interface SyncHost {
    * cash accounts only. A valuation, where one exists, stays authoritative.
    */
   ledgerBalances?(accountIds: string[]): Promise<Map<string, number>>;
+  /**
+   * A card's POSTED total, read after this run's writes (1.64, B1).
+   *
+   * OPTIONAL. Signed by the EFFECTIVE type (override first, R14) through the one
+   * sign table; pending rows left out; an account holding an in-transit
+   * placeholder, or one the host could not read reliably, is OMITTED (omitted =
+   * "not checked"). Asked only for accounts the valuations did not report, and
+   * it drives the badge only (R15) - never an alert or a write. The companion
+   * reads live on every run; the add-on pages the card's whole history on a
+   * manual run and answers empty on a scheduled one (R7).
+   */
+  postedLedgerTotals?(accounts: ReadonlyArray<{ wfAccountId: string; accountType: string }>): Promise<Map<string, number>>;
   readonly capabilities: {
     /** True when listActivities returns a trustworthy sourceGroupId. */
     readsSourceGroupId: boolean;
@@ -332,6 +345,20 @@ export interface SyncStore {
    * is what it did before the list existed.
    */
   getSkippedTransactions?(): Promise<SkippedTransaction[]>;
+  /**
+   * The learned transfer names the companion publishes (shared/transfer-names.ts,
+   * 1.64 A5). Null = absent or unreadable: learning is off and typing is as before.
+   * Optional like the getters above.
+   */
+  getTransferNames?(): Promise<TransferNames | null>;
+  /**
+   * The SimpleFin request record both writers share (shared/simplefin-budget.ts,
+   * 1.64 C1): a JSON list of ISO times, or null when none was ever kept. REJECTS
+   * when the record cannot be read, so the sync can fail closed. Both methods or
+   * neither; a store with neither keeps no budget.
+   */
+  getSimplefinRequests?(): Promise<string | null>;
+  setSimplefinRequests?(raw: string): Promise<void>;
   /**
    * What the person told the sync not to do again (shared/sync-overrides.ts),
    * set by an Undo in the change log. A stored document that cannot be read —

@@ -1,5 +1,8 @@
+import { mkdtempSync, rmSync } from 'fs'; import { tmpdir } from 'os'; import { join } from 'path'; import { DatabaseSync } from 'node:sqlite';
 import { describe, it, expect, vi } from 'vitest';
 import { RestSyncHost, RestSyncStore } from './rest-host.js';
+import { WealthfolioClient } from './wealthfolio.js';
+import { requestLogIo, reserveSimplefinRequest } from '../../shared/simplefin-budget.js';
 
 describe('RestSyncHost', () => {
   it('reports readsSourceGroupId = true', () => {
@@ -235,6 +238,32 @@ describe('RestSyncHost', () => {
   });
 });
 
+describe('RestSyncHost.postedLedgerTotals — the after-save card total (1.64, B2)', () => {
+  it('reads each requested account live from the database, and only those', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'sfin-rest-total-'));
+    try {
+      const path = join(dir, 'wealthfolio.db');
+      const db = new DatabaseSync(path);
+      db.exec(`
+        CREATE TABLE accounts (id TEXT PRIMARY KEY, name TEXT, account_type TEXT);
+        CREATE TABLE activities (id TEXT PRIMARY KEY, account_id TEXT, activity_type TEXT, activity_type_override TEXT, amount TEXT, activity_date TEXT, notes TEXT);
+        INSERT INTO accounts VALUES ('wf-citi', 'Citi', 'CREDIT_CARD'), ('wf-rh', 'Robinhood', 'CREDIT_CARD');
+        INSERT INTO activities VALUES ('a1', 'wf-citi', 'WITHDRAWAL', NULL, '61.20', '2026-10-17', 'HARDWARE STORE · t1'),
+                                      ('a2', 'wf-citi', 'WITHDRAWAL', NULL, '15.00', '2026-10-18', 'COFFEE · t2 · pending'),
+                                      ('a3', 'wf-rh', 'WITHDRAWAL', NULL, '9.99', '2026-10-17', 'STREAMING · t3');
+      `);
+      db.close();
+      const host = new RestSyncHost({} as any, path);
+      const totals = await host.postedLedgerTotals([{ wfAccountId: 'wf-citi', accountType: 'CREDIT_CARD' }]);
+      expect([...totals]).toEqual([['wf-citi', -61.2]]);
+      expect((await new RestSyncHost({} as any).postedLedgerTotals([{ wfAccountId: 'wf-citi', accountType: 'CREDIT_CARD' }])).size).toBe(0);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+
 describe('RestSyncStore', () => {
   it('reads and writes secrets via client addon secrets endpoints', async () => {
     const secrets = new Map<string, string>();
@@ -248,6 +277,51 @@ describe('RestSyncStore', () => {
     await store.setLastSyncAt(new Date('2026-07-01T12:00:00Z'));
     expect(client.setAddonSecret).toHaveBeenCalledWith('simplefin-sync', 'last_sync_at', '2026-07-01T12:00:00.000Z');
     expect(await store.getLastSyncAt()).toEqual(new Date('2026-07-01T12:00:00Z'));
+  });
+
+  it('reads and writes the SimpleFin request record under the key the add-on shares, and a failed read rejects (1.64, C1)', async () => {
+    const secrets = new Map<string, string>();
+    const client = {
+      getAddonSecret: vi.fn(async (_a: string, key: string) => secrets.get(key) ?? null),
+      setAddonSecret: vi.fn(async (_a: string, key: string, val: string) => { secrets.set(key, val); }),
+    } as any;
+    const store = new RestSyncStore(client);
+    await store.setSimplefinRequests('["2026-10-18T15:00:00.000Z"]');
+    expect(secrets.get('simplefin_requests')).toBe('["2026-10-18T15:00:00.000Z"]');
+    expect(await store.getSimplefinRequests()).toBe('["2026-10-18T15:00:00.000Z"]');
+    client.getAddonSecret.mockRejectedValueOnce(new Error('401'));
+    await expect(store.getSimplefinRequests()).rejects.toThrow('401');
+  });
+
+  it('a request record never written yet lets the first download go: the server answers 200 with body null (F1)', async () => {
+    // The real wire shape: upstream returns `Json(None)` for a missing secret,
+    // and `getAddonSecret` hands that over as the STRING "null".
+    const fetchStub = vi.fn(async (_url: string, init?: { method?: string; body?: string }) => (init?.method === 'POST'
+      ? { ok: true, status: 200, json: async () => ({ success: true }), text: async () => '' }
+      : { ok: true, status: 200, text: async () => 'null' }));
+    vi.stubGlobal('fetch', fetchStub);
+    try {
+      const store = new RestSyncStore(new WealthfolioClient('http://wf'));
+      expect(await store.getSimplefinRequests()).toBe('null');
+      const now = new Date('2026-10-18T15:00:00Z');
+      expect(await reserveSimplefinRequest(requestLogIo(store)!, 'scheduled', now)).toEqual({ kind: 'go', at: now });
+      const posted = fetchStub.mock.calls.find(([, init]) => init?.method === 'POST')!;
+      expect(JSON.parse(posted[1]!.body!)).toEqual({ key: 'simplefin_requests', secret: JSON.stringify([now.toISOString()]) });
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('reads the learned transfer names it publishes, null when absent or unreadable (1.64)', async () => {
+    const secrets = new Map<string, string>();
+    const client = { getAddonSecret: vi.fn(async (_a: string, key: string) => secrets.get(key) ?? null), setAddonSecret: vi.fn() } as any;
+    const store = new RestSyncStore(client);
+    expect(await store.getTransferNames()).toBeNull();
+    const doc = { version: 1, computedAt: '2026-10-18T15:00:00.000Z', names: [{ accountId: 'wf-360', direction: 'out', signature: 'withdrawal to performance savings' }] };
+    secrets.set('transfer_names', JSON.stringify(doc));
+    expect(await store.getTransferNames()).toEqual(doc);
+    secrets.set('transfer_names', '[]');
+    expect(await store.getTransferNames()).toBeNull();
   });
 
   it('reads the skip list the addon shares, dropping malformed entries', async () => {
