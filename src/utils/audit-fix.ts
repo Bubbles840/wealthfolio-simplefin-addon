@@ -197,8 +197,8 @@ export const NOT_TRANSFER_STALE = 'That one has changed since the checks ran —
  * transaction (compared by the tx id in the note against the one in the
  * key). A failed read writes nothing. The write goes only through
  * `editSyncOverrides`, which re-reads before writing (the companion is a
- * second writer). It touches the overrides document alone, which the sync
- * reads at its start, so it takes no write lock. An older store without
+ * second writer). It holds the add-on's write lock (src/utils/write-lock.ts)
+ * across the re-read and the write, and is refused while a sync runs. An older store without
  * `editSyncOverrides`, or a row with no bank transaction to name, writes nothing.
  */
 export async function notTransferFromApp(
@@ -209,22 +209,30 @@ export async function notTransferFromApp(
 ): Promise<{ ok: boolean; message: string }> {
   const failed = { ok: false, message: NOT_TRANSFER_FAILED };
   if (!h.txKey || !store.editSyncOverrides) return failed;
-  const txId = h.txKey.slice(h.txKey.indexOf('\u0000') + 1);
+  // The add-on's write lock, as Link and Remove take it: a sync running now could link this pair
+  // between the re-read and the write, and the next sync would then unlink it.
+  const release = beginWrite();
+  if (!release) return { ok: false, message: writeRefusal('remove') };
   try {
-    const row = await readFixRow(ctx, h.activityId, await accountTypes(ctx));
-    const stale = { ok: false, message: NOT_TRANSFER_STALE };
-    if (!row || !isPlaceholderNote(row.notes) || isPendingNote(row.notes) || txIdFromComment(row.notes) !== txId) return stale;
-    if (row.grouped) return stale;
-    // Wealthfolio 3.9+ says on its own word; else the add-on's ledger of pairs.
-    const fact = (await readCashFacts(ctx, [{ id: row.id, accountId: row.accountId, date: row.date }]))?.get(row.id);
-    if (fact ? linkedOfFact(fact) : ledgerKnows(await ledgerOf(store), [h.txKey], txId)) return stale;
-  } catch {
-    return failed;
-  }
-  try {
-    await store.editSyncOverrides(notTransferEdit(h.txKey, h.label, now));
-    return { ok: true, message: `Saved — the next sync counts it as ${h.direction === 'out' ? 'spending' : 'money in'}.` };
-  } catch (err) {
-    return { ok: false, message: isUnreadableOverridesError(err) ? SYNC_OVERRIDES_UNREADABLE_MESSAGE : NOT_TRANSFER_FAILED };
+    const txId = h.txKey.slice(h.txKey.indexOf('\u0000') + 1);
+    try {
+      const row = await readFixRow(ctx, h.activityId, await accountTypes(ctx));
+      const stale = { ok: false, message: NOT_TRANSFER_STALE };
+      if (!row || !isPlaceholderNote(row.notes) || isPendingNote(row.notes) || txIdFromComment(row.notes) !== txId) return stale;
+      if (row.grouped) return stale;
+      // Wealthfolio 3.9+ says on its own word; else the add-on's ledger of pairs.
+      const fact = (await readCashFacts(ctx, [{ id: row.id, accountId: row.accountId, date: row.date }]))?.get(row.id);
+      if (fact ? linkedOfFact(fact) : ledgerKnows(await ledgerOf(store), [h.txKey], txId)) return stale;
+    } catch {
+      return failed;
+    }
+    try {
+      await store.editSyncOverrides(notTransferEdit(h.txKey, h.label, now));
+      return { ok: true, message: `Saved — the next sync counts it as ${h.direction === 'out' ? 'spending' : 'money in'}.` };
+    } catch (err) {
+      return { ok: false, message: isUnreadableOverridesError(err) ? SYNC_OVERRIDES_UNREADABLE_MESSAGE : NOT_TRANSFER_FAILED };
+    }
+  } finally {
+    release();
   }
 }

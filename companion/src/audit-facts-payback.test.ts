@@ -14,6 +14,7 @@ const readers = (secrets: Record<string, string | null>): AuditReaders => ({
   valuations: async () => [],
   accounts: async () => [],
   ledger: () => ({ accounts: [], rows: [] }),
+  heldRows: () => [],
   headlineRows: () => [],
   settings: () => ({ timezone: null, excludedCategoryIds: [], categoryParents: {}, spendingOn: true, spendingAccountIds: [] }),
   spendingSpent: async () => 0,

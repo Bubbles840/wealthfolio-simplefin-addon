@@ -1,6 +1,6 @@
 import React from 'react';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, onTestFinished } from 'vitest';
 import { SyncPage } from './SyncPage';
 import { makeProps } from './test-props';
 import { buildAuditSnapshot, parseAuditSnapshot } from '../../shared/audit-snapshot';
@@ -8,6 +8,7 @@ import type { HeldTransfer } from '../../shared/held-transfers';
 import { emptySyncOverrides, SYNC_OVERRIDES_UNREADABLE_MESSAGE, SyncOverridesUnreadableError, type SyncOverridesEdit } from '../../shared/sync-overrides';
 import { accountTxKey } from '../../shared/transfers';
 import { NOT_TRANSFER_FAILED, NOT_TRANSFER_STALE } from '../utils/audit-fix';
+import { beginWrite, writeRefusal } from '../utils/write-lock';
 import { checksSummary, HeldTransfersView } from '../components/AuditViews';
 
 vi.mock('recharts', () => {
@@ -238,5 +239,52 @@ describe('the collapsed Checks summary counts held transfers', () => {
     expect(checksSummary(read([HELD, { ...HELD, activityId: 'ph-2', marked: true }]), '1.65.0')).toBe('1 to look at');
     expect(checksSummary(read([{ ...HELD, marked: true }]), '1.65.0')).toBe('Nothing found');
     expect(checksSummary(read([]), '1.65.0')).toBe('Nothing found');
+  });
+});
+
+describe('Not a transfer: the write lock and Wealthfolio\'s own link fact', () => {
+  /** Wealthfolio 3.9+: the cash search reports the row's link status. */
+  const withFact = (props: ReturnType<typeof settingsWith>, status: { transferLinkStatus: string; sourceGroupId: string | null }) => {
+    props.ctx.api.spending = {
+      searchCashActivities: vi.fn(async (req: { accountIds?: string[] }) => {
+        const items = (req.accountIds ?? []).includes('wf-b') ? [{ ...liveRow(), activityDate: '2026-09-29', cashFlowBucket: 'neutral', assignments: [], splits: [], ...status }] : [];
+        return { items, totalCount: items.length };
+      }),
+    } as never;
+  };
+
+  it('refuses while another write holds the lock, and writes nothing', async () => {
+    const props = settingsWith([HELD]);
+    props.store.editSyncOverrides = vi.fn();
+    render(<SyncPage {...props} />);
+    const button = await screen.findByRole('button', { name: 'Not a transfer' });
+    const release = beginWrite()!;
+    onTestFinished(() => { release(); });
+    fireEvent.click(button);
+    expect(await screen.findByText(writeRefusal('remove'))).toBeInTheDocument();
+    expect(props.store.editSyncOverrides).not.toHaveBeenCalled();
+    expect(props.ctx.api.activities.search).not.toHaveBeenCalled();
+  });
+
+  it('refuses when Wealthfolio says the row is linked', async () => {
+    const props = settingsWith([HELD]);
+    withFact(props, { transferLinkStatus: 'linked', sourceGroupId: 'grp-9' });
+    props.store.editSyncOverrides = vi.fn();
+    render(<SyncPage {...props} />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Not a transfer' }));
+    expect(await screen.findByText(NOT_TRANSFER_STALE)).toBeInTheDocument();
+    expect(props.store.editSyncOverrides).not.toHaveBeenCalled();
+  });
+
+  it('goes ahead when Wealthfolio says unlinked, over a stale entry in the add-on\'s ledger of pairs', async () => {
+    const props = settingsWith([HELD]);
+    withFact(props, { transferLinkStatus: 'unlinked', sourceGroupId: null });
+    props.store.getLinkedGroups = vi.fn(async () => ({ [HELD.txKey!]: 'wf-transfer-old' }));
+    let written = emptySyncOverrides();
+    props.store.editSyncOverrides = vi.fn(async (edit: SyncOverridesEdit) => (written = edit(written)));
+    render(<SyncPage {...props} />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Not a transfer' }));
+    expect(await screen.findByText('Saved — the next sync counts it as spending.')).toBeInTheDocument();
+    expect(written.tx[HELD.txKey!]).toMatchObject({ notTransfer: true });
   });
 });
