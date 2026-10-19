@@ -23,7 +23,9 @@ import type { HealthLeg } from '../../shared/audit-health';
 import { linkPairs, LINK_DONE, type LinkIo, type LinkPair, type LinkRun, type ReadRow } from '../../shared/audit-link';
 import { fixRowOf, linkedState, type FixRow } from '../../shared/fix-row';
 import { ledgerGroupId } from '../../shared/link-in-place';
+import type { HeldTransfer } from '../../shared/held-transfers';
 import { isTransferType, txIdFromComment } from '../../shared/sync-core';
+import { isUnreadableOverridesError, notTransferEdit, SYNC_OVERRIDES_UNREADABLE_MESSAGE } from '../../shared/sync-overrides';
 import { removeForGood, type RemoveIo, type RemoveOutcome } from '../../shared/tx-remove';
 import { sfinIdsFor } from '../../shared/tx-story';
 import { linkedOfFact } from '../../shared/wf-facts';
@@ -179,5 +181,27 @@ export async function removeFromApp(ctx: AddonContext, store: FixStore, activity
     return await removeForGood(activityId, fingerprint, addonRemoveIo(ctx, store), new Date());
   } finally {
     release();
+  }
+}
+
+export const NOT_TRANSFER_FAILED = "Couldn't save that — nothing was changed.";
+
+/**
+ * "Not a transfer" on a transfer still in transit (1.65 C): records the
+ * `notTransfer` override the next sync obeys. The write goes only through
+ * `editSyncOverrides`, which re-reads before writing (the companion is a
+ * second writer). It touches the overrides document alone, which the sync
+ * reads at its start, so it takes no write lock. An older store without
+ * `editSyncOverrides`, or a row with no bank transaction to name, writes nothing.
+ */
+export async function notTransferFromApp(
+  store: Partial<Pick<SecretsStore, 'editSyncOverrides'>>, h: HeldTransfer, now: Date = new Date(),
+): Promise<string> {
+  if (!h.txKey || !store.editSyncOverrides) return NOT_TRANSFER_FAILED;
+  try {
+    await store.editSyncOverrides(notTransferEdit(h.txKey, h.label, now));
+    return `Saved — the next sync counts it as ${h.direction === 'out' ? 'spending' : 'money in'}.`;
+  } catch (err) {
+    return isUnreadableOverridesError(err) ? SYNC_OVERRIDES_UNREADABLE_MESSAGE : NOT_TRANSFER_FAILED;
   }
 }
