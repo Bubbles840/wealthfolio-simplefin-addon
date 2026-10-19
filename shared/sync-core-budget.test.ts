@@ -37,8 +37,10 @@ describe('runSyncCore — SimpleFin is never asked more often than it allows (C)
   afterEach(() => { vi.useRealTimers(); });
 
   it('refuses the 21st download in 24 hours — manual, /sync and scheduled — with the one line, and writes nothing', async () => {
-    const line = `SimpleFin's daily limit is used up — next sync at ${clockTime(at(-630 + 24 * 60))}.`;
-    for (const opts of [{ manual: true }, { manual: true, force: true }, {}]) {
+    // At 20 a Sync you press waits for the oldest request (630 min ago) to leave;
+    // a scheduled run stops at 16, so it waits for the fifth oldest (510 min ago, F4).
+    const lineAt = (minutesAgo: number) => `SimpleFin's daily limit is used up — next sync at ${clockTime(at(-minutesAgo + 24 * 60))}.`;
+    for (const [opts, line] of [[{ manual: true }, lineAt(630)], [{ manual: true, force: true }, lineAt(630)], [{}, lineAt(510)]] as const) {
       const log = { raw: logOf(20) };
       const fh = createFakeHost(seedOf(log));
       const before = await fh.store.getLastSyncAt();
@@ -98,6 +100,23 @@ describe('runSyncCore — SimpleFin is never asked more often than it allows (C)
     expect(fetch).not.toHaveBeenCalled();
     expect(result.download).toEqual({ kind: 'skipped', line: 'SimpleFin was asked 3 min ago — this scheduled sync was skipped.' });
     expect(result.errors).toEqual([]);
+  });
+
+  it('a scheduled run 30 minutes after a failed download waits; after an hour it downloads (F4)', async () => {
+    const log = { raw: null as string | null };
+    const fh = createFakeHost(seedOf(log));
+    const fetch = fetchSpy(fh).mockRejectedValueOnce(new Error('SimpleFin is unreachable'));
+    await expect(runSyncCore(fh.host, fh.store, {})).rejects.toThrow('unreachable');
+    // The failed run set no lastSyncAt, so the scheduler is still due — the record holds it back.
+    expect(await fh.store.getLastSyncAt()).toBeNull();
+    vi.setSystemTime(at(30));
+    expect((await runSyncCore(fh.host, fh.store, {})).download)
+      .toEqual({ kind: 'skipped', line: 'SimpleFin was asked 30 min ago — this scheduled sync was skipped.' });
+    expect(fetch).toHaveBeenCalledTimes(1);
+    vi.setSystemTime(at(61));
+    expect((await runSyncCore(fh.host, fh.store, {})).download).toBeUndefined();
+    expect(fetch).toHaveBeenCalledTimes(2);
+    expect(requests(log)).toEqual([at(61).toISOString(), NOW.toISOString()]);
   });
 
   it('an unreadable record blocks the download', async () => {

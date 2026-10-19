@@ -384,8 +384,7 @@ export class RestSyncStore implements SyncStore {
     return Array.isArray(list) ? (list as string[]) : [];
   }
 
-  /** Read-only, like the ignored accounts: the list is written by the addon or a
-   *  companion tool, and honoured here (see shared/skipped-transactions.ts). */
+  /** The learned transfer names this companion publishes (shared/transfer-names.ts); null when absent or unreadable. */
   async getTransferNames(): Promise<TransferNames | null> {
     return parseTransferNames(await this.client.getAddonSecret(this.addonId, TRANSFER_NAMES_SECRET_KEY));
   }
@@ -398,6 +397,8 @@ export class RestSyncStore implements SyncStore {
     await this.client.setAddonSecret(this.addonId, SIMPLEFIN_REQUESTS_SECRET_KEY, raw);
   }
 
+  /** Read-only, like the ignored accounts: the list is written by the addon or a
+   *  companion tool, and honoured here (see shared/skipped-transactions.ts). */
   async getSkippedTransactions(): Promise<SkippedTransaction[]> {
     return parseSkippedTransactions(await this.client.getAddonSecret(this.addonId, SKIPPED_TRANSACTIONS_SECRET_KEY));
   }
