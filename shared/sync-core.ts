@@ -1754,14 +1754,19 @@ export async function runSyncCore(
  * its valuation less the asset-backed TRANSFER_OUT legs, unless a pending row
  * makes that unsafe; any other account against the posted-ledger total.
  * Returns the newest `fetchedAt` among the compared-fresh accounts (how old the
- * bank data is), or null when none was fresh.
+ * bank data is). Null means no account was COMPARED (none fresh, or the
+ * stored snapshots could not be read, in which case nothing is written).
  */
 export async function checkBalancesOnly(
   host: SyncHost,
   store: SyncStore,
   opts: { mapping: AccountMapping; newestRequestAt: number | null },
 ): Promise<{ dataAt: number | null }> {
-  const stored = ((await store.getAccountBalances().catch(() => ({}))) ?? {}) as Record<string, AccountBalanceSnapshot>;
+  // A failed read writes NOTHING: rewriting from an empty document would erase
+  // every balance, R16 stamp, drift episode start and baseline-fix offer.
+  const read = await store.getAccountBalances().catch(() => null);
+  if (read === null || read === undefined) return { dataAt: null };
+  const stored = read as Record<string, AccountBalanceSnapshot>;
   const { mapping, newestRequestAt } = opts;
   const fresh = (snap: AccountBalanceSnapshot): boolean =>
     typeof snap.fetchedAt === 'number' && (newestRequestAt === null || snap.fetchedAt >= newestRequestAt) &&
@@ -1786,7 +1791,7 @@ export async function checkBalancesOnly(
       const rows = await host.listActivities(wfId).catch(() => null);
       if (rows === null || rows.some((r) => (r.comment ?? '').endsWith(PENDING_SUFFIX))) continue;
       const assetBackedOut = rows
-        .filter((r) => r.activityType === 'TRANSFER_OUT' && !!r.assetId)
+        .filter((r) => r.activityType === 'TRANSFER_OUT' && !!r.assetId && txIdFromComment(r.comment) !== null)
         .reduce((sum, r) => sum + Math.abs(parseFloat(String(r.amount ?? '0')) || 0), 0);
       figures.set(wfId, valuation - assetBackedOut);
     }

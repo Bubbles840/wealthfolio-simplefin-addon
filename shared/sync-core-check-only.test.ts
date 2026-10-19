@@ -120,4 +120,29 @@ describe('checkBalancesOnly — a Sync inside the gap re-checks against the last
     expect(s['sfin-spend']).toMatchObject({ measured: true, drift: 50, checkedAfterSave: true });
     expect(s['sfin-citi']).toMatchObject({ measured: true, checkedAfterSave: true });
   });
+
+  it('writes nothing when the stored snapshots cannot be read', async () => {
+    const seed = seedOf();
+    const fh = createFakeHost(seed);
+    await runSyncCore(fh.host, fh.store, { manual: true });
+    const before = await snaps(fh);
+    const set = vi.spyOn(fh.store, 'setAccountBalances');
+    vi.spyOn(fh.store, 'getAccountBalances').mockRejectedValue(new Error('boom'));
+    const { dataAt } = await checkBalancesOnly(fh.host, fh.store, { mapping: seed.mapping!, newestRequestAt: NOW.getTime() });
+    expect(dataAt).toBeNull();
+    expect(set).not.toHaveBeenCalled();
+    vi.restoreAllMocks();
+    expect(await snaps(fh)).toEqual(before);
+  });
+
+  it('nets only asset-backed TRANSFER_OUT rows that carry a bank tx id, as the main path does', async () => {
+    const seed = seedOf();
+    const fh = createFakeHost(seed);
+    await runSyncCore(fh.host, fh.store, { manual: true });
+    const row = (id: string, comment: string, amount: number) =>
+      ({ id, accountId: 'wf-spend', activityType: 'TRANSFER_OUT', date: '2026-10-17', amount, comment, assetId: 'AST' });
+    fh.activities.get('wf-spend')!.push(row('t1', 'MOVE · tx-1', 30), row('t2', 'MANUAL NOTE', 7));
+    await checkBalancesOnly(fh.host, fh.store, { mapping: seed.mapping!, newestRequestAt: NOW.getTime() });
+    expect((await snaps(fh))['sfin-spend']).toMatchObject({ measured: true, drift: 30 });
+  });
 });
