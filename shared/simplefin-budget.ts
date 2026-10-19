@@ -172,3 +172,27 @@ export function requestLogIo(store: {
   if (!get || !set) return null;
   return { read: () => get.call(store), write: (raw) => set.call(store, raw) };
 }
+
+/**
+ * The gate for a SimpleFin call made OUTSIDE a sync (C5, R17). Three callers,
+ * three purposes, one record:
+ *  - Setup's claim-and-first-fetch and Settings' "Refresh from SimpleFin"
+ *    (purpose 'setup'): a person is waiting on them, so they may use the
+ *    headroom up to the Setup ceiling of 24 and ignore the 5-minute gap.
+ *  - the automatic account-name backfill on page load (purpose 'auto'): cosmetic
+ *    and nobody asked for it, so it obeys the 20 and the gap like a scheduled run
+ *    and its caller just skips when refused.
+ * Returns null when the call may go ahead (the request is now recorded) or the
+ * store keeps no record (an older host: nothing to count); otherwise the one
+ * line saying why nothing may be downloaded.
+ */
+export async function directCallLine(
+  store: Parameters<typeof requestLogIo>[0],
+  purpose: 'setup' | 'auto',
+  now = new Date(),
+): Promise<string | null> {
+  const io = requestLogIo(store);
+  if (!io) return null;
+  const gate = await reserveSimplefinRequest(io, purpose, now);
+  return gateLine(gate, now);
+}
