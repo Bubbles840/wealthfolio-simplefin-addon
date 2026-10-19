@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { planBookkeepingFiling } from './bookkeeping-filing.js';
 import type { ChangeEntry, ChangeLogSink } from './change-entries.js';
 import { createFakeHost, type FakeHostSeed } from './fake-host.js';
-import { EXTERNAL_BOOKKEEPING_METADATA, IN_TRANSIT_COMMENT_PREFIX, runSyncCore, VALUATION_POLL } from './sync-core.js';
+import { EXTERNAL_BOOKKEEPING_METADATA, IN_TRANSIT_COMMENT_PREFIX, planStaleInTransit, runSyncCore, VALUATION_POLL } from './sync-core.js';
 import type { ActivityWrite, HostActivity } from './sync-host.js';
 import { emptySyncOverrides, setTxOverride } from './sync-overrides.js';
 import { accountTxKey } from './transfers.js';
@@ -175,5 +175,27 @@ describe('runSyncCore — in-transit rows outside the download settle like in-fe
     expect(log.entries().filter((e) => e.kind === 'transfer-type').map((e) => e.summary)).toEqual([
       `Counted ${WIRE} as spending — you said it isn't a transfer`,
     ]);
+  });
+
+  it('planStaleInTransit leaves a fee-side row (amount 0 or a fee) to the legacy rewrite', () => {
+    const ctx = {
+      wfAccountId: 'wf-chk', sfinAccountId: 'sfin-chk', accountType: 'CASH', feedTxIds: new Set<string>(),
+      nowSec: epoch('2026-10-19T15:00:00Z'), mappedSfinIds: ['sfin-chk'], feedAliveEpoch: new Map<string, number>(),
+      nameWords: new Map<string, string[]>(), leaveAlone: () => false, notTransfer: () => false,
+    };
+    const row = (txId: string, over: object) => ({
+      wfId: txId, wfAccountId: 'wf-chk', txId, absCents: 25000, type: 'CREDIT', date: '2026-09-29', pending: false,
+      comment: `${IN_TRANSIT_COMMENT_PREFIX}${WIRE} · ${txId}`, ...over,
+    });
+    expect(planStaleInTransit([row('zero', { absCents: 0 }), row('fee', { feeCents: 25000 })], ctx).settle).toEqual([]);
+    expect(planStaleInTransit([row('ok', {})], ctx).settle).toHaveLength(1);
+  });
+
+  it('two prefixed copies of one tx id settle once: one update, one change-log entry', async () => {
+    const fh = createFakeHost(seedOf([placeholder('ph-a', 'w-old', '2026-09-29'), placeholder('ph-b', 'w-old', '2026-09-29')]));
+    const log = capture();
+    await runSyncCore(fh.host, fh.store, { changeLog: log });
+    expect(updatesFor(fh.saved, 'ph-a').length + updatesFor(fh.saved, 'ph-b').length).toBe(1);
+    expect(log.entries().filter((e) => e.kind === 'transfer-type')).toHaveLength(1);
   });
 });

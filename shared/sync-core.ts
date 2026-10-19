@@ -1486,8 +1486,15 @@ export function planStaleInTransit(
 ): { settle: FeedTx[]; held: Array<{ txId: string; heldBy: string }> } {
   const settle: FeedTx[] = [];
   const held: Array<{ txId: string; heldBy: string }> = [];
+  // planReconciliation keys stored rows by tx id and the LAST copy wins, so
+  // only that copy can be settled (one update, not two).
+  const lastByTxId = new Map(rows.map((r) => [r.txId, r]));
   for (const row of rows) {
+    if (lastByTxId.get(row.txId) !== row) continue;
     if (!(row.comment ?? '').startsWith(IN_TRANSIT_COMMENT_PREFIX) || row.pending) continue;
+    // A pre-v1.49 fee-side placeholder (amount 0, fee X) belongs to the legacy
+    // rewrite alone: settling it here would book $0 and lose the outflow.
+    if (row.absCents === 0 || (row.feeCents ?? 0) > 0) continue;
     if (ctx.feedTxIds.has(row.txId)) continue;
     if (row.sourceGroupId || row.flowExternal === false || ctx.leaveAlone(row)) continue;
     const signed = OUTFLOW_TYPES.has(row.type) ? -row.absCents : row.absCents;
@@ -3333,7 +3340,7 @@ async function runSyncPass(
     const staleTransit = planStaleInTransit(planExisting.filter((r) => !unlinkingIds.has(r.wfId)), {
       wfAccountId, sfinAccountId: sfAccount.id, accountType: wfTypes.get(wfAccountId) ?? '',
       feedTxIds: new Set(feed.map((t) => t.txId)), nowSec, mappedSfinIds, feedAliveEpoch, nameWords,
-      leaveAlone: (r) => isLinkedRow(r) || skippedTxKeys.has(accountTxKey(sfAccount.id, r.txId))
+      leaveAlone: (r) => isLinkedRow(r) || frozenKeys.has(accountTxKey(sfAccount.id, r.txId)) || skippedTxKeys.has(accountTxKey(sfAccount.id, r.txId))
         || hasTxOverride(overrides, accountTxKey(sfAccount.id, r.txId), 'asReimbursement'),
       notTransfer: (txId) => notTransferKey(accountTxKey(sfAccount.id, txId)),
     });
