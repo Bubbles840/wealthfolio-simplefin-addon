@@ -658,6 +658,11 @@ interface AccountBalanceSnapshot {
    * that raise banners, plugs or report findings must ignore a tagged drift.
    */
   checkedAfterSave?: true;
+  /** 1.65 C: the epoch this account's feed has proven itself alive through — the
+   *  later of `date` and its newest datable transaction, exactly what the
+   *  in-transit hold reads; lets the companion name the feed that holds a
+   *  transfer open without a download. Absent = an older writer stored it. */
+  aliveThrough?: number;
   /**
    * Epoch ms when the download that produced `balance`/`date` was sent. A
    * check-only pass (C3) compares these figures against Wealthfolio's current
@@ -3599,6 +3604,7 @@ async function runSyncPass(
       balance: Number.isFinite(sfBalance) ? sfBalance : null,
       currency: sfAccount.currency,
       date: sfAccount['balance-date'],
+      aliveThrough: feedAliveEpoch.get(sfAccount.id) ?? sfAccount['balance-date'],
       drift,
       // `measuredDrift` is the run's only trustworthy figure — non-null exactly when
       // the account was comparable — so it, not `drift`, decides this. `drift`

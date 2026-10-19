@@ -46,6 +46,8 @@ interface StoredAccountBalance {
   driftSince?: string | null;
   /** Badge-only verdict from the after-save card check (R15): never a finding. */
   checkedAfterSave?: boolean;
+  /** 1.65 C: epoch the feed is proven alive through; absent from older writers. */
+  aliveThrough?: number;
 }
 
 function parseJson<T>(raw: string | null | undefined): T | null {
@@ -127,7 +129,7 @@ export async function gatherFindings(
       // sync's own drift measure stays its voice.
       for (const c of facts.cardBalances) if (c.wfId && !c.inFlight && c.bank !== null) cardWfIds.add(c.wfId);
       const seen = await read<LedgerCheckSeen>(LEDGER_CHECK_SEEN_SECRET_KEY) ?? {};
-      const judged = evaluateLedgerChecks(facts, seen, now);
+      const judged = evaluateLedgerChecks(facts, seen, now, { mapping, balances, names: accountNames });
       ledgerFindings = judged.findings;
       const next = nextLedgerCheckSeen(seen, judged.keys, now);
       // Written only when it changed: most mornings nothing did, and a secret

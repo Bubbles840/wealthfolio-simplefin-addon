@@ -30,6 +30,7 @@
  */
 import type { SelfCheckFinding, FindingFix } from './self-check.js';
 import { formatDollars, shortDate } from './telegram.js';
+import { HELD_MIN_AGE_DAYS, heldTransferMessage, judgeHeldTransfer, type HeldRow, type StoredFeeds } from './held-transfers.js';
 
 export interface LedgerFacts {
   /** `YYYY-MM`, so once-a-month findings re-arm when the month turns. */
@@ -51,8 +52,9 @@ export interface LedgerFacts {
   unlinkedTransfers: Array<{ id: string; description: string; amount: number; direction: 'in' | 'out'; ageDays: number }>;
   /** Rows inside a transfer group whose type is not a transfer. */
   groupedNonTransfers: Array<{ id: string; description: string; amount: number; type: string }>;
-  /** In-transit placeholders, with how long each has been waiting. */
-  heldTransfers: Array<{ id: string; description: string; amount: number; ageDays: number }>;
+  /** In-transit placeholders, with how long each has been waiting; 1.65 adds
+   *  what "Not a transfer" and the reason need. */
+  heldTransfers: HeldRow[];
   /** Rows Wealthfolio itself flagged (3.8's `needs_review`). */
   needsReview: number;
   /** This month, per budget category. */
@@ -90,8 +92,6 @@ const CARD_MISMATCH_FLOOR = 1;
 /** A pair's other half normally arrives within days; younger than this, an
  *  unlinked leg is the expected state, not a finding. */
 const UNLINKED_MIN_AGE_DAYS = 3;
-/** Past this a hold is no longer "waiting for the other bank to catch up". */
-const HELD_MIN_AGE_DAYS = 14;
 /** A "once" finding stays visible for a day, so a digest missed is not a
  *  finding missed. */
 const ONCE_VISIBLE_MS = 86_400_000;
@@ -120,6 +120,8 @@ export function evaluateLedgerChecks(
   facts: LedgerFacts,
   seen: LedgerCheckSeen,
   now: Date,
+  /** What the sync stored; absent, a held transfer cannot say why. */
+  feeds?: StoredFeeds,
 ): { findings: SelfCheckFinding[]; keys: string[] } {
   const candidates: Candidate[] = [];
   const warn = (message: string, label: string, fix?: FindingFix): SelfCheckFinding => ({
@@ -259,13 +261,15 @@ export function evaluateLedgerChecks(
       ),
     });
   }
-  for (const h of facts.heldTransfers) {
-    if (h.ageDays < HELD_MIN_AGE_DAYS) continue;
+  for (const row of facts.heldTransfers) {
+    if (row.ageDays < HELD_MIN_AGE_DAYS) continue;
+    const h = judgeHeldTransfer(row, feeds, now);
     candidates.push({
-      key: `held-transfer:${h.id}`,
-      when: 'once',
+      key: `held-transfer:${row.id}`,
+      // R7: shown while it is held, because it now has a way out.
+      when: 'always',
       finding: warn(
-        `${h.description} (${money(h.amount)}) has waited ${h.ageDays} days for its other half — a silent bank feed is holding it open`,
+        heldTransferMessage(h),
         `${short(h.description)} ${money(h.amount)} still in transit`,
       ),
     });

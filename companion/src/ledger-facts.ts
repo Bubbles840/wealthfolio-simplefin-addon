@@ -174,10 +174,15 @@ export function getLedgerFacts(
       recent,
     ).map((r) => ({ id: r.id, description: describe(r.notes), amount: Number(r.amt), type: String(r.t) }));
 
-    const heldTransfers = all<{ id: string; notes: string; amt: number; age: number }>(
-      `SELECT a.id, a.notes, ABS(CAST(a.amount AS REAL)) amt, ${age} age
+    const heldTransfers = all<{ id: string; notes: string; amt: number; age: number; account_id: string; t: string; d: string }>(
+      `SELECT a.id, a.notes, a.account_id, UPPER(a.activity_type) t, substr(a.activity_date,1,10) d,
+              ABS(CAST(a.amount AS REAL)) amt, ${age} age
        FROM activities a WHERE COALESCE(a.notes,'') LIKE '${IN_TRANSIT_COMMENT_PREFIX}%'`,
-    ).map((r) => ({ id: r.id, description: describe(r.notes), amount: Number(r.amt), ageDays: Number(r.age) }));
+    ).map((r) => ({
+      id: r.id, description: describe(r.notes), amount: Number(r.amt), ageDays: Number(r.age),
+      wfAccountId: String(r.account_id), date: String(r.d), txId: txIdFromComment(String(r.notes)),
+      direction: (r.t === 'TRANSFER_OUT' || r.t === 'WITHDRAWAL' ? 'out' : 'in') as 'out' | 'in',
+    }));
 
     const hasReviewColumn = all<{ name: string }>(`PRAGMA table_info(activities)`).some((c) => c.name === 'needs_review');
     const needsReview = hasReviewColumn

@@ -119,7 +119,10 @@ describe('getLedgerFacts', () => {
     `);
     // u5 is the hand-repaired June leg: real, known, and not to be re-litigated daily.
     expect(f.unlinkedTransfers).toEqual([{ id: 'u1', description: 'Transfer from Capital One', amount: 1300, direction: 'in', ageDays: 10 }]);
-    expect(f.heldTransfers).toEqual([{ id: 'u3', description: 'PNC BANK', amount: 600, ageDays: 2 }]);
+    // 1.65 C: with what "Not a transfer" and the reason need — the account, the bank day, the tx id, the direction.
+    expect(f.heldTransfers).toEqual([{
+      id: 'u3', description: 'PNC BANK', amount: 600, ageDays: 2, wfAccountId: 'sav', date: '2026-09-18', txId: 't3', direction: 'out',
+    }]);
   });
 
   it('finds a DEPOSIT inside a transfer group, and accepts a bare CREDIT there', () => {
