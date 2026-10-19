@@ -948,10 +948,13 @@ export async function sendUnmappedAccountsNotice(
  *
  * `opts.force` overrides the `MIN_SYNC_INTERVAL_HOURS` guard below. Absent — the
  * cron tick, the startup sync — the guard applies exactly as it always has; a
- * user who explicitly ASKED for a sync passes `true`, because the interval guard
- * exists to stop a schedule from hammering SimpleFin, not to refuse a person.
- * The addon's Sync Now button makes the same distinction: it forces, and offers
- * a "Sync anyway" retry when a scheduled run was skipped (src/pages/SyncPage.tsx).
+ * user who explicitly ASKED for a sync (`/sync`) passes `{ force: true, manual: true }`,
+ * because the interval guard exists to stop a schedule from hammering SimpleFin,
+ * not to refuse a person. `manual` also tells the SimpleFin budget a person is
+ * waiting (5 minutes between downloads, check-only inside them, the full 20); a
+ * cron or startup run is scheduled (an hour since the last request, 16 a day).
+ * The add-on's Sync button passes `manual` the same way; since 1.64 there is no
+ * "Sync anyway" (src/pages/SyncPage.tsx).
  */
 export async function runCompanionSync(opts: { force?: boolean; manual?: boolean } = {}): Promise<SyncResult> {
   // The checks compare the report's figure only from a cube THIS run published (M-2).
@@ -1399,7 +1402,7 @@ let syncInFlight: Promise<SyncResult> | null = null;
  * it hands back the SAME promise instead of starting a second run.
  *
  * `runner` defaults to `runCompanionSync`. `/sync` passes
- * `() => runCompanionSync({ force: true })` through it — the lock is about how
+ * `() => runCompanionSync({ force: true, manual: true })` through it — the lock is about how
  * many syncs run at once, not about how any one of them is configured — and
  * tests pass one to control exactly when a run settles (a plain `vi.mock` cannot
  * fake one export of this module from another export of the SAME module).

@@ -1508,25 +1508,34 @@ branches.
   cash account is compared with its current valuation; Wealthfolio
   recomputes valuations asynchronously, and a valuation that has not caught
   up with the previous run's imports reads as drift for a few minutes.
-- **A scheduled run inside the 5-minute gap is skipped** with a status line
-  (the spec's table covers manual runs and the daily limit only).
+- **A scheduled or automatic run within an hour of the last request is
+  skipped** with a status line, a failed request included (final-review F4,
+  amends R8 for automatic runs only: they also stop at 16 of the 20, keeping
+  4 for Syncs a person presses). The spec's table covers manual runs and the
+  daily limit only. A companion cron set to exactly hourly (or
+  `MIN_SYNC_INTERVAL_HOURS` under 1) lands seconds either side of the hour
+  and so skips about every other run; the default is every 6 hours.
 - **"Next sync at"** is when the request holding the window at the limit
   leaves it — the oldest one at exactly 20; later when Setup used the
-  headroom above 20.
+  headroom above 20; for a scheduled run, when the count drops under 16.
 - **Learning reads the whole ledger** at the start of every companion sync
   (`getNativeAuditLedger`, as the audits do). Fine at personal scale.
-- **A check-only run drops a baseline-fix offer**; the next Deep scan offers it
-  again when it still applies.
+- **A check-only run that changes an account's verdict drops its
+  baseline-fix offer**; the next Deep scan offers it again when it still
+  applies. An unchanged verdict keeps the offer (final-review F3).
 - **The 5-minute gap ignores a request stamped more than an hour ahead.** A
   writer with a badly wrong clock would otherwise hold every download for as
   long as its clock is ahead, with nothing in the app able to clear it. The
   daily count still includes such a stamp, so it holds one of the 20 until it
   ages out (token safety first).
-- **A check-only pass can overwrite the other writer's fresh snapshot.** It
-  reads, compares (the app pages every card's history), then writes the whole
-  `account_balances` map. If the other writer finishes a download in between,
-  its newer figures are replaced until the next download. Fix: re-read before
-  writing and drop the write when any mapped `fetchedAt` changed.
+- **A check-only pass that changes a verdict can still overwrite the other
+  writer's fresh snapshot.** Narrowed by final-review F3: a pass that
+  compared nothing, or found every verdict unchanged, writes nothing, and
+  accounts it did not compare are left exactly as stored. When a verdict did
+  change it still writes the whole `account_balances` map it read, so a
+  download the other writer finished in between is replaced until the next
+  one. Fix: re-read before writing and drop the write when any mapped
+  `fetchedAt` changed.
 - **An Undo is matched through the current account mapping.** A `notTransfer`
   saved under an old SimpleFin account id (a re-connected bank) or read with
   an unreadable mapping no longer blocks its name. Fix: also block by the tx id
@@ -1537,6 +1546,19 @@ branches.
 - **A budget-skipped companion run still records `sync_health` success**, so
   the app keeps folding its alerts into the companion. The companion is alive,
   so this is judged fine.
+- **The app's card total pages by OFFSET.** If the other writer saves rows
+  while the app is paging a card's history, a row can be counted twice or
+  missed. Badge only (R15); the next Sync corrects it.
+- **Upgrade order matters for the card verdict.** A 1.63 app tab that was not
+  reloaded beside a 1.64 companion does not know the badge-only tag, so it
+  shows the companion's after-save card verdict as a Home banner with the
+  plug. Install the add-on, reload its tabs, then pull the companion.
+- **A 1.63 companion is outside the budget** until it is upgraded: it neither
+  records nor checks requests, so the day's count misses its downloads.
+- **Right after Setup, a Sync within 5 minutes reads "Balances not checked
+  this time…".** Setup's request is newer than any stored bank figures (R16),
+  so the check-only pass has nothing fresh to compare until the first
+  download.
 
 ## Reference: name mismatches between the database, the REST API, and the SDK
 
