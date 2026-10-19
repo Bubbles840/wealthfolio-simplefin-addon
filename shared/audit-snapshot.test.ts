@@ -269,10 +269,12 @@ describe('the held transfers in the snapshot (1.65 C)', () => {
     expect(old.kind === 'ok' && 'held' in old.snapshot).toBe(false);
   });
 
-  it('is corrupt when a held transfer is malformed', () => {
+  it('drops a malformed held list rather than blanking every view', () => {
     for (const bad of [{}, [{ ...HELD, amount: '250' }], [{ ...HELD, direction: 'sideways' }], [{ ...HELD, txKey: 7 }], [{ ...HELD, heldBy: 3 }], [{ ...HELD, marked: 'yes' }]]) {
       const snapshot = { ...buildAuditSnapshot(results(), NOW)!, held: bad };
-      expect(parseAuditSnapshot(JSON.stringify(snapshot)).kind).toBe('corrupt');
+      const read = parseAuditSnapshot(JSON.stringify(snapshot));
+      expect(read.kind).toBe('ok');
+      expect(read.kind === 'ok' && 'held' in read.snapshot).toBe(false);
     }
   });
 });

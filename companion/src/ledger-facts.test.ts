@@ -3,7 +3,8 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
-import { getLedgerFacts } from './ledger-facts.js';
+import { runAudit, companionAuditReaders } from './audit-facts.js';
+import { getHeldRows, getLedgerFacts } from './ledger-facts.js';
 
 const NOW = new Date(2026, 8, 20, 9, 0, 0); // 2026-09-20, local — the reader buckets by local month
 const made: string[] = [];
@@ -146,6 +147,30 @@ describe('getLedgerFacts', () => {
       UPDATE activities SET metadata = '{"flow":{"is_external":true}}' WHERE id = 'k1';
     `);
     expect(f.heldTransfers.map((h) => [h.id, h.direction])).toEqual([['k1', 'out'], ['k2', 'in'], ['k3', 'out']]);
+  });
+
+  it('the app\'s audit lists exactly the rows the daily finding does, from one reader (1.65 C fix round 1)', async () => {
+    const P = '↔️ In-transit transfer · ';
+    const path = ledger(`
+      INSERT INTO activities VALUES ('k1','sav','TRANSFER_OUT',NULL,'2026-09-01','80','${P}WIRE TO ACME LLC · k1',NULL,0);
+      INSERT INTO activities VALUES ('x1','sav','TRANSFER_OUT',NULL,'2026-09-01','80','${P}LINKED · x1','grp',0);
+      INSERT INTO activities VALUES ('x2','sav','TRANSFER_OUT',NULL,'2026-09-01','80','${P}PENDING · x2 · pending',NULL,0);
+      INSERT INTO activities VALUES ('x3','sav','TRANSFER_OUT',NULL,'2026-09-01','0','${P}FEE SIDE · x3',NULL,0);
+      INSERT INTO activities VALUES ('x4','sav','TRANSFER_OUT',NULL,'2026-09-01','80','${P}EXTERNAL FALSE · x4',NULL,0);
+      INSERT INTO activities VALUES ('x5','sav','TRANSFER_OUT',NULL,'2026-09-01','80','${P}FEE COLUMN · x5',NULL,0);
+      INSERT INTO activities VALUES ('x6','sav','TRANSFER_OUT',NULL,'2026-09-15','80','${P}YOUNG · x6',NULL,0);
+    `, `
+      UPDATE activities SET metadata = '{"flow":{"is_external":false}}' WHERE id = 'x4';
+      UPDATE activities SET fee = '1.5' WHERE id = 'x5';
+    `);
+    const client = {
+      getAddonSecret: async (_a: string, k: string) => (k === 'account_mapping' ? JSON.stringify({ 'sfin-sav': 'sav' }) : null),
+      getLatestValuations: async () => [], getAccounts: async () => [], getSpendingInsightSpent: async () => 0,
+    };
+    const out = await runAudit(companionAuditReaders(client as never, path), NOW);
+    expect(out.held?.map((h) => h.activityId)).toEqual(['k1']);
+    expect(getHeldRows(path, NOW).map((h) => h.id)).toEqual(['k1', 'x6']);
+    expect(() => getHeldRows('/nope/missing.db', NOW)).toThrow();
   });
 
   it('finds a DEPOSIT inside a transfer group, and accepts a bare CREDIT there', () => {

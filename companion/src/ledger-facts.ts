@@ -13,6 +13,7 @@
  */
 import { existsSync } from 'fs';
 import { DatabaseSync } from 'node:sqlite';
+import type { HeldRow } from '../../shared/held-transfers.js';
 import type { LedgerFacts } from '../../shared/ledger-checks.js';
 import { IN_TRANSIT_COMMENT_PREFIX } from '../../shared/reconcile.js';
 import { PENDING_SUFFIX, txIdFromComment } from '../../shared/sync-core.js';
@@ -82,6 +83,46 @@ const describe = (notes: unknown) => String(notes ?? '').replace(IN_TRANSIT_COMM
 const ymd = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 const ym = (d: Date) => ymd(d).slice(0, 7);
 
+/** Local-day age of a stored activity date, as the SQL counts it. */
+const ageSql = (now: Date) => `CAST(julianday('${ymd(now)}') - julianday(substr(a.activity_date,1,10)) AS INTEGER)`;
+
+/**
+ * THE in-transit placeholders waiting for their other half (1.65 C): what the
+ * daily finding lists and what the app's Checks lists, from this one query.
+ * Only what the stale sweep could settle: never a linked, pending or fee-side
+ * placeholder, or one the link repair marked as a real pair. Every age is
+ * returned; callers apply HELD_MIN_AGE_DAYS.
+ */
+function heldRowsFrom(all: <T>(sql: string, ...args: Array<string | number>) => T[], age: string): HeldRow[] {
+  return all<{ id: string; notes: string; amt: number; age: number; account_id: string; t: string; d: string }>(
+    `SELECT a.id, a.notes, a.account_id, UPPER(a.activity_type) t, substr(a.activity_date,1,10) d,
+            ABS(CAST(a.amount AS REAL)) amt, ${age} age
+     FROM activities a WHERE COALESCE(a.notes,'') LIKE '${IN_TRANSIT_COMMENT_PREFIX}%'
+       AND COALESCE(a.source_group_id,'') = ''
+       AND a.notes NOT LIKE '%${PENDING_SUFFIX}'
+       AND CAST(COALESCE(a.amount,'0') AS REAL) <> 0
+       AND COALESCE(CAST(a.fee AS REAL),0) = 0
+       AND CASE WHEN json_valid(COALESCE(a.metadata,''))
+                THEN COALESCE(json_type(a.metadata,'$.flow.is_external'),'') ELSE '' END <> 'false'`,
+  ).map((r) => ({
+    id: r.id, description: describe(r.notes), amount: Number(r.amt), ageDays: Number(r.age),
+    wfAccountId: String(r.account_id), date: String(r.d), txId: txIdFromComment(String(r.notes)),
+    direction: (r.t === 'TRANSFER_OUT' || r.t === 'WITHDRAWAL' ? 'out' : 'in') as 'out' | 'in',
+  }));
+}
+
+/** The held placeholders for the app's audit. Throws when the database cannot be read:
+ *  "couldn't check" must not read as "nothing held". */
+export function getHeldRows(dbPath: string, now: Date): HeldRow[] {
+  const db = open(dbPath);
+  if (!db) throw new Error('the Wealthfolio database could not be read');
+  try {
+    return heldRowsFrom(<T>(sql: string, ...args: Array<string | number>) => db.prepare(sql).all(...args) as T[], ageSql(now));
+  } finally {
+    db.close();
+  }
+}
+
 export function getLedgerFacts(
   dbPath: string,
   now: Date,
@@ -99,7 +140,7 @@ export function getLedgerFacts(
     const nextMonth = ymd(new Date(now.getFullYear(), now.getMonth() + 1, 1));
     const recent = ymd(new Date(now.getTime() - RECENT_DAYS * 86_400_000));
     const today = ymd(now);
-    const age = `CAST(julianday('${today}') - julianday(substr(a.activity_date,1,10)) AS INTEGER)`;
+    const age = ageSql(now);
 
     const inFlightAccounts = new Set(
       all<{ account_id: string }>(
@@ -174,23 +215,7 @@ export function getLedgerFacts(
       recent,
     ).map((r) => ({ id: r.id, description: describe(r.notes), amount: Number(r.amt), type: String(r.t) }));
 
-    const heldTransfers = all<{ id: string; notes: string; amt: number; age: number; account_id: string; t: string; d: string }>(
-      `SELECT a.id, a.notes, a.account_id, UPPER(a.activity_type) t, substr(a.activity_date,1,10) d,
-              ABS(CAST(a.amount AS REAL)) amt, ${age} age
-       FROM activities a WHERE COALESCE(a.notes,'') LIKE '${IN_TRANSIT_COMMENT_PREFIX}%'
-         -- Only what the stale sweep could settle: never a linked, pending or
-         -- fee-side placeholder, or one the link repair marked as a real pair.
-         AND COALESCE(a.source_group_id,'') = ''
-         AND a.notes NOT LIKE '%${PENDING_SUFFIX}'
-         AND CAST(COALESCE(a.amount,'0') AS REAL) <> 0
-         AND COALESCE(CAST(a.fee AS REAL),0) = 0
-         AND CASE WHEN json_valid(COALESCE(a.metadata,''))
-                  THEN COALESCE(json_type(a.metadata,'$.flow.is_external'),'') ELSE '' END <> 'false'`,
-    ).map((r) => ({
-      id: r.id, description: describe(r.notes), amount: Number(r.amt), ageDays: Number(r.age),
-      wfAccountId: String(r.account_id), date: String(r.d), txId: txIdFromComment(String(r.notes)),
-      direction: (r.t === 'TRANSFER_OUT' || r.t === 'WITHDRAWAL' ? 'out' : 'in') as 'out' | 'in',
-    }));
+    const heldTransfers = heldRowsFrom(all, age);
 
     const hasReviewColumn = all<{ name: string }>(`PRAGMA table_info(activities)`).some((c) => c.name === 'needs_review');
     const needsReview = hasReviewColumn

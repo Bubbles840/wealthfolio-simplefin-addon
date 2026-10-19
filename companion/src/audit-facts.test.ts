@@ -51,6 +51,7 @@ function readers(over: Partial<AuditReaders> = {}): AuditReaders {
     valuations: async () => [{ accountId: 'wf-chk', totalValue: '2431.07' }],
     accounts: async () => [{ id: 'wf-chk', accountType: 'CASH' }, { id: 'wf-ally', accountType: 'CASH' }],
     ledger: () => LEDGER,
+    heldRows: () => [],
     headlineRows: () => [],
     settings: () => ({ timezone: 'America/New_York', excludedCategoryIds: [], categoryParents: {}, spendingOn: true, spendingAccountIds: ['wf-chk'] }),
     spendingSpent: async () => 1200,
@@ -90,25 +91,32 @@ describe('runAudit', () => {
   });
 
   it('lists the transfers held past 14 days for the app, with the feed that holds each, and which are marked (1.65 C)', async () => {
-    const placeholder = row({
-      id: 'ph-1', rawType: 'TRANSFER_OUT', type: 'TRANSFER_OUT', absCents: 25000, date: '2026-09-20', external: true,
-      notes: '↔️ In-transit transfer · WIRE TRANSFER TO ACME LLC · w-old',
-    });
-    const withLedger = { ledger: () => ({ ...LEDGER, rows: [...LEDGER.rows, placeholder] }) };
-    const out = await runAudit(readers(withLedger), NOW);
+    const wire = {
+      id: 'ph-1', description: 'WIRE TRANSFER TO ACME LLC', amount: 250, ageDays: 23, wfAccountId: 'wf-chk', date: '2026-09-20', txId: 'w-old', direction: 'out' as const,
+    };
+    const young = { ...wire, id: 'young', ageDays: 13 };
+    const nan = { ...wire, id: 'nan', ageDays: Number.NaN };
+    const withRows = { heldRows: () => [wire, young, nan] };
+    const out = await runAudit(readers(withRows), NOW);
     expect(out.held).toEqual([expect.objectContaining({
       activityId: 'ph-1', description: 'WIRE TRANSFER TO ACME LLC', amount: 250, ageDays: 23, direction: 'out',
       txKey: 'sfin-chk\u0000w-old', label: 'WIRE TRANSFER TO ACME LLC · PNC Checking', heldBy: null,
     })]);
     expect(out.held?.[0]).not.toHaveProperty('marked');
-    expect((await runAudit(readers({ ledger: boom }), NOW)).held).toBeUndefined();
+    expect((await runAudit(readers({ heldRows: boom }), NOW)).held).toBeUndefined();
 
     const doc = JSON.stringify(notTransferEdit('sfin-chk\u0000w-old', 'x', NOW)(emptySyncOverrides()));
-    const marked = await runAudit(readers({ ...withLedger, secret: async (k) => (k === 'sync_overrides' ? doc : SECRETS[k] ?? null) }), NOW);
+    const marked = await runAudit(readers({ ...withRows, secret: async (k) => (k === 'sync_overrides' ? doc : SECRETS[k] ?? null) }), NOW);
     expect(marked.held?.[0]).toMatchObject({ activityId: 'ph-1', marked: true });
-    const unreadable = await runAudit(readers({ ...withLedger, secret: async (k) => { if (k === 'sync_overrides') throw new Error('401'); return SECRETS[k] ?? null; } }), NOW);
+    const unreadable = await runAudit(readers({ ...withRows, secret: async (k) => { if (k === 'sync_overrides') throw new Error('401'); return SECRETS[k] ?? null; } }), NOW);
     expect(unreadable.held?.[0]).toMatchObject({ activityId: 'ph-1' });
     expect(unreadable.held?.[0]).not.toHaveProperty('marked');
+  });
+
+  it('reads the overrides document once for Health and the held list together', async () => {
+    const seen: string[] = [];
+    await runAudit(readers({ secret: async (k) => { seen.push(k); return SECRETS[k] ?? null; } }), NOW);
+    expect(seen.filter((k) => k === 'sync_overrides')).toHaveLength(1);
   });
 
   it('keeps cash compared when only the database is down: the type comes from REST, cards stay uncompared', async () => {

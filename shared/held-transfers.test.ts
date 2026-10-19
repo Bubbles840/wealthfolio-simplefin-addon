@@ -1,7 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { heldFromLedger, heldTransferMessage, judgeHeldTransfer, type HeldRow, type StoredFeeds } from './held-transfers.js';
-import type { AuditLedgerRow } from './audit-ledger.js';
-import { IN_TRANSIT_COMMENT_PREFIX } from './sync-core.js';
+import { heldTransferMessage, judgeHeldTransfer, type HeldRow, type StoredFeeds } from './held-transfers.js';
 import { accountTxKey } from './transfers.js';
 
 const NOW = new Date('2026-10-19T15:00:00Z');
@@ -135,45 +133,11 @@ describe('heldTransferMessage (1.65 C)', () => {
   });
 });
 
-describe('heldFromLedger (1.65 C, the app\'s Checks)', () => {
-  /** Local noon, so the day count is the same in every time zone the suite runs in. */
-  const LOCAL_NOON = new Date(2026, 9, 19, 12, 0);
-  const f = feeds('2026-09-30T12:00:00Z');
-  const row = (over: Partial<AuditLedgerRow>): AuditLedgerRow => ({
-    id: 'ph-1', accountId: 'wf-chk', date: '2026-09-29', currency: 'USD', rawType: 'TRANSFER_OUT', type: 'TRANSFER_OUT', status: 'POSTED',
-    absCents: 25000, group: '', assetId: '', external: true, phantomCash: false,
-    notes: `${IN_TRANSIT_COMMENT_PREFIX}WIRE TRANSFER TO ACME LLC · w-old`, ...over,
-  });
-
-  it('lists every placeholder held 14 days or more, judged like the daily finding', () => {
-    const held = heldFromLedger({ accounts: [], rows: [
-      row({}),
-      row({ id: 'young', date: '2026-10-10' }),
-      row({ id: 'plain', notes: 'CORNER COFFEE · c-1', rawType: 'WITHDRAWAL', type: 'WITHDRAWAL' }),
-      row({ id: 'ph-in', rawType: 'CREDIT', type: 'CREDIT', absCents: 90000, notes: `${IN_TRANSIT_COMMENT_PREFIX}WIRE TRANSFER FROM ACME LLC · w-in` }),
-    ] }, f, LOCAL_NOON);
-    expect(held).toEqual([
-      judgeHeldTransfer(WIRE, f, LOCAL_NOON),
-      expect.objectContaining({ activityId: 'ph-in', description: 'WIRE TRANSFER FROM ACME LLC', amount: 900, ageDays: 20, direction: 'in', txKey: accountTxKey('sfin-chk', 'w-in') }),
-    ]);
-  });
-
-  it('lists only what the sync sweep could settle: not a linked, pending or amount-0 placeholder', () => {
-    const held = heldFromLedger({ accounts: [], rows: [
-      row({ id: 'linked', group: 'wf-transfer-1' }),
-      row({ id: 'pending', notes: `${IN_TRANSIT_COMMENT_PREFIX}WIRE TRANSFER TO ACME LLC · w-p · pending` }),
-      row({ id: 'zero', absCents: 0 }),
-      row({ id: 'ok' }),
-    ] }, f, LOCAL_NOON);
-    expect(held?.map((h) => h.activityId)).toEqual(['ok']);
-  });
-
-  it('carries the marked state through', () => {
-    const held = heldFromLedger({ accounts: [], rows: [row({})] }, f, LOCAL_NOON, new Set([accountTxKey('sfin-chk', 'w-old')]));
-    expect(held).toEqual([expect.objectContaining({ activityId: 'ph-1', marked: true })]);
-  });
-
-  it('is unknown, not empty, when the ledger could not be read', () => {
-    expect(heldFromLedger(undefined, f, LOCAL_NOON)).toBeUndefined();
+describe('judgeHeldTransfer tolerates a malformed stored name (1.65 C fix round 1)', () => {
+  it('uses a name only when it is a string', () => {
+    const bad = feeds('2026-09-30T12:00:00Z', { names: { 'sfin-chk': 7 as unknown as string, 'sfin-sav': { x: 1 } as unknown as string } });
+    const h = judgeHeldTransfer(WIRE, bad, NOW);
+    expect(h.label).toBe('WIRE TRANSFER TO ACME LLC');
+    expect(h.heldBy).toBe('another account');
   });
 });
