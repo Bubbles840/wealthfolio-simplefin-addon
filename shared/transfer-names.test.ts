@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { isDistinctiveSignature, parseTransferNames, transferSignature } from './transfer-names.js';
+import { isDistinctiveSignature, learnedNameKeys, learnedTransferType, parseTransferNames, transferSignature } from './transfer-names.js';
 import { noteSignature } from './learn-transfer-names.js';
 import { IN_TRANSIT_COMMENT_PREFIX } from './sync-core.js';
 
@@ -57,5 +57,29 @@ describe('parseTransferNames', () => {
     expect(parseTransferNames('{nope')).toBeNull();
     expect(parseTransferNames(JSON.stringify({ version: 2, names: [] }))).toBeNull();
     expect(parseTransferNames(JSON.stringify({ version: 1 }))).toBeNull();
+  });
+});
+
+describe('learnedTransferType (A5)', () => {
+  const keys = learnedNameKeys({ version: 1, computedAt: '', names: [
+    { accountId: 'wf-spend', direction: 'in', signature: 'transfer capital one ach web payment' },
+  ] });
+  const row = (over: Partial<Parameters<typeof learnedTransferType>[1]> = {}) => ({
+    wfAccountId: 'wf-spend', accountType: 'CASH' as string | undefined, amount: 600,
+    mapped: { type: 'DEPOSIT' as const, fromRule: false }, description: 'RT08C248B2E7C8B TRANSFER CAPITAL ONE ACH WEB PAYMENT', ...over,
+  });
+
+  it('types a listed (account, direction, signature) a transfer', () => {
+    expect(learnedTransferType(keys, row())).toBe('TRANSFER_IN');
+  });
+
+  it('needs a known CASH account, no rule, a plain built-in type in the listed direction, and the listed account', () => {
+    expect(learnedTransferType(keys, row({ accountType: undefined }))).toBeNull();
+    expect(learnedTransferType(keys, row({ accountType: 'CREDIT_CARD' }))).toBeNull();
+    expect(learnedTransferType(keys, row({ mapped: { type: 'DEPOSIT', fromRule: true } }))).toBeNull();
+    expect(learnedTransferType(keys, row({ mapped: { type: 'CREDIT', fromRule: false } }))).toBeNull();
+    expect(learnedTransferType(keys, row({ amount: -600, mapped: { type: 'WITHDRAWAL', fromRule: false } }))).toBeNull();
+    expect(learnedTransferType(keys, row({ wfAccountId: 'wf-other' }))).toBeNull();
+    expect(learnedTransferType(learnedNameKeys(null), row())).toBeNull();
   });
 });

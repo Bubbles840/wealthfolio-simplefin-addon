@@ -7,6 +7,7 @@ import type { AmazonLedger } from '../../shared/amazon-ledger.js';
 import { VENMO_LEDGER_SECRET_KEY, type VenmoLedger } from '../../shared/venmo-ledger.js';
 import { linkPairPreferInPlace, unlinkPairPreferInPlace, type InPlaceIo } from '../../shared/link-in-place.js';
 import type { UnlinkLeg, UnlinkResult } from '../../shared/link-pair.js';
+import { TRANSFER_NAMES_SECRET_KEY, parseTransferNames, type TransferNames } from '../../shared/transfer-names.js';
 import { SKIPPED_TRANSACTIONS_SECRET_KEY, parseSkippedTransactions, type SkippedTransaction } from '../../shared/skipped-transactions.js';
 import { loadSyncOverrides, syncOverridesIgnoredLog, syncOverridesOrEmpty, type LoadedSyncOverrides, type SyncOverrides } from '../../shared/sync-overrides.js';
 import { hostTakesCardTransferOut, WEALTHFOLIO_VERSION_SECRET_KEY } from '../../shared/version.js';
@@ -367,6 +368,10 @@ export class RestSyncStore implements SyncStore {
 
   /** Read-only, like the ignored accounts: the list is written by the addon or a
    *  companion tool, and honoured here (see shared/skipped-transactions.ts). */
+  async getTransferNames(): Promise<TransferNames | null> {
+    return parseTransferNames(await this.client.getAddonSecret(this.addonId, TRANSFER_NAMES_SECRET_KEY));
+  }
+
   async getSkippedTransactions(): Promise<SkippedTransaction[]> {
     return parseSkippedTransactions(await this.client.getAddonSecret(this.addonId, SKIPPED_TRANSACTIONS_SECRET_KEY));
   }

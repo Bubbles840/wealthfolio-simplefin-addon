@@ -1,4 +1,5 @@
 import { parseReportStore, reportsSecretKey, type ReportKind, type ReportStore } from '../../shared/reports-archive';
+import { TRANSFER_NAMES_SECRET_KEY, parseTransferNames, type TransferNames } from '../../shared/transfer-names';
 import { SKIPPED_TRANSACTIONS_SECRET_KEY, parseSkippedTransactions, parseSkippedTransactionsStrict, type ParsedSkippedTransactions, type SkippedTransaction } from '../../shared/skipped-transactions';
 import type { AddonContext } from '@wealthfolio/addon-sdk';
 import { AMAZON_LEDGER_SECRET_KEY } from '../../shared/amazon-ledger';
@@ -105,6 +106,8 @@ const KEYS = {
   unmappedAccounts: 'unmapped_accounts',
   ignoredAccounts: 'ignored_accounts',
   skippedTransactions: SKIPPED_TRANSACTIONS_SECRET_KEY,
+  // Companion-published, add-on-read-only; the companion recomputes it, so Reset clears it.
+  transferNames: TRANSFER_NAMES_SECRET_KEY,
   autoHeal: 'auto_heal',
   autoAdjust: 'auto_adjust',
   telegramConfig: 'telegram_config',
@@ -628,6 +631,11 @@ export class SecretsStore {
   }
   async setIgnoredAccounts(ids: string[]): Promise<void> {
     await this.ctx.api.secrets.set(KEYS.ignoredAccounts, JSON.stringify(ids));
+  }
+
+  /** The learned transfer names the companion publishes (null when absent or unreadable). */
+  async getTransferNames(): Promise<TransferNames | null> {
+    return parseTransferNames(await this.ctx.api.secrets.get(KEYS.transferNames));
   }
 
   /** Bank transactions never to import (see shared/skipped-transactions.ts). */

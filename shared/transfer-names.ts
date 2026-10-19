@@ -20,6 +20,7 @@
  * distinctiveness test. The learning itself lives in learn-transfer-names.ts.
  */
 import { GENERIC_BANK_WORDS } from './category-guess.js';
+import type { MappedType } from './mapper.js';
 
 export const TRANSFER_NAMES_SECRET_KEY = 'transfer_names';
 /** The list is capped so the secret stays small; newest names win. */
@@ -93,4 +94,32 @@ export function parseTransferNames(raw: string | null | undefined): TransferName
     names.push({ accountId, direction, signature });
   }
   return { version: 1, computedAt: typeof d.computedAt === 'string' ? d.computedAt : '', names };
+}
+
+const nameKey = (accountId: string, direction: TransferDirection, signature: string) => `${accountId}\u0000${direction}\u0000${signature}`;
+
+/** The list as a lookup set of (account, direction, signature) keys. No list
+ *  (no companion, or one not yet on 1.64) is the empty set, so typing is
+ *  exactly what it was before (R6). */
+export function learnedNameKeys(doc: TransferNames | null | undefined): Set<string> {
+  const keys = new Set<string>();
+  for (const n of doc?.names ?? []) keys.add(nameKey(n.accountId, n.direction, n.signature));
+  return keys;
+}
+
+/** The transfer type a learned name gives a bank row, or null (A5). Only a
+ *  known CASH account (R5: cards never learn or use names), only when no rule
+ *  decided the type, only a plain built-in deposit/withdrawal in the listed
+ *  direction, and only for a listed (account, direction, signature). */
+export function learnedTransferType(
+  names: ReadonlySet<string>,
+  row: { wfAccountId: string; accountType: string | undefined; amount: number; mapped: MappedType; description: string },
+): 'TRANSFER_IN' | 'TRANSFER_OUT' | null {
+  if (names.size === 0 || row.accountType !== 'CASH' || row.mapped.fromRule) return null;
+  let direction: TransferDirection;
+  if (row.mapped.type === 'DEPOSIT' && row.amount > 0) direction = 'in';
+  else if (row.mapped.type === 'WITHDRAWAL' && row.amount < 0) direction = 'out';
+  else return null;
+  if (!names.has(nameKey(row.wfAccountId, direction, transferSignature(row.description)))) return null;
+  return direction === 'in' ? 'TRANSFER_IN' : 'TRANSFER_OUT';
 }

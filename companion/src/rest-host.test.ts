@@ -250,6 +250,18 @@ describe('RestSyncStore', () => {
     expect(await store.getLastSyncAt()).toEqual(new Date('2026-07-01T12:00:00Z'));
   });
 
+  it('reads the learned transfer names it publishes, null when absent or unreadable (1.64)', async () => {
+    const secrets = new Map<string, string>();
+    const client = { getAddonSecret: vi.fn(async (_a: string, key: string) => secrets.get(key) ?? null), setAddonSecret: vi.fn() } as any;
+    const store = new RestSyncStore(client);
+    expect(await store.getTransferNames()).toBeNull();
+    const doc = { version: 1, computedAt: '2026-10-18T15:00:00.000Z', names: [{ accountId: 'wf-360', direction: 'out', signature: 'withdrawal to performance savings' }] };
+    secrets.set('transfer_names', JSON.stringify(doc));
+    expect(await store.getTransferNames()).toEqual(doc);
+    secrets.set('transfer_names', '[]');
+    expect(await store.getTransferNames()).toBeNull();
+  });
+
   it('reads the skip list the addon shares, dropping malformed entries', async () => {
     const secrets = new Map<string, string>([
       ['skipped_transactions', JSON.stringify([{ account: 'sfin-1', txId: 'TRN-1' }, 'junk'])],
