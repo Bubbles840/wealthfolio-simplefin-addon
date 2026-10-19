@@ -1922,3 +1922,19 @@ describe('getNativeBudgetSpend / getNativeSpendingHistoryStart', () => {
     expect(() => getNativeSpendingHistoryStart('/nope/wealthfolio.db', ['acct-cash'])).toThrow(NativeDbUnreadableError);
   });
 });
+
+describe('getNativeAccountBalances signs the effective type (1.64, R14)', () => {
+  it('reads an overridden row by its override, as Wealthfolio and the app do', () => {
+    const { path, cleanup } = makeTestDb();
+    try {
+      const db = new DatabaseSync(path);
+      db.exec(`INSERT INTO activities (id, amount, activity_date, activity_type, activity_type_override, account_id, notes)
+               VALUES ('o1', '100', '2026-08-01', 'WITHDRAWAL', NULL,          'acct-card', 'Coffee · t1'),
+                      ('o2', '42.40', '2026-08-02', 'WITHDRAWAL', 'TRANSFER_IN', 'acct-card', 'Autopay · t2'),
+                      ('o3', '5', '2026-08-03', 'CREDIT', '', 'acct-card', 'Refund · t3')`);
+      db.close();
+      // −100 +42.40 (the override, not the raw WITHDRAWAL) +5 (a blank override is none)
+      expect(getNativeAccountBalances(path).get('acct-card')).toBeCloseTo(-52.6, 2);
+    } finally { cleanup(); }
+  });
+});

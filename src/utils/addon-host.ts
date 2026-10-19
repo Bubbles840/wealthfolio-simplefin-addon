@@ -2,6 +2,7 @@ import { fetchAccounts } from './simplefin';
 import { linkPairPreferInPlace, unlinkPairPreferInPlace, type InPlaceIo } from '../../shared/link-in-place';
 import type { UnlinkLeg, UnlinkResult } from '../../shared/link-pair';
 import { hostCan } from './host-can';
+import { postedLedgerTotal } from '../../shared/ledger-total';
 import type {
   ActivityWrite,
   HostActivity,
@@ -97,6 +98,11 @@ function fromSdkEcho(a: any): HostActivity {
   };
 }
 
+/** One page of a card's history, and the most pages a total will read (20,000
+ *  rows); a card longer than that is "not checked", never a partial sum. */
+const CARD_HISTORY_PAGE_SIZE = 500;
+const CARD_HISTORY_MAX_PAGES = 40;
+
 /**
  * `SyncHost` backed by the Wealthfolio addon SDK — the in-app half of the shared
  * sync core. The Docker companion implements the same interface over REST.
@@ -109,10 +115,13 @@ export class AddonSyncHost implements SyncHost {
   readonly capabilities: { readsSourceGroupId: boolean; cardTransferOut: boolean };
 
   private log?: (message: string) => void;
+  private fullCardHistory: boolean;
 
-  /** `opts.log` is the logger (Task 4); `opts.cardTransferOut` the 3.10 capability. */
-  constructor(private ctx: AddonContext, opts: { cardTransferOut?: boolean; log?: (message: string) => void } = {}) {
+  /** `opts.log` is the logger (Task 4); `opts.cardTransferOut` the 3.10 capability;
+   *  `opts.fullCardHistory` lets `postedLedgerTotals` page a card's history (manual runs). */
+  constructor(private ctx: AddonContext, opts: { cardTransferOut?: boolean; log?: (message: string) => void; fullCardHistory?: boolean } = {}) {
     this.log = opts.log;
+    this.fullCardHistory = !!opts.fullCardHistory;
     this.capabilities = { readsSourceGroupId: false, cardTransferOut: !!opts.cardTransferOut };
   }
 
@@ -137,6 +146,38 @@ export class AddonSyncHost implements SyncHost {
   async latestValuations(accountIds: string[]): Promise<Map<string, number>> {
     const valuations = await this.ctx.api.portfolio.getLatestValuations(accountIds);
     return new Map(valuations.map((v): [string, number] => [v.accountId, v.totalValue ?? 0]));
+  }
+
+  /**
+   * A card's posted total from its whole history (1.64, B1). Valuations are
+   * cash-only, so without this every card said "not checked" after an in-app
+   * Sync. Reads nothing unless this is a manual run (`fullCardHistory`, R7): a
+   * scheduled run must stay cheap. A failed read, an in-transit placeholder or
+   * a history past the page cap omits the card (= not checked), never guesses.
+   */
+  async postedLedgerTotals(accounts: ReadonlyArray<{ wfAccountId: string; accountType: string }>): Promise<Map<string, number>> {
+    const out = new Map<string, number>();
+    if (!this.fullCardHistory) return out;
+    for (const { wfAccountId, accountType } of accounts) {
+      try {
+        const rows: HostActivity[] = [];
+        let complete = false;
+        for (let page = 0; page < CARD_HISTORY_MAX_PAGES; page++) {
+          const res = await this.ctx.api.activities.search(
+            page, CARD_HISTORY_PAGE_SIZE, { accountIds: [wfAccountId] }, '', { id: 'date', desc: true },
+          );
+          const data = res.data ?? [];
+          for (const a of data) rows.push(fromSearchRow(a, wfAccountId));
+          if (data.length < CARD_HISTORY_PAGE_SIZE) { complete = true; break; }
+        }
+        if (!complete) continue;
+        const total = postedLedgerTotal(rows, accountType);
+        if (total !== null) out.set(wfAccountId, total);
+      } catch (e) {
+        this.log?.(`Card total for ${wfAccountId} not read: ${e instanceof Error ? e.message : String(e)}`);
+      }
+    }
+    return out;
   }
 
   async listActivities(wfAccountId: string): Promise<HostActivity[]> {
