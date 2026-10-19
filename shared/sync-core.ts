@@ -1,4 +1,5 @@
 import { bankFirstTransferOut, genericTransferNeedsCorroboration } from './bank-first-payment.js';
+import { fillFeedCurrencies } from './feed-currency.js';
 import { learnedNameKeys, learnedTransferType } from './transfer-names.js';
 import { mapTransactionWithSource, type MappedType } from './mapper.js';
 import { REIMBURSEMENT_SUBTYPE } from './cash-flow-bucket.js';
@@ -2159,6 +2160,18 @@ async function runSyncPass(
   const wfNames = new Map<string, string>(
     wfAccounts.map((a): [string, string] => [a.id, String(a.name ?? '')]),
   );
+  // A blank feed currency (shared/feed-currency.ts), filled before anything
+  // reads it: every row's cash asset is `$CASH-<currency>`, and `$CASH-` is
+  // refused. One that cannot be filled says so once instead of once per row.
+  const filledCurrencies = fillFeedCurrencies(
+    accountSet.accounts,
+    mapping,
+    new Map(wfAccounts.map((a): [string, string | undefined] => [a.id, a.currency])),
+  );
+  accountSet.accounts = filledCurrencies.accounts;
+  for (const account of filledCurrencies.unresolved) {
+    errors.push(`SimpleFin: ${account.name || account.id} reports no currency, and its Wealthfolio account has none either, so its transactions can't be imported.`);
+  }
 
   // Large-transaction alerting. Absent, zero or negative means off — and off
   // means no work at all, not "collect then discard": the threshold is read once

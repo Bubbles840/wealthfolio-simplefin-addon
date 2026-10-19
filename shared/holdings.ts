@@ -202,8 +202,9 @@ export function toHoldingsSnapshot(
       // gains on the holdings page.
       avgCost: holding.purchase_price ? String(holding.purchase_price) : undefined,
       // SimpleFin omits a holding's currency when it matches the account's,
-      // which is the overwhelmingly common case.
-      currency: String(holding.currency ?? account.currency),
+      // which is the overwhelmingly common case. Some providers send `""`
+      // instead, which means the same thing.
+      currency: holding.currency?.trim() || account.currency,
     });
   }
   if (positions.length === 0) return null;
