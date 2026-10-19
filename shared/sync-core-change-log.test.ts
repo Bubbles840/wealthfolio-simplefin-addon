@@ -174,6 +174,8 @@ describe('runSyncCore — change log', () => {
       mapping: { 'sfin-1': 'wf-a', 'sfin-2': 'wf-b' },
       accountTypes: { 'wf-a': 'CASH', 'wf-b': 'CREDIT_CARD' },
       accountNames: { 'wf-a': 'Checking', 'wf-b': 'Citi Card' },
+      // 1.65 B: generic wording alone no longer makes money out a transfer; the rule keeps this leg transfer-typed.
+      mappingRules: [{ pattern: 'Online Transfer to Card', matchType: 'contains' as const, activityType: 'TRANSFER_OUT' as const }],
     });
     const first = createFakeHost(accounts(false));
     await runSyncCore(first.host, first.store, { changeLog: capture() });
@@ -200,9 +202,13 @@ describe('runSyncCore — change log', () => {
   });
 
   it('records a new transfer leg held in transit as an import AND a transfer decision', async () => {
-    const { host, store } = createFakeHost(checking([
-      { id: 'tx-out', posted: epoch('2026-10-12T13:00:00Z'), amount: '-1300.00', description: 'Online Transfer to Savings' },
-    ]));
+    const { host, store } = createFakeHost({
+      ...checking([
+        { id: 'tx-out', posted: epoch('2026-10-12T13:00:00Z'), amount: '-1300.00', description: 'Online Transfer to Savings' },
+      ]),
+      // 1.65 B: generic wording alone no longer makes money out a transfer; the rule keeps this leg transfer-typed.
+      mappingRules: [{ pattern: 'Online Transfer to Savings', matchType: 'contains' as const, activityType: 'TRANSFER_OUT' as const }],
+    });
     const log = capture();
     await runSyncCore(host, store, { changeLog: log });
     expect(log.batches[0].map((e) => [e.kind, e.summary, e.undoable])).toEqual([

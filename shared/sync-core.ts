@@ -1,6 +1,6 @@
-import { bankFirstTransferOut } from './bank-first-payment.js';
+import { bankFirstTransferOut, genericTransferNeedsCorroboration } from './bank-first-payment.js';
 import { learnedNameKeys, learnedTransferType } from './transfer-names.js';
-import { mapTransactionWithSource } from './mapper.js';
+import { mapTransactionWithSource, type MappedType } from './mapper.js';
 import { REIMBURSEMENT_SUBTYPE } from './cash-flow-bucket.js';
 import { accountTxKey, detectTransferPairs, TRANSFER_MATCH_WINDOW_SECONDS } from './transfers.js';
 import type { TransferCandidate } from './transfers.js';
@@ -2393,10 +2393,19 @@ async function runSyncPass(
       const flagged = hasTxOverride(overrides, key, 'asReimbursement');
       const payback = flagged && amount > 0 && (!acctType || acctType === 'CASH');
       if (flagged && !payback) yieldedPaybackKeys.add(key);
-      const builtIn = mapTransactionWithSource(
+      const worded = mapTransactionWithSource(
         tx.description, amount, rules, wfTypes.get(wfAccountId), wfAccountId,
         txEpoch(tx) !== null ? new Date(txEpoch(tx)! * 1000).toISOString().split('T')[0] : undefined,
       );
+      // Issue #13: "WIRE TRANSFER TO ACME LLC" is a wire to a third party, but the
+      // generic phrase typed it a transfer and it waited forever for an other half.
+      // Money out of a cash account worded only generically is an ordinary
+      // WITHDRAWAL unless its text names another connected account (bank-first
+      // below) or a learned out name promotes it. A real own-account transfer
+      // still links: pairing by amount joins it to its other half within 5 days.
+      const builtIn: MappedType = genericTransferNeedsCorroboration(tx.description, amount, acctType, worded, otherAccountWords)
+        ? { type: 'WITHDRAWAL', fromRule: false }
+        : worded;
       // Live, 2026-10-17: a $42.40 Citi autopay posted at PNC before Citi's half
       // existed, read as plain spending, and asked for a category. A bank-account
       // payment whose raw text names another connected account is the paying half

@@ -26,6 +26,11 @@ export interface MappedType {
   /** The deciding rule carries `since` (a payback rule, W10): it types only rows
    *  the sync CREATES — a row already stored keeps its type and subtype. */
   createOnly?: true;
+  /** A TRANSFER_OUT whose type came ONLY from one of the four generic phrases
+   *  (no rule, no card-payment phrase, no institution phrase); the sync core
+   *  decides whether it stands. Issue #13: "WIRE TRANSFER TO ACME LLC", a wire
+   *  to a third party, was held forever waiting for an other half. */
+  genericTransferWording?: true;
 }
 
 /**
@@ -82,6 +87,11 @@ export function paybackMappingRule(pattern: string, wfAccountId: string, since: 
 // transfer of the same name.
 export const BANK_TRANSFER_KEYWORDS = /pnc bank|online transfer|wire transfer|bank transfer|member transfer|capital one transfer/i;
 
+/** The four generic phrases: they say "a transfer" but not to whom (1.65 B). */
+export const GENERIC_TRANSFER_KEYWORDS = /online transfer|wire transfer|bank transfer|member transfer/i;
+/** Institution phrases that name a known transfer counterparty on their own. */
+const INSTITUTION_TRANSFER_KEYWORDS = /pnc bank|capital one transfer/i;
+
 export function mapTransactionWithSource(
   description: string,
   amount: number,
@@ -129,6 +139,7 @@ export function mapTransactionWithSource(
     return {
       type: amount >= 0 ? 'TRANSFER_IN' : 'TRANSFER_OUT',
       fromRule: false,
+      ...(amount < 0 && !INSTITUTION_TRANSFER_KEYWORDS.test(description) ? { genericTransferWording: true as const } : {}),
     };
   }
 

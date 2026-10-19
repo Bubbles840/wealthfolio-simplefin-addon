@@ -70,3 +70,23 @@ export function bankFirstTransferOut(
   if (mapped.fromRule || mapped.type !== 'WITHDRAWAL') return false;
   return MONEY_MOVEMENT_WORDS.test(description) && namesConnectedAccount(description, otherAccountWords);
 }
+
+/**
+ * Whether money out typed only by a generic phrase (online/wire/bank/member
+ * transfer) lacks corroboration and should be an ordinary withdrawal (1.65 B,
+ * issue #13). True only for a CASH account, money out, no rule, the mapper's
+ * `genericTransferWording` flag, and text that names no other connected account.
+ * R4's trade: a first own-account transfer worded only generically shows as
+ * spending until its other half pairs. `bankFirstTransferOut` is not reused: its
+ * whole-word "transfer" test misses `ONLINE TRANSFERS`.
+ */
+export function genericTransferNeedsCorroboration(
+  description: string,
+  amount: number,
+  accountType: string | undefined,
+  mapped: MappedType,
+  otherAccountWords: ReadonlyArray<readonly string[]>,
+): boolean {
+  return accountType === 'CASH' && amount < 0 && !mapped.fromRule && mapped.genericTransferWording === true
+    && !namesConnectedAccount(description, otherAccountWords);
+}
