@@ -1,7 +1,8 @@
 import { describe, it, expect, vi } from 'vitest';
 import {
   budgetStatusLine, checkedLine, clockTime, decideSimplefinRequest, directCallLine, gateLine, parseRequestLog, requestLogIo,
-  requestsToday, reserveSimplefinRequest, SIMPLEFIN_DAILY_LIMIT, SIMPLEFIN_GAP_MS, SIMPLEFIN_SETUP_CEILING, type RequestLogIo,
+  requestsInWindow, requestsToday, reserveSimplefinRequest, SIMPLEFIN_AUTO_GAP_MS, SIMPLEFIN_AUTO_LIMIT, SIMPLEFIN_DAILY_LIMIT, SIMPLEFIN_GAP_MS,
+  SIMPLEFIN_SETUP_CEILING, type RequestLogIo,
 } from './simplefin-budget.js';
 
 // Local wall-clock dates, so "next sync at 3:10 PM" reads the same in every zone.
@@ -18,14 +19,56 @@ describe('the limits (C2, C5)', () => {
   it('are 20 a day, 24 for Setup and Refresh accounts, 5 minutes apart', () => {
     expect([SIMPLEFIN_DAILY_LIMIT, SIMPLEFIN_SETUP_CEILING, SIMPLEFIN_GAP_MS]).toEqual([20, 24, 300_000]);
   });
+
+  it('and for automatic runs: 16 a day, an hour apart (F4)', () => {
+    expect([SIMPLEFIN_AUTO_LIMIT, SIMPLEFIN_AUTO_GAP_MS]).toEqual([16, 3_600_000]);
+  });
 });
 
 describe('decideSimplefinRequest', () => {
-  it('lets the 20th download of the day through and refuses the 21st, for a sync and an automatic call alike', () => {
-    for (const purpose of ['manual', 'scheduled', 'auto'] as const) {
-      expect(decideSimplefinRequest(logOf(19), purpose, NOW)).toEqual({ kind: 'go', at: NOW });
-      expect(decideSimplefinRequest(logOf(20), purpose, NOW).kind).toBe('budget');
+  it('lets the 20th download of the day through and refuses the 21st for a Sync you press', () => {
+    expect(decideSimplefinRequest(logOf(19), 'manual', NOW)).toEqual({ kind: 'go', at: NOW });
+    expect(decideSimplefinRequest(logOf(20), 'manual', NOW).kind).toBe('budget');
+  });
+
+  it('stops scheduled and automatic runs at 16, so 4 always remain for Sync you press (F4)', () => {
+    for (const purpose of ['scheduled', 'auto'] as const) {
+      expect(decideSimplefinRequest(logOf(15), purpose, NOW)).toEqual({ kind: 'go', at: NOW });
+      expect(decideSimplefinRequest(logOf(16), purpose, NOW).kind).toBe('budget');
     }
+    expect(decideSimplefinRequest(logOf(16), 'manual', NOW)).toEqual({ kind: 'go', at: NOW });
+    expect(decideSimplefinRequest(logOf(20), 'manual', NOW).kind).toBe('budget');
+    for (let n = 20; n < 24; n++) expect(decideSimplefinRequest(logOf(n), 'setup', NOW)).toEqual({ kind: 'go', at: NOW });
+    expect(decideSimplefinRequest(logOf(24), 'setup', NOW).kind).toBe('budget');
+  });
+
+  it('a scheduled run at 16 says when the 16 frees up', () => {
+    // 20 requests, the oldest 630 minutes ago: the fifth oldest (510 minutes ago) leaving brings it to 15.
+    expect(decideSimplefinRequest(logOf(20), 'scheduled', NOW)).toEqual({ kind: 'budget', nextAt: new Date(minutes(510) + 24 * 3_600_000) });
+    expect(gateLine(decideSimplefinRequest(logOf(16), 'scheduled', NOW), NOW)).toMatch(/^SimpleFin's daily limit is used up — next sync at /);
+  });
+
+  it('a scheduled or automatic run needs an hour since the last request, failed ones included (F4)', () => {
+    // A download that failed 30 minutes ago is still in the record: SimpleFin counted it.
+    for (const purpose of ['scheduled', 'auto'] as const) {
+      expect(decideSimplefinRequest([minutes(30)], purpose, NOW)).toEqual({ kind: 'wait', lastAt: new Date(minutes(30)) });
+      expect(decideSimplefinRequest([minutes(61)], purpose, NOW)).toEqual({ kind: 'go', at: NOW });
+    }
+    expect(gateLine(decideSimplefinRequest([minutes(30)], 'scheduled', NOW), NOW)).toBe('SimpleFin was asked 30 min ago — this scheduled sync was skipped.');
+    expect(decideSimplefinRequest([minutes(30)], 'manual', NOW)).toEqual({ kind: 'go', at: NOW });
+  });
+
+  it('a failing scheduled download retried every 5 minutes asks at most hourly and 16 a day (F4)', () => {
+    // The app's scheduler wakes every 5 minutes and stays due while every run fails.
+    let log: number[] = [];
+    for (let m = -48 * 60; m <= 0; m += 5) {
+      const now = new Date(NOW.getTime() + m * 60_000);
+      if (decideSimplefinRequest(log, 'scheduled', now).kind === 'go') log = [now.getTime(), ...log];
+      expect(requestsInWindow(log, now).length).toBeLessThanOrEqual(SIMPLEFIN_AUTO_LIMIT);
+    }
+    for (let i = 1; i < log.length; i++) expect(log[i - 1] - log[i]).toBeGreaterThanOrEqual(SIMPLEFIN_AUTO_GAP_MS);
+    // What a person presses still goes (5 minutes on, outside the manual gap).
+    expect(decideSimplefinRequest(log, 'manual', new Date(NOW.getTime() + SIMPLEFIN_GAP_MS)).kind).toBe('go');
   });
 
   it('says when the oldest counted request leaves the 24 hours', () => {
@@ -60,7 +103,8 @@ describe('decideSimplefinRequest', () => {
   });
 
   it('forgets requests older than 24 hours, and counts one the other writer stamped a little ahead', () => {
-    expect(decideSimplefinRequest([...logOf(19), minutes(24 * 60 + 1)], 'scheduled', NOW).kind).toBe('go');
+    expect(decideSimplefinRequest([...logOf(19), minutes(24 * 60 + 1)], 'manual', NOW).kind).toBe('go');
+    expect(decideSimplefinRequest([...logOf(15), minutes(24 * 60 + 1)], 'scheduled', NOW).kind).toBe('go');
     expect(decideSimplefinRequest([NOW.getTime() + 60_000], 'manual', NOW).kind).toBe('checkOnly');
   });
 });
@@ -102,6 +146,14 @@ describe('parseRequestLog', () => {
     expect(parseRequestLog('{"a":1}')).toBeNull();
     expect(parseRequestLog('["not a time"]')).toBeNull();
   });
+
+  it('reads JSON null as absent: the companion hands a missing secret over as the string "null" (F1)', async () => {
+    expect(parseRequestLog('null')).toEqual([]);
+    expect(parseRequestLog(' null ')).toEqual([]);
+    const io = memoryIo('null');
+    expect(await reserveSimplefinRequest(io, 'scheduled', NOW)).toEqual({ kind: 'go', at: NOW });
+    expect(JSON.parse(io.raw!)).toEqual([NOW.toISOString()]);
+  });
 });
 
 describe('the one lines (C3, C4)', () => {
@@ -134,6 +186,11 @@ describe('the one lines (C3, C4)', () => {
     expect(requestsToday(null, NOW)).toBe(0);
     expect(requestsToday('{bad', NOW)).toBeNull();
     expect(budgetStatusLine(7)).toBe('SimpleFin: 7 of 20 today');
+  });
+
+  it('never says "22 of 20": past 20 (Setup or Refresh used the headroom) it says the limit is reached (F6)', () => {
+    expect(budgetStatusLine(20)).toBe('SimpleFin: 20 of 20 today');
+    expect(budgetStatusLine(22)).toBe('SimpleFin: 22 today — daily limit reached');
   });
 });
 

@@ -17,7 +17,11 @@
  *    20. Only Setup and Refresh accounts (`setup`) may use the headroom up to
  *    24, and they ignore the gap, because a person is waiting on them.
  *  - C3/R18: a MANUAL Sync inside the 5-minute gap downloads nothing and only
- *    re-checks balances; a scheduled or automatic call inside it just waits.
+ *    re-checks balances.
+ *  - F4 (amends R8 for automatic runs only): a scheduled or automatic call
+ *    needs an HOUR since the newest recorded request, any writer's, failed
+ *    ones included, and may use only 16 of the 20; inside either it just
+ *    waits. A person's Sync keeps the 5 minutes and the full 20.
  *  - C1: one record, shared by both writers (the browser add-on and the Node
  *    companion), kept in the add-on's secrets. Read-check-write is NOT atomic;
  *    recording the request BEFORE it is sent narrows the race to one round
@@ -34,6 +38,17 @@ export const SIMPLEFIN_DAILY_LIMIT = 20;
 export const SIMPLEFIN_SETUP_CEILING = 24;
 export const SIMPLEFIN_GAP_MS = 5 * 60_000;
 export const SIMPLEFIN_WINDOW_MS = 24 * 60 * 60_000;
+/** The gap a scheduled or automatic run needs since the newest recorded request.
+ *  WHY: the app's scheduler wakes every 5 minutes and is due by `lastSyncAt`,
+ *  which only a SUCCESSFUL run sets. During a SimpleFin outage, an offline
+ *  laptop or a throw after the gate, every wake recorded one more request: the
+ *  day's 20 went in about 100 minutes and refused even a Sync you press for
+ *  some 22 hours. Measured on requests, failed ones included, a failing loop
+ *  asks at most once an hour (the one-hour floor C6 promises scheduled runs). */
+export const SIMPLEFIN_AUTO_GAP_MS = 60 * 60_000;
+/** How many of the 20 scheduled and automatic runs may use. WHY: so that after
+ *  any outage at least 4 downloads remain for the Syncs a person presses. */
+export const SIMPLEFIN_AUTO_LIMIT = 16;
 /** The 5-minute gap ignores a stamp more than this far ahead of `now`. A writer
  *  with a badly wrong clock could otherwise stamp hours ahead; the gap measured
  *  from that stamp stays negative, so every run on both writers would wait or
@@ -57,7 +72,11 @@ export interface RequestLogIo {
 }
 
 /** The stored record as epoch ms, newest first. Absent or empty is `[]`;
- *  anything but an array of parseable time strings is corrupt (null). */
+ *  anything but an array of parseable time strings is corrupt (null).
+ *  JSON `null` is absent too: the server answers a secret that was never
+ *  written with HTTP 200 and body `null`, which the companion's client hands
+ *  over as the string "null". Read as corrupt, it blocked the companion's
+ *  first sync after the upgrade. */
 export function parseRequestLog(raw: string | null | undefined): number[] | null {
   if (raw === null || raw === undefined || raw.trim() === '') return [];
   let parsed: unknown;
@@ -66,6 +85,7 @@ export function parseRequestLog(raw: string | null | undefined): number[] | null
   } catch {
     return null;
   }
+  if (parsed === null) return [];
   if (!Array.isArray(parsed)) return null;
   const times: number[] = [];
   for (const item of parsed) {
@@ -85,14 +105,15 @@ export function requestsInWindow(log: number[], now: Date): number[] {
 }
 
 export function decideSimplefinRequest(log: number[], purpose: SimplefinPurpose, now: Date): SimplefinGate {
-  const limit = purpose === 'setup' ? SIMPLEFIN_SETUP_CEILING : SIMPLEFIN_DAILY_LIMIT;
+  const limit = purpose === 'setup' ? SIMPLEFIN_SETUP_CEILING : purpose === 'manual' ? SIMPLEFIN_DAILY_LIMIT : SIMPLEFIN_AUTO_LIMIT;
   const window = requestsInWindow(log, now);
   if (window.length >= limit) {
     const oldestFirst = [...window].reverse();
     return { kind: 'budget', nextAt: new Date(oldestFirst[window.length - limit] + SIMPLEFIN_WINDOW_MS) };
   }
   const newest = window.find((t) => t - now.getTime() <= SIMPLEFIN_FUTURE_TOLERANCE_MS);
-  if (purpose !== 'setup' && newest !== undefined && now.getTime() - newest < SIMPLEFIN_GAP_MS) {
+  const gap = purpose === 'manual' ? SIMPLEFIN_GAP_MS : SIMPLEFIN_AUTO_GAP_MS;
+  if (purpose !== 'setup' && newest !== undefined && now.getTime() - newest < gap) {
     const lastAt = new Date(newest);
     return purpose === 'manual' ? { kind: 'checkOnly', lastAt } : { kind: 'wait', lastAt };
   }
@@ -158,8 +179,12 @@ export function requestsToday(raw: string | null, now: Date): number | null {
   return log === null ? null : requestsInWindow(log, now).length;
 }
 
+/** Past 20 only Setup and Refresh accounts can have asked (the headroom up to
+ *  24), and "22 of 20" reads like a bug, so the line says the limit is reached. */
 export function budgetStatusLine(count: number): string {
-  return `SimpleFin: ${count} of ${SIMPLEFIN_DAILY_LIMIT} today`;
+  return count > SIMPLEFIN_DAILY_LIMIT
+    ? `SimpleFin: ${count} today — daily limit reached`
+    : `SimpleFin: ${count} of ${SIMPLEFIN_DAILY_LIMIT} today`;
 }
 
 /** The record as an I/O pair, or null for a store that keeps none (both methods or neither). */
@@ -180,8 +205,8 @@ export function requestLogIo(store: {
  *    (purpose 'setup'): a person is waiting on them, so they may use the
  *    headroom up to the Setup ceiling of 24 and ignore the 5-minute gap.
  *  - the automatic account-name backfill on page load (purpose 'auto'): cosmetic
- *    and nobody asked for it, so it obeys the 20 and the gap like a scheduled run
- *    and its caller just skips when refused.
+ *    and nobody asked for it, so it obeys the 16 and the hour like a scheduled
+ *    run and its caller just skips when refused.
  * Returns null when the call may go ahead (the request is now recorded) or the
  * store keeps no record (an older host: nothing to count); otherwise the one
  * line saying why nothing may be downloaded.
