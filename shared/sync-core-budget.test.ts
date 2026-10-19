@@ -41,9 +41,11 @@ describe('runSyncCore — SimpleFin is never asked more often than it allows (C)
     for (const opts of [{ manual: true }, { manual: true, force: true }, {}]) {
       const log = { raw: logOf(20) };
       const fh = createFakeHost(seedOf(log));
+      const before = await fh.store.getLastSyncAt();
       const fetch = fetchSpy(fh);
       const result = await runSyncCore(fh.host, fh.store, opts);
       expect(fetch).not.toHaveBeenCalled();
+      expect(await fh.store.getLastSyncAt()).toEqual(before);
       expect(result.download).toEqual({ kind: 'skipped', line });
       expect(result.errors).toEqual([]);
       expect(fh.saved).toEqual([]);
@@ -58,7 +60,11 @@ describe('runSyncCore — SimpleFin is never asked more often than it allows (C)
     expect(requests(log)).toEqual([NOW.toISOString()]);
 
     vi.setSystemTime(at(10));
-    fh.host.fetchSimplefin = async () => { throw new Error('SimpleFin is unreachable'); };
+    fh.host.fetchSimplefin = async () => {
+      // Recorded BEFORE the send: the record already holds this request.
+      expect(requests(log)[0]).toBe(at(10).toISOString());
+      throw new Error('SimpleFin is unreachable');
+    };
     await expect(runSyncCore(fh.host, fh.store, { manual: true })).rejects.toThrow('unreachable');
     expect(requests(log)).toEqual([at(10).toISOString(), NOW.toISOString()]);
   });
