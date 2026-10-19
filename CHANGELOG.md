@@ -19,7 +19,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   bank words, rows a rule types and stored paybacks are never touched, and
   one "Not a transfer" Undo stops trusting that wording. Without the
   companion nothing changes.
-- **Pressing Sync checks every account, cards included.** After the run's own
+- **Pressing Sync checks every bank account and card.** After the run's own
   saves the app adds up each card's whole history and compares it with
   SimpleFin's posted balance, so a card reads "in sync" or "off by $X"
   instead of "not checked" — even with pending charges, and even when the
