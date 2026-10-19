@@ -96,6 +96,8 @@ export interface AccountBalanceInfo {
    * that raise banners, plugs or report findings must ignore a tagged drift.
    */
   checkedAfterSave?: true;
+  /** Epoch ms when the download behind `balance`/`date` was sent; absent on an older build's snapshot. */
+  fetchedAt?: number;
 }
 
 const KEYS = {
