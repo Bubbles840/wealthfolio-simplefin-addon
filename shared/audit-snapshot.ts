@@ -193,14 +193,6 @@ export function parseAuditSnapshot(raw: string | null | undefined): AuditSnapsho
     }
     issues.push(i);
   }
-  if (v.held !== undefined) {
-    const goodHeld = (x: unknown) => isObject(x) && typeof x.activityId === 'string' && typeof x.description === 'string' && typeof x.label === 'string'
-      && isNum(x.amount) && isNum(x.ageDays) && (x.direction === 'in' || x.direction === 'out')
-      && (x.txKey === null || typeof x.txKey === 'string')
-      && (x.heldBy === undefined || x.heldBy === null || typeof x.heldBy === 'string')
-      && (x.marked === undefined || x.marked === true);
-    if (!Array.isArray(v.held) || !v.held.every(goodHeld)) return corrupt;
-  }
   // The base currency names a reason in the views: a code or nothing.
   const { baseCurrency, ...rest } = h;
   const withBase = typeof baseCurrency === 'string' && /^[A-Z]{3}$/.test(baseCurrency) ? { ...rest, baseCurrency } : rest;
@@ -212,7 +204,15 @@ export function parseAuditSnapshot(raw: string | null | undefined): AuditSnapsho
     ...health, issues,
     ...(unnamedIssues > 0 ? { more: (health.more ?? 0) + unnamedIssues } : {}),
   };
-  return { kind: 'ok', snapshot: { ...v, headline, health: checked } as AuditSnapshot };
+  // A malformed held list is dropped (read as absent), never allowed to blank the other views.
+  const goodHeld = (x: unknown) => isObject(x) && typeof x.activityId === 'string' && typeof x.description === 'string' && typeof x.label === 'string'
+    && isNum(x.amount) && isNum(x.ageDays) && (x.direction === 'in' || x.direction === 'out')
+    && (x.txKey === null || typeof x.txKey === 'string')
+    && (x.heldBy === undefined || x.heldBy === null || typeof x.heldBy === 'string')
+    && (x.marked === undefined || x.marked === true);
+  const { held, ...others } = v;
+  const heldOk = Array.isArray(held) && held.every(goodHeld) ? { held } : {};
+  return { kind: 'ok', snapshot: { ...others, ...heldOk, headline, health: checked } as AuditSnapshot };
 }
 
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];

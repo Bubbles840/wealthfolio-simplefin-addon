@@ -7,9 +7,8 @@
  *
  * Must not be imported by sync-core.ts: it imports sync-core.ts.
  */
-import { isPendingNote, isPlaceholderNote, type AuditLedger } from './audit-ledger.js';
 import { bankDayInstant } from './bank-day.js';
-import { accountNameWords, descriptionFromComment, expiryHoldAccount, txIdFromComment } from './sync-core.js';
+import { accountNameWords, expiryHoldAccount } from './sync-core.js';
 import { formatDollars } from './telegram.js';
 import { accountTxKey } from './transfers.js';
 import { sfinIdsFor } from './tx-story.js';
@@ -54,6 +53,9 @@ export interface HeldTransfer {
 
 const finite = (v: unknown): number | null => (typeof v === 'number' && Number.isFinite(v) ? v : null);
 
+/** A stored name, or "another account" when it is missing or not text. */
+const nameOf = (v: unknown): string => (typeof v === 'string' && v !== '' ? v : 'another account');
+
 const isObj = (v: unknown): v is object => typeof v === 'object' && v !== null;
 
 /** The leg's own SimpleFin account: the one mapped feed in the last download,
@@ -75,7 +77,8 @@ export function judgeHeldTransfer(
   marked?: ReadonlySet<string>,
 ): HeldTransfer {
   const sfinId = feeds && row.wfAccountId ? ownFeedId(feeds, row.wfAccountId) : null;
-  const own = feeds && sfinId ? feeds.names[sfinId] : undefined;
+  const stored = feeds && sfinId ? feeds.names[sfinId] : undefined;
+  const own = typeof stored === 'string' && stored !== '' ? stored : undefined;
   const base: HeldTransfer = {
     activityId: row.id,
     description: row.description,
@@ -99,12 +102,12 @@ export function judgeHeldTransfer(
     if (!isObj(b)) continue;
     const bal = b as { date?: unknown; aliveThrough?: unknown };
     alive.set(id, finite(bal.aliveThrough) ?? finite(bal.date) ?? 0);
-    nameWords.set(id, accountNameWords(feeds.names[id] ?? ''));
+    nameWords.set(id, accountNameWords(typeof feeds.names[id] === 'string' ? feeds.names[id] : ''));
   }
   const holder = expiryHoldAccount(sfinId, Date.parse(bankDayInstant(row.date)) / 1000, mappedIds, alive, {
     nowSec: Math.floor(now.getTime() / 1000), legDescription: row.description, nameWords,
   });
-  return { ...base, heldBy: holder === null ? null : feeds.names[holder] ?? 'another account' };
+  return { ...base, heldBy: holder === null ? null : nameOf(feeds.names[holder]) };
 }
 
 export function heldTransferMessage(h: HeldTransfer): string {
@@ -113,43 +116,4 @@ export function heldTransferMessage(h: HeldTransfer): string {
   if (h.heldBy === undefined) return head;
   if (h.heldBy === null) return `${head} — the next sync settles it`;
   return `${head} — ${h.heldBy}'s feed is behind, so it stays on hold`;
-}
-
-/** Whole days from the bank day to `now`'s LOCAL day: the count ledger-facts' SQL makes. */
-export function heldAgeDays(date: string, now: Date): number {
-  return Math.round((Date.UTC(now.getFullYear(), now.getMonth(), now.getDate()) - Date.parse(`${date}T00:00:00Z`)) / 86_400_000);
-}
-
-/**
- * The app's Checks list: every in-transit placeholder held at least
- * HELD_MIN_AGE_DAYS that the sync's sweep could settle, judged like the
- * daily finding. Undefined = the ledger could not be read (unknown, not none).
- *
- * It mirrors the companion's query as far as `AuditLedgerRow` shows it: a
- * linked row (`group` set) is skipped, so "Not a transfer" can never unlink a
- * real pair; so are pending and amount-0 rows (amount 0 also covers a legacy
- * fee-side placeholder, as fee is not on the row). Known gap: the row's
- * `external` is true-only, so a placeholder whose metadata says
- * `flow.is_external: false` cannot be told apart and is listed. It is unlinked,
- * so marking it is harmless.
- */
-export function heldFromLedger(
-  ledger: AuditLedger | undefined,
-  feeds: StoredFeeds | undefined,
-  now: Date,
-  marked?: ReadonlySet<string>,
-): HeldTransfer[] | undefined {
-  if (!ledger) return undefined;
-  const out: HeldTransfer[] = [];
-  for (const r of ledger.rows) {
-    if (!isPlaceholderNote(r.notes) || isPendingNote(r.notes) || r.group !== '' || r.absCents === 0) continue;
-    const ageDays = heldAgeDays(r.date, now);
-    if (ageDays < HELD_MIN_AGE_DAYS) continue;
-    out.push(judgeHeldTransfer({
-      id: r.id, description: descriptionFromComment(r.notes), amount: r.absCents / 100, ageDays,
-      wfAccountId: r.accountId, date: r.date, txId: txIdFromComment(r.notes),
-      direction: r.rawType === 'TRANSFER_OUT' || r.rawType === 'WITHDRAWAL' ? 'out' : 'in',
-    }, feeds, now, marked));
-  }
-  return out;
 }

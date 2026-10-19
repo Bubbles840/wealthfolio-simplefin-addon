@@ -25,8 +25,9 @@ import { healthIssues, type HealthFacts, type HealthRead } from '../../shared/au
 import type { AuditLedger } from '../../shared/audit-ledger.js';
 import { AUDIT_SNAPSHOT_SECRET_KEY, buildAuditSnapshot, type AuditResults } from '../../shared/audit-snapshot.js';
 import { monthlySpendTotals, parseReportCube, REPORT_CUBE_SECRET_KEY } from '../../shared/report-cube.js';
-import { heldFromLedger } from '../../shared/held-transfers.js';
+import { HELD_MIN_AGE_DAYS, judgeHeldTransfer, type HeldRow, type HeldTransfer } from '../../shared/held-transfers.js';
 import { hasTxOverride, loadSyncOverrides } from '../../shared/sync-overrides.js';
+import { getHeldRows } from './ledger-facts.js';
 import { getNativeAuditLedger, getNativeAuditSettings, getNativeHeadlineRows } from './sqlite-audit.js';
 import type { WealthfolioClient } from './wealthfolio.js';
 
@@ -41,6 +42,8 @@ export interface AuditReaders {
   accounts(): Promise<Array<{ id: string; accountType?: string }>>;
   /** Throws when the database cannot be read. */
   ledger(): AuditLedger;
+  /** The in-transit placeholders the sync's sweep could settle (the daily finding's own reader); throws when the database cannot be read. */
+  heldRows(now: Date): HeldRow[];
   /** Throws when the database cannot be read. */
   headlineRows(startInclusive: string, endExclusive: string): HeadlineDbRow[];
   /** Throws when the database cannot be read. */
@@ -60,6 +63,7 @@ export function companionAuditReaders(client: AuditClient, dbPath: string): Audi
     valuations: () => client.getLatestValuations(),
     accounts: () => client.getAccounts(),
     ledger: () => getNativeAuditLedger(dbPath),
+    heldRows: (now) => getHeldRows(dbPath, now),
     headlineRows: (start, endEx) => getNativeHeadlineRows(dbPath, start, endEx),
     settings: () => getNativeAuditSettings(dbPath),
     spendingSpent: (start, end) => client.getSpendingInsightSpent(start, end),
@@ -222,6 +226,23 @@ export async function gatherHealthFacts(r: AuditReaders, ledger: AuditLedger | u
   return facts;
 }
 
+/** The held transfers for the app: the daily finding's rows and filter, judged the same way.
+ *  Undefined when the database could not be read (unknown, not none). */
+function readHeld(r: AuditReaders, now: Date, balanceFacts: BalanceFacts, marked: ReadonlySet<string>): HeldTransfer[] | undefined {
+  let rows: HeldRow[];
+  try {
+    rows = r.heldRows(now);
+  } catch {
+    return undefined;
+  }
+  const feeds = balanceFacts.mapping
+    ? { mapping: balanceFacts.mapping, balances: balanceFacts.balances ?? {}, names: balanceFacts.names ?? {} }
+    : undefined;
+  return rows
+    .filter((row) => Number.isFinite(row.ageDays) && row.ageDays >= HELD_MIN_AGE_DAYS)
+    .map((row) => judgeHeldTransfer(row, feeds, now, marked));
+}
+
 /** All three checks over one ledger read. `reached` is false when not even
  *  the account mapping could be read: Wealthfolio is unreachable. */
 export async function runAudit(r: AuditReaders, now: Date, cubeNotBefore?: Date): Promise<AuditResults & { reached: boolean }> {
@@ -230,18 +251,12 @@ export async function runAudit(r: AuditReaders, now: Date, cubeNotBefore?: Date)
   const balanceFacts = await gatherBalanceFacts(r, ledger, mapping);
   const headlineFacts = await gatherHeadlineFacts(r, now, mapping, cubeNotBefore);
   const healthFacts = await gatherHealthFacts(r, ledger, mapping);
-  // Transactions already marked "not a transfer" (read-only; an unreadable
-  // document or a failed read means none, as in the daily findings).
-  const overrides = await loadSyncOverrides((k) => r.secret(k)).catch(() => null);
+  // Transactions already marked "not a transfer": the document Health already
+  // read (none when it was unreadable or the read failed).
   const marked = new Set(
-    overrides ? Object.keys(overrides.overrides.tx).filter((k) => hasTxOverride(overrides.overrides, k, 'notTransfer')) : [],
+    healthFacts.overrides ? Object.keys(healthFacts.overrides.tx).filter((k) => hasTxOverride(healthFacts.overrides!, k, 'notTransfer')) : [],
   );
-  const held = heldFromLedger(
-    ledger,
-    balanceFacts.mapping ? { mapping: balanceFacts.mapping, balances: balanceFacts.balances ?? {}, names: balanceFacts.names ?? {} } : undefined,
-    now,
-    marked,
-  );
+  const held = readHeld(r, now, balanceFacts, marked);
   return {
     balances: explainBalances(balanceFacts),
     headline: explainHeadline(headlineFacts),

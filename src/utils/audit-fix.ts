@@ -23,6 +23,7 @@ import type { HealthLeg } from '../../shared/audit-health';
 import { linkPairs, LINK_DONE, type LinkIo, type LinkPair, type LinkRun, type ReadRow } from '../../shared/audit-link';
 import { fixRowOf, linkedState, type FixRow } from '../../shared/fix-row';
 import { ledgerGroupId } from '../../shared/link-in-place';
+import { isPendingNote, isPlaceholderNote } from '../../shared/audit-ledger';
 import type { HeldTransfer } from '../../shared/held-transfers';
 import { isTransferType, txIdFromComment } from '../../shared/sync-core';
 import { isUnreadableOverridesError, notTransferEdit, SYNC_OVERRIDES_UNREADABLE_MESSAGE } from '../../shared/sync-overrides';
@@ -185,23 +186,45 @@ export async function removeFromApp(ctx: AddonContext, store: FixStore, activity
 }
 
 export const NOT_TRANSFER_FAILED = "Couldn't save that — nothing was changed.";
+export const NOT_TRANSFER_STALE = 'That one has changed since the checks ran — nothing was changed.';
 
 /**
  * "Not a transfer" on a transfer still in transit (1.65 C): records the
- * `notTransfer` override the next sync obeys. The write goes only through
+ * `notTransfer` override the next sync obeys. The snapshot it was chosen from
+ * can lag the add-on's own syncs, and the sync unlinks a pair whose leg is
+ * marked, so the row is re-read by id first and nothing is written unless it
+ * is still an unlinked, non-pending in-transit placeholder for the same bank
+ * transaction (compared by the tx id in the note against the one in the
+ * key). A failed read writes nothing. The write goes only through
  * `editSyncOverrides`, which re-reads before writing (the companion is a
  * second writer). It touches the overrides document alone, which the sync
  * reads at its start, so it takes no write lock. An older store without
  * `editSyncOverrides`, or a row with no bank transaction to name, writes nothing.
  */
 export async function notTransferFromApp(
-  store: Partial<Pick<SecretsStore, 'editSyncOverrides'>>, h: HeldTransfer, now: Date = new Date(),
-): Promise<string> {
-  if (!h.txKey || !store.editSyncOverrides) return NOT_TRANSFER_FAILED;
+  ctx: AddonContext,
+  store: FixStore & Partial<Pick<SecretsStore, 'editSyncOverrides'>>,
+  h: HeldTransfer,
+  now: Date = new Date(),
+): Promise<{ ok: boolean; message: string }> {
+  const failed = { ok: false, message: NOT_TRANSFER_FAILED };
+  if (!h.txKey || !store.editSyncOverrides) return failed;
+  const txId = h.txKey.slice(h.txKey.indexOf('\u0000') + 1);
+  try {
+    const row = await readFixRow(ctx, h.activityId, await accountTypes(ctx));
+    const stale = { ok: false, message: NOT_TRANSFER_STALE };
+    if (!row || !isPlaceholderNote(row.notes) || isPendingNote(row.notes) || txIdFromComment(row.notes) !== txId) return stale;
+    if (row.grouped) return stale;
+    // Wealthfolio 3.9+ says on its own word; else the add-on's ledger of pairs.
+    const fact = (await readCashFacts(ctx, [{ id: row.id, accountId: row.accountId, date: row.date }]))?.get(row.id);
+    if (fact ? linkedOfFact(fact) : ledgerKnows(await ledgerOf(store), [h.txKey], txId)) return stale;
+  } catch {
+    return failed;
+  }
   try {
     await store.editSyncOverrides(notTransferEdit(h.txKey, h.label, now));
-    return `Saved — the next sync counts it as ${h.direction === 'out' ? 'spending' : 'money in'}.`;
+    return { ok: true, message: `Saved — the next sync counts it as ${h.direction === 'out' ? 'spending' : 'money in'}.` };
   } catch (err) {
-    return isUnreadableOverridesError(err) ? SYNC_OVERRIDES_UNREADABLE_MESSAGE : NOT_TRANSFER_FAILED;
+    return { ok: false, message: isUnreadableOverridesError(err) ? SYNC_OVERRIDES_UNREADABLE_MESSAGE : NOT_TRANSFER_FAILED };
   }
 }

@@ -20,7 +20,7 @@ import type { MappingRule, SimplefinAccount, AccountMapping } from '../../shared
 import { accountCreatedChange } from '../../shared/change-entries';
 import { directCallLine } from '../../shared/simplefin-budget';
 import { ChangeLogCard, syncNowSentence } from '../components/ChangeLogCard';
-import { emptySyncOverrides, removeOverrideRow, type OverrideRow } from '../../shared/sync-overrides';
+import { emptySyncOverrides, hasTxOverride, removeOverrideRow, type OverrideRow } from '../../shared/sync-overrides';
 import type { ChangeLogItem } from '../../shared/change-log';
 import type { UndoOp } from '../../shared/change-undo';
 import { undoFromApp } from '../utils/change-undo';
@@ -116,7 +116,12 @@ export function SettingsTab({
     : 'Not set';
   // 2c R2: Link on the Checks card, through the add-on's own host.
   const linkChecks = useCallback((pairs: LinkPair[]) => linkFromApp(ctx, store, pairs), [ctx, store]);
-  const notTransfer = useCallback((h: HeldTransfer) => notTransferFromApp(store, h), [store]);
+  const notTransfer = useCallback((h: HeldTransfer) => notTransferFromApp(ctx, store, h), [ctx, store]);
+  const loadMarked = useCallback(async () => {
+    const loaded = await store.readSyncOverrides?.();
+    if (!loaded || loaded.unreadable) return null;
+    return new Set(Object.keys(loaded.overrides.tx).filter((k) => hasTxOverride(loaded.overrides, k, 'notTransfer')));
+  }, [store]);
   const [scheduleHours, setScheduleHours] = useState<number | null>(null);
   const [autoHeal, setAutoHeal] = useState(false);
   const [autoAdjust, setAutoAdjust] = useState(false);
@@ -481,6 +486,7 @@ export function SettingsTab({
             read={auditSnapshot} companionVersion={companionVersion} now={new Date()}
             link={linkChecks} onFixed={onAuditChanged}
             notTransfer={typeof store.editSyncOverrides === 'function' ? notTransfer : undefined}
+            loadMarked={loadMarked}
           />
         </CollapsibleCard>
       )}
