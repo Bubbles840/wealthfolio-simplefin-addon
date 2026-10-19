@@ -25,6 +25,7 @@
  * rest".
  */
 import type { SimplefinAccount } from './types.js';
+import { localIsoDay } from './subscription-roster.js';
 
 /** One line of a snapshot: a position, in the shape the host's snapshot import
  *  takes. Declared here rather than imported from the SDK so `shared/` stays
@@ -104,7 +105,14 @@ export function toHoldingsSnapshot(account: SimplefinAccount): HoldingsSnapshot 
     // The BALANCE date, not today: a feed can be a day or more behind, and
     // dating a snapshot today would attribute yesterday's positions to a day
     // they were not held — then collide with the real snapshot for today.
-    date: new Date(account['balance-date'] * 1000).toISOString().slice(0, 10),
+    //
+    // Its LOCAL calendar day, not its UTC one: `balance-date` is a real
+    // instant, not a bank day, and Wealthfolio refuses a date after its own
+    // today. Live, 2026-10-18 at 10:43 PM Eastern: the balance was stamped
+    // 02:43 UTC on Oct 19, the snapshot asked for "2026-10-19", and every
+    // evening sync after 8 PM failed with "Use a date from 1970-01-01 to
+    // 2026-10-18". (Transaction dates stay as they are: `posted` IS a bank day.)
+    date: localIsoDay(new Date(account['balance-date'] * 1000)),
     positions,
     cashBalances: { [account.currency]: account.balance },
   };
