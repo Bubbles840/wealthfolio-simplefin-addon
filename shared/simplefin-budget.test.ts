@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 import {
-  budgetStatusLine, checkedLine, clockTime, decideSimplefinRequest, directCallLine, gateLine, parseRequestLog, requestLogIo,
+  budgetStatusLine, checkedLine, clockTime, deepScanWaitLine, decideSimplefinRequest, directCallLine, gateLine, parseRequestLog, requestLogIo,
   requestsInWindow, requestsToday, reserveSimplefinRequest, SIMPLEFIN_AUTO_GAP_MS, SIMPLEFIN_AUTO_LIMIT, SIMPLEFIN_DAILY_LIMIT, SIMPLEFIN_GAP_MS,
   SIMPLEFIN_SETUP_CEILING, type RequestLogIo,
 } from './simplefin-budget.js';
@@ -174,6 +174,15 @@ describe('the one lines (C3, C4)', () => {
     ]);
     for (const line of lines) expect(line!.length).toBeLessThanOrEqual(80);
     expect(gateLine({ kind: 'go', at: NOW }, NOW)).toBeNull();
+  });
+
+  it('a Deep scan inside the gap says when it can run, not that balances were checked (F3b)', () => {
+    const lines = [deepScanWaitLine(minutes(2)), deepScanWaitLine(undefined)];
+    expect(lines).toEqual([
+      'Deep scan needs a fresh download — try again at 3:03 PM.',
+      'Deep scan needs a fresh download — try again in a few minutes.',
+    ]);
+    for (const line of lines) expect(line.length).toBeLessThanOrEqual(80);
   });
 
   it('read the clock the way a person does', () => {

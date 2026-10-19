@@ -63,8 +63,12 @@ export interface ChangeLogCardProps {
   removeOverride?: (row: OverrideRow, undoCovers: boolean) => Promise<void>;
 }
 
-/** What Sync now says once the run is over — here and in a transaction's story. */
-export function syncNowSentence(r: { imported: number; errors: string[] }): string {
+/** What Sync now says once the run is over — here and in a transaction's story.
+ *  A run the SimpleFin budget stopped (inside 5 minutes of a download, or the
+ *  day's limit used) downloaded nothing, so the Undo has not taken effect yet:
+ *  it says the budget's one line, never "Synced". */
+export function syncNowSentence(r: { imported: number; errors: string[]; download?: { line: string } }): string {
+  if (r.download) return r.download.line;
   return r.errors.length ? `Synced, with a problem: ${r.errors[0]}` : `Synced — ${r.imported} imported.`;
 }
 

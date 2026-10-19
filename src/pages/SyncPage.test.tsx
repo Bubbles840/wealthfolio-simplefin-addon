@@ -168,6 +168,22 @@ describe('SyncPage', () => {
     await waitFor(() => expect(props.store.getAccountBalances.mock.calls.length).toBeGreaterThan(reads));
   });
 
+  it('a Deep scan inside the gap says it needs a fresh download, not "Balances checked" (F3b)', async () => {
+    const props = makeProps();
+    // Local wall clock, so the time reads the same in every zone: asked at 2:58 PM, free at 3:03 PM.
+    const lastAt = new Date(2026, 9, 18, 14, 58).getTime();
+    vi.mocked(runSync).mockResolvedValueOnce({
+      imported: 0, skipped: 0, errors: [], download: { kind: 'checkOnly', line: 'Balances checked · bank data is from 2 min ago.', lastAt },
+    } as any);
+    render(<SyncPage {...props} />);
+    await waitFor(() => screen.getByRole('button', { name: /sync now/i }));
+    const reads = props.store.getAccountBalances.mock.calls.length;
+    fireEvent.click(headerButton(/deep scan/i));
+    expect(await screen.findByText('Deep scan needs a fresh download — try again at 3:03 PM.')).toBeInTheDocument();
+    expect(screen.queryByText(/Balances checked/)).not.toBeInTheDocument();
+    await waitFor(() => expect(props.store.getAccountBalances.mock.calls.length).toBeGreaterThan(reads));
+  });
+
   it('shows the day\'s SimpleFin count quietly beside the last sync (1.64, C4)', async () => {
     const props = makeProps();
     const recent = Array.from({ length: 7 }, (_, i) => new Date(Date.now() - (10 + i) * 60_000).toISOString());
