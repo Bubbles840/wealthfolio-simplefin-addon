@@ -590,7 +590,7 @@ export function SyncPage({ ctx, store, onReset, scheduler, initialSearch }: Prop
     clearError();
     setIntervalBlocked(false);
     try {
-      const result = await runSync(ctx, store, { force });
+      const result = await runSync(ctx, store, { force, manual: true });
       // A pure interval skip isn't an error — offer to force instead
       if (result.errors.length === 1 && result.errors[0] === INTERVAL_SKIP_MESSAGE) {
         setIntervalBlocked(true);
@@ -624,7 +624,7 @@ export function SyncPage({ ctx, store, onReset, scheduler, initialSearch }: Prop
     setHealing(true);
     clearError();
     try {
-      const result = await runSync(ctx, store, { heal: true });
+      const result = await runSync(ctx, store, { heal: true, manual: true });
       if (result.errors.length > 0) setError(result.errors.join('; '));
       setImported(result.imported);
       reportPruned(result.prunedDuplicates ?? []);

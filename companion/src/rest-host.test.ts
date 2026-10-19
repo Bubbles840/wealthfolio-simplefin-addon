@@ -1,3 +1,4 @@
+import { mkdtempSync, rmSync } from 'fs'; import { tmpdir } from 'os'; import { join } from 'path'; import { DatabaseSync } from 'node:sqlite';
 import { describe, it, expect, vi } from 'vitest';
 import { RestSyncHost, RestSyncStore } from './rest-host.js';
 
@@ -234,6 +235,32 @@ describe('RestSyncHost', () => {
     });
   });
 });
+
+describe('RestSyncHost.postedLedgerTotals — the after-save card total (1.64, B2)', () => {
+  it('reads each requested account live from the database, and only those', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'sfin-rest-total-'));
+    try {
+      const path = join(dir, 'wealthfolio.db');
+      const db = new DatabaseSync(path);
+      db.exec(`
+        CREATE TABLE accounts (id TEXT PRIMARY KEY, name TEXT, account_type TEXT);
+        CREATE TABLE activities (id TEXT PRIMARY KEY, account_id TEXT, activity_type TEXT, activity_type_override TEXT, amount TEXT, activity_date TEXT, notes TEXT);
+        INSERT INTO accounts VALUES ('wf-citi', 'Citi', 'CREDIT_CARD'), ('wf-rh', 'Robinhood', 'CREDIT_CARD');
+        INSERT INTO activities VALUES ('a1', 'wf-citi', 'WITHDRAWAL', NULL, '61.20', '2026-10-17', 'HARDWARE STORE · t1'),
+                                      ('a2', 'wf-citi', 'WITHDRAWAL', NULL, '15.00', '2026-10-18', 'COFFEE · t2 · pending'),
+                                      ('a3', 'wf-rh', 'WITHDRAWAL', NULL, '9.99', '2026-10-17', 'STREAMING · t3');
+      `);
+      db.close();
+      const host = new RestSyncHost({} as any, path);
+      const totals = await host.postedLedgerTotals([{ wfAccountId: 'wf-citi', accountType: 'CREDIT_CARD' }]);
+      expect([...totals]).toEqual([['wf-citi', -61.2]]);
+      expect((await new RestSyncHost({} as any).postedLedgerTotals([{ wfAccountId: 'wf-citi', accountType: 'CREDIT_CARD' }])).size).toBe(0);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
 
 describe('RestSyncStore', () => {
   it('reads and writes secrets via client addon secrets endpoints', async () => {

@@ -86,6 +86,20 @@ export function queryNativeDbStrict<Row>(
   return rows;
 }
 
+/**
+ * The URIs a read tries, in order. The `immutable=1` snapshot ignores the
+ * write-ahead log and has been seen two days stale, so a read that must see
+ * writes made seconds ago passes `liveOnly`: better unread than stale.
+ */
+export function nativeDbUris(dbPath: string, liveOnly = false): string[] {
+  if (dbPath.startsWith('file:')) return [dbPath];
+  return [
+    `file:${dbPath}?mode=ro`,
+    `file:${dbPath}?mode=ro&readonly_shm=1`,
+    ...(liveOnly ? [] : [`file:${dbPath}?immutable=1`]),
+  ];
+}
+
 /** The two-path read behind both: null — not [] — when every path failed. */
 function tryQueryNativeDb<Row>(
   dbPath: string,
@@ -96,6 +110,9 @@ function tryQueryNativeDb<Row>(
    *  `|`; a query whose free text can contain one passes an unambiguous one. */
   separator = '|',
   maxBuffer?: number,
+  /** Skip the `immutable=1` snapshot (see `nativeDbUris`). The CLI fallback
+   *  opens the file normally, which reads the log or fails. */
+  liveOnly = false,
 ): Row[] | null {
   // LIVE read first, snapshot only as a fallback. `immutable=1` reads the main
   // DB file alone and ignores the write-ahead log — and Wealthfolio checkpoints
@@ -107,13 +124,7 @@ function tryQueryNativeDb<Row>(
   // Requires the -wal/-shm files to be visible, i.e. the DIRECTORY mounted, not
   // the bare .db file; with a file-only mount both live opens fail and the
   // immutable fallback preserves the old (stale but working) behaviour.
-  const uris = dbPath.startsWith('file:')
-    ? [dbPath]
-    : [
-        `file:${dbPath}?mode=ro`,
-        `file:${dbPath}?mode=ro&readonly_shm=1`,
-        `file:${dbPath}?immutable=1`,
-      ];
+  const uris = nativeDbUris(dbPath, liveOnly);
   for (const uri of uris) {
     try {
       const db = new DatabaseSync(uri);
@@ -301,7 +312,7 @@ const NOT_AWAITING_TRANSFER_HALF = `
  * already has — a caller reads a missing entry as "cannot check this account
  * right now", and the correction simply waits for a settled run.
  */
-export function getNativeAccountBalances(dbPath: string): Map<string, number> {
+export function getNativeAccountBalances(dbPath: string, opts: { liveOnly?: boolean } = {}): Map<string, number> {
   const out = new Map<string, number>();
   if (!dbPath || !existsSync(dbPath)) return out;
 
@@ -323,12 +334,15 @@ export function getNativeAccountBalances(dbPath: string): Map<string, number> {
       )
     GROUP BY a.account_id;
   `;
-  const rows = queryNativeDb<{ account_id: string; balance: number | string }>(
+  const rows = tryQueryNativeDb<{ account_id: string; balance: number | string }>(
     dbPath,
     'account balances',
     query,
     (parts) => (parts.length >= 2 ? { account_id: parts[0], balance: parseFloat(parts[1]) || 0 } : null),
-  );
+    '|',
+    undefined,
+    !!opts.liveOnly,
+  ) ?? [];
   for (const row of rows) {
     const value = typeof row.balance === 'number' ? row.balance : parseFloat(String(row.balance ?? '0'));
     if (Number.isFinite(value)) out.set(String(row.account_id), value);
