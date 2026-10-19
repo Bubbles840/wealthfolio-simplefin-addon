@@ -46,6 +46,19 @@ describe('decideSimplefinRequest', () => {
     expect(decideSimplefinRequest(logOf(3, 5), 'manual', NOW).kind).toBe('go');
   });
 
+  it('budget wins over the gap', () => {
+    expect(decideSimplefinRequest(logOf(20, 2), 'manual', NOW).kind).toBe('budget');
+  });
+
+  it('ignores a stamp more than an hour ahead for the gap, but still counts it', () => {
+    const far = NOW.getTime() + 3 * 3_600_000;
+    for (const purpose of ['manual', 'scheduled'] as const) {
+      expect(decideSimplefinRequest([far, ...logOf(3)], purpose, NOW)).toEqual({ kind: 'go', at: NOW });
+    }
+    expect(decideSimplefinRequest([far, ...logOf(19)], 'manual', NOW).kind).toBe('budget');
+    expect(decideSimplefinRequest([NOW.getTime() + 2 * 60_000], 'scheduled', NOW).kind).toBe('wait');
+  });
+
   it('forgets requests older than 24 hours, and counts one the other writer stamped a little ahead', () => {
     expect(decideSimplefinRequest([...logOf(19), minutes(24 * 60 + 1)], 'scheduled', NOW).kind).toBe('go');
     expect(decideSimplefinRequest([NOW.getTime() + 60_000], 'manual', NOW).kind).toBe('checkOnly');

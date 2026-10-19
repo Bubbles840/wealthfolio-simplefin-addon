@@ -440,7 +440,7 @@ export interface SyncResult {
    *  snapshot capability, and on a set of accounts that publishes no holdings —
    *  which is every bank and card account. */
   holdingsSnapshots: HoldingsSyncOutcome;
-  /** Present only on a run that did NOT download (shared/simplefin-budget.ts):
+  /** Present only on a run the SimpleFin budget stopped (shared/simplefin-budget.ts):
    *  `checkOnly` re-checked balances against the last download, `skipped` was
    *  refused by the daily limit, the gap or an unreadable request record. `line`
    *  is the one sentence to show. Never an error: nothing went wrong. */

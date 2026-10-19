@@ -19,8 +19,9 @@
  *  - C3/R18: a MANUAL Sync inside the 5-minute gap downloads nothing and only
  *    re-checks balances; a scheduled or automatic call inside it just waits.
  *  - C1: one record, shared by both writers (the browser add-on and the Node
- *    companion), kept in the add-on's secrets. The request is recorded BEFORE
- *    it is sent, so two writers cannot both pass the check on the same count.
+ *    companion), kept in the add-on's secrets. Read-check-write is NOT atomic;
+ *    recording the request BEFORE it is sent narrows the race to one round
+ *    trip, and the 20-under-24 margin absorbs a rare collision.
  *    The budget FAILS CLOSED: a record that cannot be read or written means
  *    nothing is downloaded, and a corrupt record is reset to empty so that
  *    only the current call is blocked.
@@ -33,6 +34,13 @@ export const SIMPLEFIN_DAILY_LIMIT = 20;
 export const SIMPLEFIN_SETUP_CEILING = 24;
 export const SIMPLEFIN_GAP_MS = 5 * 60_000;
 export const SIMPLEFIN_WINDOW_MS = 24 * 60 * 60_000;
+/** The 5-minute gap ignores a stamp more than this far ahead of `now`. A writer
+ *  with a badly wrong clock could otherwise stamp hours ahead; the gap measured
+ *  from that stamp stays negative, so every run on both writers would wait or
+ *  check only until the clock caught up, and Reset deliberately keeps the
+ *  record, so nothing could clear it. The daily COUNT still includes such a
+ *  stamp: never under-count real requests (token safety first). */
+export const SIMPLEFIN_FUTURE_TOLERANCE_MS = 60 * 60_000;
 
 export type SimplefinPurpose = 'manual' | 'scheduled' | 'auto' | 'setup';
 
@@ -83,8 +91,9 @@ export function decideSimplefinRequest(log: number[], purpose: SimplefinPurpose,
     const oldestFirst = [...window].reverse();
     return { kind: 'budget', nextAt: new Date(oldestFirst[window.length - limit] + SIMPLEFIN_WINDOW_MS) };
   }
-  if (purpose !== 'setup' && window.length > 0 && now.getTime() - window[0] < SIMPLEFIN_GAP_MS) {
-    const lastAt = new Date(window[0]);
+  const newest = window.find((t) => t - now.getTime() <= SIMPLEFIN_FUTURE_TOLERANCE_MS);
+  if (purpose !== 'setup' && newest !== undefined && now.getTime() - newest < SIMPLEFIN_GAP_MS) {
+    const lastAt = new Date(newest);
     return purpose === 'manual' ? { kind: 'checkOnly', lastAt } : { kind: 'wait', lastAt };
   }
   return { kind: 'go', at: now };
