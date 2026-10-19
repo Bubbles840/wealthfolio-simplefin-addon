@@ -81,7 +81,10 @@ import { createCategorizeController, SPENDING_TAXONOMY_ID } from './categorize.j
 import { createAmazonLabelMenu, type AmazonLabelMenu } from './amazon-labels.js';
 import { fileAmazonCharges } from './amazon-filing.js';
 import { companionChangeSink, readCompanionChangeLog, recordCompanionChanges } from './change-log-host.js';
-import { emptySyncOverrides, hasAccountOverride, hasTxOverride, syncOverridesOrEmpty, type SyncOverrides } from '../../shared/sync-overrides.js';
+import { emptySyncOverrides, hasAccountOverride, hasTxOverride, loadSyncOverrides, syncOverridesOrEmpty, type SyncOverrides } from '../../shared/sync-overrides.js';
+import { TRANSFER_NAMES_SECRET_KEY } from '../../shared/transfer-names.js';
+import { publishTransferNames } from './transfer-names.js';
+import { getNativeAuditLedger } from './sqlite-audit.js';
 import { createChangesMenu, renderChangesCommand, CHANGES_UNREACHABLE_REPLY, type ChangesMenu } from './changes-menu.js';
 import { buildWhyFlow, createWhyMenu, whyRunHandle, type WhyMenu } from './why-menu.js';
 import { companionStoryReaders, companionTxSearch, companionTxStory } from './tx-story-host.js';
@@ -1021,6 +1024,21 @@ export async function runCompanionSync(opts: { force?: boolean } = {}): Promise<
     // of the charge anyway. Doing it immediately before the sync also makes the
     // ordering guaranteed instead of a race between two schedules.
     const amazonNewLabels = await pollAmazonMail(store, wfClient);
+
+    // 1.64 (A4): the transfer names both writers' syncs read, learned from the
+    // database before this run types anything. The startup sync reaches here
+    // too, interval-skipped or not, so this is also the "once at startup".
+    await publishTransferNames({
+      readLedger: () => getNativeAuditLedger(wealthfolioDbPath()),
+      readMapping: () => store.getAccountMapping(),
+      readOverrides: async () => {
+        const loaded = await loadSyncOverrides((k) => wfClient.getAddonSecret('simplefin-sync', k));
+        return loaded.unreadable ? null : loaded.overrides;
+      },
+      write: (raw) => wfClient.setAddonSecret('simplefin-sync', TRANSFER_NAMES_SECRET_KEY, raw),
+      log,
+      now: new Date(),
+    }).catch((e) => log(`Transfer names skipped: ${formatError(e)}`));
 
     log(`Fetching SimpleFin transactions from ${maskUrl(accessUrl)}...`);
     // One run id for the sync and the filings after it, so the change log
