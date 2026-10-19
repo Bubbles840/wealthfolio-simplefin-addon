@@ -1,4 +1,5 @@
 import { bankFirstTransferOut } from './bank-first-payment.js';
+import { learnedNameKeys, learnedTransferType } from './transfer-names.js';
 import { mapTransactionWithSource } from './mapper.js';
 import { REIMBURSEMENT_SUBTYPE } from './cash-flow-bucket.js';
 import { accountTxKey, detectTransferPairs, TRANSFER_MATCH_WINDOW_SECONDS } from './transfers.js';
@@ -2159,6 +2160,24 @@ async function runSyncPass(
     })))
     : new Map();
 
+  // The learned transfer names (A5). No list (no companion, or one not yet on
+  // 1.64) is an empty set and typing is exactly as before (R6).
+  const learnedNames = learnedNameKeys(await store.getTransferNames?.().catch(() => null));
+  // The ids of an account's stored paybacks, read lazily and once (only when a
+  // learned name matches a payback candidate). A failed read is null.
+  const paybackIdCache = new Map<string, Promise<Set<string> | null>>();
+  const storedPaybacksOf = (wfId: string): Promise<Set<string> | null> => {
+    let p = paybackIdCache.get(wfId);
+    if (!p) {
+      p = fetchExistingRows(host, wfId).then(
+        (rows) => new Set(rows.filter((r) => r.type === 'CREDIT' && (r.subtype ?? '').toUpperCase() === REIMBURSEMENT_SUBTYPE).map((r) => r.txId)),
+        () => null,
+      );
+      paybackIdCache.set(wfId, p);
+    }
+    return p;
+  };
+
   // Each mapped account's name words, built once and BEFORE typing: typing needs
   // them to see a payment that names another connected account (spec A), and the
   // in-transit expiry hold below reads the same map.
@@ -2218,9 +2237,28 @@ async function runSyncPass(
       // Decided HERE, before the payback and `notTransfer` handling below, so both
       // still win (R4); a mapping rule already won inside the helper.
       // `tx.description` is the bank's raw text — enrichment comes later.
-      const mapped = bankFirstTransferOut(tx.description, amount, acctType, builtIn, otherAccountWords)
+      const bankFirst = bankFirstTransferOut(tx.description, amount, acctType, builtIn, otherAccountWords);
+      // R13: from the bank text ALONE, before learned typing.
+      const keepPayback = !payback && !builtIn.fromRule && builtIn.type === 'DEPOSIT' && amount > 0 && (!acctType || acctType === 'CASH');
+      // Live, 2026-10-18: a savings -> Spend landing ("... TRANSFER CAPITAL ONE ACH
+      // WEB PAYMENT") posted before the savings half and read as a plain deposit,
+      // and 360 Checking's withdrawal to Performance Savings read as spending. A
+      // wording the companion learned from a past LINK types the row a transfer so
+      // the in-transit path holds it. Decided before the payback and notTransfer
+      // handling below, so both still win. An unreadable stored-row read means no
+      // learned typing, i.e. today's typing.
+      let learned = bankFirst ? null : learnedTransferType(learnedNames, {
+        wfAccountId, accountType: acctType, amount, mapped: builtIn, description: tx.description,
+      });
+      let heldAsPayback = false;
+      if (learned && keepPayback) {
+        const paybackIds = await storedPaybacksOf(wfAccountId);
+        if (!paybackIds || paybackIds.has(tx.id)) learned = null;
+        heldAsPayback = !!paybackIds && paybackIds.has(tx.id);
+      }
+      const mapped = bankFirst
         ? { ...builtIn, type: 'TRANSFER_OUT' as ActivityType }
-        : builtIn;
+        : learned ? { ...builtIn, type: learned as ActivityType } : builtIn;
       const { type, fromRule, subtype } = payback
         ? { type: 'CREDIT' as ActivityType, fromRule: true, subtype: REIMBURSEMENT_SUBTYPE as string | undefined }
         : notTransfer && isTransferType(mapped.type)
@@ -2234,7 +2272,7 @@ async function runSyncPass(
         ...(!payback && !(notTransfer && isTransferType(mapped.type)) && mapped.createOnly ? { createOnly: true as const } : {}),
         // Neither a rule nor the flag decided: a stored payback (filed, made by hand, or
         // made by a rule since undone) is not the sync's to turn into a deposit.
-        ...(!payback && !mapped.fromRule && mapped.type === 'DEPOSIT' && amount > 0 && (!acctType || acctType === 'CASH') ? { keepPayback: true as const } : {}),
+        ...(keepPayback ? { keepPayback: true as const } : {}),
       });
       // Amazon categories go on AFTER typing: `mapTransactionWithSource` above
       // matches the user's merchant rules against the bank's own text, and
@@ -2300,7 +2338,8 @@ async function runSyncPass(
       if (tx.pending) continue;
       // Never paired: pairing would type it a transfer and link it again — or,
       // for a payback, turn it into a transfer leg.
-      if (notTransfer || payback) continue;
+      // (A stored payback a learned name matched stays out too, R13.)
+      if (notTransfer || payback || heldAsPayback) continue;
       // A rule's type is never overridden by pair detection, which is why ruled
       // rows sit out of it — except a rule that already says "transfer, this way".
       // Pairing assigns that very type, so all it adds is the link; leaving such a

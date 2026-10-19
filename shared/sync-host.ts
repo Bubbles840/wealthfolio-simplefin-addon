@@ -3,6 +3,7 @@ import type { AmazonLedger } from './amazon-ledger.js';
 import type { VenmoLedger } from './venmo-ledger.js';
 import type { HoldingsSnapshot } from './holdings.js';
 import type { SkippedTransaction } from './skipped-transactions.js';
+import type { TransferNames } from './transfer-names.js';
 import type { LoadedSyncOverrides, SyncOverrides } from './sync-overrides.js';
 import type { UnlinkLeg, UnlinkResult } from './link-pair.js';
 
@@ -344,6 +345,12 @@ export interface SyncStore {
    * is what it did before the list existed.
    */
   getSkippedTransactions?(): Promise<SkippedTransaction[]>;
+  /**
+   * The learned transfer names the companion publishes (shared/transfer-names.ts,
+   * 1.64 A5). Null = absent or unreadable: learning is off and typing is as before.
+   * Optional like the getters above.
+   */
+  getTransferNames?(): Promise<TransferNames | null>;
   /**
    * What the person told the sync not to do again (shared/sync-overrides.ts),
    * set by an Undo in the change log. A stored document that cannot be read —

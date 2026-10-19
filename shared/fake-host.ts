@@ -3,6 +3,7 @@ import type { AmazonLedger } from './amazon-ledger.js';
 import type { VenmoLedger } from './venmo-ledger.js';
 import type { HoldingsSnapshot } from './holdings.js';
 import type { SkippedTransaction } from './skipped-transactions.js';
+import type { TransferNames } from './transfer-names.js';
 import type { SyncOverrides } from './sync-overrides.js';
 import type {
   ActivityWrite,
@@ -97,6 +98,8 @@ export interface FakeHostSeed {
   cardTransferOut?: boolean;
   /** The user's skip list (see shared/skipped-transactions.ts). */
   skippedTransactions?: SkippedTransaction[];
+  /** The learned transfer names (absent: the store has no `getTransferNames`). */
+  transferNames?: TransferNames;
   /** What Undo told the sync not to do (shared/sync-overrides.ts). Absent
    *  leaves `getSyncOverrides` off the store, the shape of an older host. */
   syncOverrides?: SyncOverrides;
@@ -551,6 +554,9 @@ export function createFakeHost(seed: FakeHostSeed = {}): FakeHost {
     async getSkippedTransactions() {
       return seed.skippedTransactions ?? [];
     },
+    ...(seed.transferNames
+      ? { async getTransferNames() { return seed.transferNames!; } }
+      : {}),
     ...(seed.syncOverrides
       ? { async getSyncOverrides() { return seed.syncOverrides!; } }
       : {}),

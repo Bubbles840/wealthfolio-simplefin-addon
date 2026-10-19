@@ -209,6 +209,19 @@ describe('SecretsStore', () => {
     expect(data['venmo_ledger']).toBeUndefined();
   });
 
+  it('reads the learned transfer names the companion publishes, null when absent or unreadable, and clearAll removes them (1.64)', async () => {
+    const { ctx, data } = makeCtxWithData();
+    const s = new SecretsStore(ctx);
+    expect(await s.getTransferNames()).toBeNull();
+    const doc = { version: 1, computedAt: '2026-10-18T15:00:00.000Z', names: [{ accountId: 'wf-spend', direction: 'in', signature: 'transfer capital one ach web payment' }] };
+    data['transfer_names'] = JSON.stringify(doc);
+    expect(await s.getTransferNames()).toEqual(doc);
+    data['transfer_names'] = '{not json';
+    expect(await s.getTransferNames()).toBeNull();
+    await s.clearAll();
+    expect(data['transfer_names']).toBeUndefined();
+  });
+
   it('clearAll removes the unreadable Venmo emails the companion keeps', async () => {
     const { ctx, data } = makeCtxWithData();
     data['venmo_mail_samples'] = JSON.stringify({ asOf: '2026-10-05', unparsed: 1, samples: [] });
