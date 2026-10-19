@@ -64,7 +64,7 @@ export function useTxStoryActions(
     (entry: ChangeLogItem, entries: ChangeLogItem[], op: UndoOp) => undoFromApp(ctx, store, entry, entries, op),
     [ctx, store],
   );
-  const onSyncNow = useCallback(async () => syncNowSentence(await runSync(ctx, store, { force: true })), [ctx, store]);
+  const onSyncNow = useCallback(async () => syncNowSentence(await runSync(ctx, store, { force: true, manual: true })), [ctx, store]);
   const remove = useCallback((activityId: string, fingerprint: string) => removeFromApp(ctx, store, activityId, fingerprint), [ctx, store]);
   // W11: offered only on a 3.9+ host with a companion of 1.62.0 or newer.
   const [paybacks, setPaybacks] = useState(false);

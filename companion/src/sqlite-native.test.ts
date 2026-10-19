@@ -1,7 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import { neutralAdjustmentFields } from '../../shared/sync-core.js';
 import { getNativeRuleCategorizedAmazonRows, getNativeWealthfolioSpending, getNativeWealthfolioSpendingBetween, getNativeWealthfolioBudgets, getNativeWealthfolioTopSpending,
-  getNativeAccountBalances, getNativeUncategorizedSpendingTotal, getNativeUncategorizedSpending, getNativeCategoryCatalog, getNativeSubcategorySpending, getNativeSpendingCategories, getNativeCategorizedSpending } from './sqlite-native.js';
+  getNativeAccountBalances, nativeDbUris, getNativeUncategorizedSpendingTotal, getNativeUncategorizedSpending, getNativeCategoryCatalog, getNativeSubcategorySpending, getNativeSpendingCategories, getNativeCategorizedSpending } from './sqlite-native.js';
 import { DatabaseSync } from 'node:sqlite';
 import { mkdtempSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
@@ -1920,5 +1920,33 @@ describe('getNativeBudgetSpend / getNativeSpendingHistoryStart', () => {
       expect(getNativeSpendingHistoryStart(path, [])).toBeNull();
     } finally { cleanup(); }
     expect(() => getNativeSpendingHistoryStart('/nope/wealthfolio.db', ['acct-cash'])).toThrow(NativeDbUnreadableError);
+  });
+});
+
+describe('getNativeAccountBalances signs the effective type (1.64, R14)', () => {
+  it('reads an overridden row by its override, as Wealthfolio and the app do', () => {
+    const { path, cleanup } = makeTestDb();
+    try {
+      const db = new DatabaseSync(path);
+      db.exec(`INSERT INTO activities (id, amount, activity_date, activity_type, activity_type_override, account_id, notes)
+               VALUES ('o1', '100', '2026-08-01', 'WITHDRAWAL', NULL,          'acct-card', 'Coffee · t1'),
+                      ('o2', '42.40', '2026-08-02', 'WITHDRAWAL', 'TRANSFER_IN', 'acct-card', 'Autopay · t2'),
+                      ('o3', '5', '2026-08-03', 'CREDIT', '', 'acct-card', 'Refund · t3')`);
+      db.close();
+      // −100 +42.40 (the override, not the raw WITHDRAWAL) +5 (a blank override is none)
+      expect(getNativeAccountBalances(path).get('acct-card')).toBeCloseTo(-52.6, 2);
+    } finally { cleanup(); }
+  });
+});
+
+describe('nativeDbUris — a live read or none (1.64, B2)', () => {
+  it('drops the immutable snapshot, which ignores the write-ahead log, when the read must be live', () => {
+    expect(nativeDbUris('/mnt/wealthfolio.db')).toEqual([
+      'file:/mnt/wealthfolio.db?mode=ro', 'file:/mnt/wealthfolio.db?mode=ro&readonly_shm=1', 'file:/mnt/wealthfolio.db?immutable=1',
+    ]);
+    expect(nativeDbUris('/mnt/wealthfolio.db', true)).toEqual([
+      'file:/mnt/wealthfolio.db?mode=ro', 'file:/mnt/wealthfolio.db?mode=ro&readonly_shm=1',
+    ]);
+    expect(nativeDbUris('file:/x.db', true)).toEqual(['file:/x.db']);
   });
 });

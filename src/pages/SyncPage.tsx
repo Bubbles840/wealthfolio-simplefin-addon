@@ -1,6 +1,7 @@
 import React, { useEffect, useState, useCallback, useRef } from 'react';
 import type { AddonContext } from '@wealthfolio/addon-sdk';
-import { runSync, INTERVAL_SKIP_MESSAGE } from '../utils/sync';
+import { runSync } from '../utils/sync';
+import { deepScanWaitLine, directCallLine, requestsToday } from '../../shared/simplefin-budget';
 import { SIMPLEFIN_SYNC_VERSION, versionMismatchNotice } from '../../shared/version';
 import type { SyncResult } from '../utils/sync';
 import { fetchAccounts } from '../utils/simplefin';
@@ -94,7 +95,10 @@ export function SyncPage({ ctx, store, onReset, scheduler, initialSearch }: Prop
   // The raw text behind a classified error (`SimplefinRequestError.detail`), held
   // separately so the box can show a readable message WITHOUT losing the diagnosis.
   const [errorDetail, setErrorDetail] = useState<string | undefined>(undefined);
-  const [intervalBlocked, setIntervalBlocked] = useState(false);
+  // The one line for a Sync that went no further than the budget allowed (C3),
+  // and the day's SimpleFin count (C4). Both are read-only displays.
+  const [syncNotice, setSyncNotice] = useState<string | null>(null);
+  const [simplefinToday, setSimplefinToday] = useState<number | null>(null);
   // What the last run's reconcile sweep DELETED as duplicate copies: the deletion
   // is automatic and Telegram optional, so the page is the one place a user is
   // guaranteed to see what vanished. See `reportPruned`.
@@ -362,7 +366,14 @@ export function SyncPage({ ctx, store, onReset, scheduler, initialSearch }: Prop
    *  minutes earlier and cleared the error, sending us through the logs after a
    *  fault that no longer existed. Cheap by construction — local addon secrets,
    *  so nothing here touches the network or the bank. */
+  /** The day's SimpleFin count, from the shared request record. Optional-called
+   *  and failure-silent: an older host keeps no record and shows nothing. */
+  const readSimplefinCount = useCallback(() => {
+    store.getSimplefinRequests?.().then((raw) => setSimplefinToday(requestsToday(raw, new Date()))).catch(() => {});
+  }, [store]);
+
   const refreshLiveState = useCallback(() => {
+    readSimplefinCount();
     store.getLastSyncAt().then((d) => { if (d) setLastSyncAt(d); }).catch(() => {});
     store.getAccountBalances().then(setBalances).catch(() => {});
     store.getCompanionVersion().then(setCompanionVersion).catch(() => {});
@@ -379,7 +390,7 @@ export function SyncPage({ ctx, store, onReset, scheduler, initialSearch }: Prop
     refreshDerivedSignals();
     // New report editions arrive behind the page's back too.
     refreshInbox();
-  }, [store, refreshDerivedSignals, refreshInbox]);
+  }, [store, readSimplefinCount, refreshDerivedSignals, refreshInbox]);
 
   useEffect(() => {
     // The mount read too, so each live value has ONE reader rather than being
@@ -523,6 +534,10 @@ export function SyncPage({ ctx, store, onReset, scheduler, initialSearch }: Prop
       try {
         const accessUrl = await store.getAccessUrl();
         if (!accessUrl) return;
+        // Automatic and cosmetic: it obeys the budget like a sync and, when
+        // refused, just skips. Only a truthy check — the line is never shown
+        // (its wait wording talks about a scheduled sync).
+        if (await directCallLine(store, 'auto')) return;
         const authKey = await store.getAuthB64Key();
         const yesterday = new Date(Date.now() - 24 * 60 * 60 * 1000);
         const accountSet = await fetchAccounts(accessUrl, yesterday, ctx.api.network, authKey);
@@ -585,23 +600,18 @@ export function SyncPage({ ctx, store, onReset, scheduler, initialSearch }: Prop
     }
   }, [store, showThrownError]);
 
-  const doSync = useCallback(async (force = false) => {
+  const doSync = useCallback(async () => {
     setSyncing(true);
     clearError();
-    setIntervalBlocked(false);
+    setSyncNotice(null);
     try {
-      const result = await runSync(ctx, store, { force });
-      // A pure interval skip isn't an error — offer to force instead
-      if (result.errors.length === 1 && result.errors[0] === INTERVAL_SKIP_MESSAGE) {
-        setIntervalBlocked(true);
-        // ...and re-read the timestamp: the skip is the moment we learn our copy
-        // is stale. Header and callout both read `last_sync_at`, so "Last synced
-        // 4 hours ago" beside "Last sync was under an hour ago, so Sync now was
-        // skipped" cannot both be current — the COMPANION synced against the same
-        // instance and nothing re-read the secret. Only on a real value: a failed
-        // read must not blank the header into "Never synced".
-        const refreshed = await store.getLastSyncAt().catch(() => null);
-        if (refreshed) setLastSyncAt(refreshed);
+      const result = await runSync(ctx, store, { manual: true });
+      readSimplefinCount();
+      // The budget stopped this run: say why in one line. A check-only pass
+      // did refresh the balances, so re-read them.
+      if (result.download) {
+        setSyncNotice(result.download.line);
+        if (result.download.kind === 'checkOnly') loadBalances();
         return;
       }
       if (result.errors.length > 0) setError(result.errors.join('; '));
@@ -616,15 +626,25 @@ export function SyncPage({ ctx, store, onReset, scheduler, initialSearch }: Prop
     } finally {
       setSyncing(false);
     }
-  }, [ctx, store, loadBalances, clearError, showThrownError, reportPruned]);
+  }, [ctx, store, loadBalances, clearError, showThrownError, reportPruned, readSimplefinCount]);
 
   // Heal: re-scan a wide window to recover missing transactions, then re-measure
   // drift so any residual can be plugged.
   const doHeal = useCallback(async () => {
     setHealing(true);
     clearError();
+    setSyncNotice(null);
     try {
-      const result = await runSync(ctx, store, { heal: true });
+      const result = await runSync(ctx, store, { heal: true, manual: true });
+      readSimplefinCount();
+      if (result.download) {
+        // Inside the gap the 90-day re-scan did not run (only the balances were
+        // re-checked), so it says when it can, not "Balances checked" (F3b).
+        const checkOnly = result.download.kind === 'checkOnly';
+        setSyncNotice(checkOnly ? deepScanWaitLine(result.download.lastAt) : result.download.line);
+        if (checkOnly) loadBalances();
+        return;
+      }
       if (result.errors.length > 0) setError(result.errors.join('; '));
       setImported(result.imported);
       reportPruned(result.prunedDuplicates ?? []);
@@ -635,7 +655,7 @@ export function SyncPage({ ctx, store, onReset, scheduler, initialSearch }: Prop
     } finally {
       setHealing(false);
     }
-  }, [ctx, store, loadBalances, clearError, showThrownError, reportPruned]);
+  }, [ctx, store, loadBalances, clearError, showThrownError, reportPruned, readSimplefinCount]);
 
   /** Read-modify-write, like `navigate`: `ui_state` also holds the active tab,
    *  which a blind overwrite would reset the moment a checklist is dismissed. */
@@ -671,7 +691,7 @@ export function SyncPage({ ctx, store, onReset, scheduler, initialSearch }: Prop
       <div className="sfin-head">
         <div>
           <h2 className="sfin-title">SimpleFin Sync</h2>
-          <SyncStatus lastSyncAt={lastSyncAt} imported={imported} syncing={syncing} />
+          <SyncStatus lastSyncAt={lastSyncAt} imported={imported} syncing={syncing} simplefinToday={simplefinToday} />
         </div>
         <div className="sfin-head-actions">
           {/* Always-available reconcile: the drift banner's own "Deep scan" only
@@ -683,7 +703,7 @@ export function SyncPage({ ctx, store, onReset, scheduler, initialSearch }: Prop
             title="Re-scans the last 90 days and re-links transfer pairs (reconcile & link)">
             {healing ? 'Deep scanning…' : 'Deep scan'}
           </Button>
-          <Button onClick={() => doSync(false)} disabled={syncing}>
+          <Button onClick={() => doSync()} disabled={syncing}>
             {syncing ? 'Syncing…' : 'Sync now'}
           </Button>
         </div>
@@ -693,14 +713,8 @@ export function SyncPage({ ctx, store, onReset, scheduler, initialSearch }: Prop
           the page's last action, which can be started from any tab. */}
       {error && <ErrorBox detail={errorDetail}>{error}</ErrorBox>}
 
-      {intervalBlocked && (
-        <div className="sfin-callout">
-          Last sync was under an hour ago, so Sync now was skipped to avoid
-          hammering SimpleFin.{' '}
-          <Button variant="ghost" className="sfin-callout-action" onClick={() => doSync(true)} disabled={syncing}>
-            Sync anyway
-          </Button>
-        </div>
+      {syncNotice && (
+        <div className="sfin-callout" role="status">{syncNotice}</div>
       )}
 
       {/* Re-checked every minute and on focus (refreshLiveState), so a tab

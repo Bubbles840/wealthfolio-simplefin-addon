@@ -8,6 +8,9 @@ import {
   buildTxStory, TX_FACT_NOTES, TX_STORY_GONE_APP, TX_STORY_NO_HISTORY, TX_STORY_UNREACHABLE, type TxStory,
 } from '../../shared/tx-story';
 import { ThemeStyles } from './ui';
+import { renderHook } from '@testing-library/react';
+import { runSync } from '../utils/sync';
+import { useTxStoryActions } from './TxStory';
 import { TxStoryPanel, TxStoryView, TX_STORY_REREAD_FAILED, type TxStoryActions } from './TxStory';
 import type { AppStoryOutcome } from '../utils/tx-story';
 
@@ -173,5 +176,19 @@ describe('the stylesheet', () => {
     for (const cls of ['.sfin-why-card', '.sfin-why-story', '.sfin-why-line-btn', '.sfin-why-result', '.sfin-why-inline']) {
       expect(css.match(new RegExp(`^\\${cls} \\{`, 'gm'))).toHaveLength(1);
     }
+  });
+});
+
+
+vi.mock('../utils/sync', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../utils/sync')>()),
+  runSync: vi.fn(async () => ({ imported: 0, skipped: 0, errors: [] })),
+}));
+
+describe('useTxStoryActions — Sync now is a person asking (1.64)', () => {
+  it('passes manual: true to runSync', async () => {
+    const { result } = renderHook(() => useTxStoryActions({} as any, {} as any, null));
+    await result.current.onSyncNow!();
+    expect(runSync).toHaveBeenLastCalledWith(expect.anything(), expect.anything(), { force: true, manual: true });
   });
 });

@@ -311,6 +311,29 @@ describe('runCompanionSync', () => {
     expect(await deps.rememberedBookkeepingCategory?.()).toBeNull();
   });
 
+  it('publishes the learned transfer names before the sync types anything (1.64, A4)', async () => {
+    const { getNativeAuditLedger } = await import('./sqlite-audit.js');
+    const leg = (id: string, accountId: string, type: string, notes: string) => ({
+      id, accountId, date: new Date().toISOString().slice(0, 10), currency: 'USD', rawType: type, type, status: 'POSTED',
+      absCents: 60000, group: 'g1', assetId: '', external: false, phantomCash: false, notes,
+    });
+    vi.mocked(getNativeAuditLedger).mockReturnValueOnce({
+      accounts: [{ id: 'wf-sav', name: 'Savings', type: 'CASH', archived: false }, { id: 'wf-spend', name: 'Spend', type: 'CASH', archived: false }],
+      rows: [leg('r1', 'wf-sav', 'TRANSFER_OUT', 'Withdrawal to PNC Bank XXXXXX0000 · TRN-1'),
+        leg('r2', 'wf-spend', 'TRANSFER_IN', 'RT08C248B2E7C8B TRANSFER CAPITAL ONE ACH WEB PAYMENT · TRN-2')],
+    });
+    await runCompanionSync();
+    const { WealthfolioClient } = await import('./wealthfolio.js');
+    const client = vi.mocked(WealthfolioClient).mock.results.at(-1)!.value as any;
+    const call = client.setAddonSecret.mock.calls.findIndex((c: string[]) => c[1] === 'transfer_names');
+    expect(call).toBeGreaterThanOrEqual(0);
+    expect(JSON.parse(client.setAddonSecret.mock.calls[call][2]).names).toEqual([
+      { accountId: 'wf-sav', direction: 'out', signature: 'withdrawal to pnc bank' },
+      { accountId: 'wf-spend', direction: 'in', signature: 'transfer capital one ach web payment' },
+    ]);
+    expect(client.setAddonSecret.mock.invocationCallOrder[call]).toBeLessThan(vi.mocked(runSyncCore).mock.invocationCallOrder[0]);
+  });
+
   it('derives force from MIN_SYNC_INTERVAL_HOURS when called with no options, so the cron tick is unchanged', async () => {
     delete process.env.MIN_SYNC_INTERVAL_HOURS;
     await runCompanionSync();
@@ -2628,6 +2651,37 @@ describe('buildTelegramCommandHandler', () => {
     expect(sent[0]).toBe('Already syncing — hang on.');
     await waitFor('the error summary', () => sent.length >= 2);
     expect(sent[1]).toContain('Sync finished with errors: SimpleFin: token revoked');
+  });
+
+  it('runs /sync as a manual action, and answers a run the SimpleFin budget refused with just its one line (1.64, C3, C6)', async () => {
+    vi.mocked(runSyncCore).mockClear();
+    vi.mocked(runSyncCore).mockResolvedValueOnce({
+      ...FAKE_SYNC_RESULT, download: { kind: 'skipped', line: "SimpleFin's daily limit is used up — next sync at 3:10 PM." },
+    });
+    const secrets = new Map<string, string>([['simplefin_access_url', 'https://user:pass@bridge.simplefin.org/simplefin']]);
+    const client: any = {
+      login: vi.fn(async () => {}),
+      getAddonSecret: vi.fn(async (_a: string, k: string) => secrets.get(k) ?? null),
+      setAddonSecret: vi.fn(async (_a: string, k: string, v: string) => { secrets.set(k, v); }),
+    };
+    const { WealthfolioClient } = await import('./wealthfolio.js');
+    vi.mocked(WealthfolioClient).mockImplementation(function () { return client; } as any);
+    const { sent, reply } = collector();
+    await buildTelegramCommandHandler(client)({ command: 'sync', args: '' }, reply);
+    await waitFor('the sync summary', () => sent.length >= 2);
+    expect(vi.mocked(runSyncCore).mock.calls[0][2]).toMatchObject({ force: true, manual: true });
+    expect(sent[1]).toBe("SimpleFin's daily limit is used up — next sync at 3:10 PM.");
+  });
+
+  it('/status shows the day\'s SimpleFin count quietly, and no line when the record cannot be read (1.64, C4)', async () => {
+    const recent = (m: number) => new Date(Date.now() - m * 60_000).toISOString();
+    const { client } = clientFor([['simplefin_requests', JSON.stringify([recent(5), recent(90), recent(26 * 60)])]]);
+    expect((await run(client, 'status'))[0]).toContain('SimpleFin: 2 of 20 today');
+    client.getAddonSecret.mockImplementation(async (_a: string, k: string) => {
+      if (k === 'simplefin_requests') throw new Error('401');
+      return null;
+    });
+    expect((await run(client, 'status'))[0]).not.toContain('SimpleFin:');
   });
 
   it('runs /sync FORCED, so a command typed minutes after the cron tick is not refused by the interval guard', async () => {
