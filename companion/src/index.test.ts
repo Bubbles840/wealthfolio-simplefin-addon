@@ -311,6 +311,29 @@ describe('runCompanionSync', () => {
     expect(await deps.rememberedBookkeepingCategory?.()).toBeNull();
   });
 
+  it('publishes the learned transfer names before the sync types anything (1.64, A4)', async () => {
+    const { getNativeAuditLedger } = await import('./sqlite-audit.js');
+    const leg = (id: string, accountId: string, type: string, notes: string) => ({
+      id, accountId, date: new Date().toISOString().slice(0, 10), currency: 'USD', rawType: type, type, status: 'POSTED',
+      absCents: 60000, group: 'g1', assetId: '', external: false, phantomCash: false, notes,
+    });
+    vi.mocked(getNativeAuditLedger).mockReturnValueOnce({
+      accounts: [{ id: 'wf-sav', name: 'Savings', type: 'CASH', archived: false }, { id: 'wf-spend', name: 'Spend', type: 'CASH', archived: false }],
+      rows: [leg('r1', 'wf-sav', 'TRANSFER_OUT', 'Withdrawal to PNC Bank XXXXXX0000 · TRN-1'),
+        leg('r2', 'wf-spend', 'TRANSFER_IN', 'RT08C248B2E7C8B TRANSFER CAPITAL ONE ACH WEB PAYMENT · TRN-2')],
+    });
+    await runCompanionSync();
+    const { WealthfolioClient } = await import('./wealthfolio.js');
+    const client = vi.mocked(WealthfolioClient).mock.results.at(-1)!.value as any;
+    const call = client.setAddonSecret.mock.calls.findIndex((c: string[]) => c[1] === 'transfer_names');
+    expect(call).toBeGreaterThanOrEqual(0);
+    expect(JSON.parse(client.setAddonSecret.mock.calls[call][2]).names).toEqual([
+      { accountId: 'wf-sav', direction: 'out', signature: 'withdrawal to pnc bank' },
+      { accountId: 'wf-spend', direction: 'in', signature: 'transfer capital one ach web payment' },
+    ]);
+    expect(client.setAddonSecret.mock.invocationCallOrder[call]).toBeLessThan(vi.mocked(runSyncCore).mock.invocationCallOrder[0]);
+  });
+
   it('derives force from MIN_SYNC_INTERVAL_HOURS when called with no options, so the cron tick is unchanged', async () => {
     delete process.env.MIN_SYNC_INTERVAL_HOURS;
     await runCompanionSync();
