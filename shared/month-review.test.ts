@@ -180,6 +180,29 @@ describe('the month in review', () => {
   });
 });
 
+describe('a linked entry finds its detection under today\'s key', () => {
+  it('a hand-added entry linked under a key from before 1.63 (R6, F5)', () => {
+    const r = roster();
+    r.subscriptions = [entry('m:lge00001', 'LG&E', { source: 'manual', bankName: '*8712 PAYMENT LOUISVILLE GAS & ACH' })];
+    const subs = [det('PAYMENT LOUISVILLE GAS & ACH', { count: 2, recent: [{ date: '2026-09-05', cents: 6149 }, { date: '2026-08-05', cents: 6149 }] })];
+    const got = buildMonthReview(input({ roster: r, cube: cube({ subscriptions: subs }) })).newSubs;
+    expect(got?.map((n) => [n.entry.key, n.since])).toEqual([['m:lge00001', '2026-08-05']]);
+  });
+
+  it("a hand-added entry linked under a renamed charge's key finds the entry it was joined into (F1)", () => {
+    const OLD = 'GOOGLE *Google One MOUNTAIN VIEW CA';
+    const NEW = 'GOOGLE *G1AI101M MOUNTAIN VIEW CA';
+    const r = roster();
+    r.subscriptions = [entry('m:goog0001', 'Google One', { source: 'manual', bankName: NEW })];
+    const subs = [det(OLD, {
+      count: 3, lastDate: '2026-09-30', aliases: [NEW],
+      recent: [{ date: '2026-09-30', cents: 2119 }, { date: '2026-08-31', cents: 2119 }, { date: '2026-08-01', cents: 2119 }],
+    })];
+    const got = buildMonthReview(input({ roster: r, cube: cube({ subscriptions: subs }) })).newSubs;
+    expect(got?.map((n) => [n.entry.key, n.since])).toEqual([['m:goog0001', '2026-08-01']]);
+  });
+});
+
 describe('"No longer charging" through the real detector and roster', () => {
   // The detector drops a subscription 45 days after its last charge and the
   // roster calls an entry overdue only 7 days past its predicted date, so on

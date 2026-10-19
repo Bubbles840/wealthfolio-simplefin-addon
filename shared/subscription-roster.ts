@@ -15,7 +15,7 @@
 
 import { findingHandle } from './handle.js';
 import type { CubeMerchant } from './report-cube.js';
-import type { DetectedSubscription } from './subscriptions.js';
+import { aliasNames, detectionKeys, subscriptionKey, type DetectedSubscription } from './subscriptions.js';
 import type { ManualSubscription, RemindDays, SubscriptionPrefs } from './subscription-prefs.js';
 
 export type Cadence = 'monthly' | 'yearly';
@@ -85,6 +85,31 @@ export function isManualKey(key: string): boolean {
   return key.startsWith(MANUAL_PREFIX);
 }
 
+/** A stored hide/confirm/rename key as the detector would spell it today (R6):
+ *  `*8712 PAYMENT LOUISVILLE GAS & ACH` and `PAYMENT LOUISVILLE GAS & ACH` are
+ *  one entry. A hand-added key is an id, not a merchant, and is left alone. */
+export function normalizeRosterKey(key: string): string {
+  return isManualKey(key) ? key : subscriptionKey(key);
+}
+
+/** A declined link is `manualId|merchant`; only the merchant part moves with
+ *  the detector's key. The id may not contain `|`, so split at the first. */
+export function normalizeDeclinedLink(entry: string): string {
+  const bar = entry.indexOf('|');
+  return bar < 0 ? entry : `${entry.slice(0, bar)}|${subscriptionKey(entry.slice(bar + 1))}`;
+}
+
+/** normalizeDeclinedLink, then a renamed charge's key read as the entry it was
+ *  joined into (F1, `aliasOf` from aliasNames): a No said to `GOOGLE
+ *  *G1AI101M …` still holds once it is offered as `GOOGLE *Google One …`. */
+export function declinedLinkEntry(entry: string, aliasOf: ReadonlyMap<string, string>): string {
+  const normalized = normalizeDeclinedLink(entry);
+  const bar = normalized.indexOf('|');
+  if (bar < 0) return normalized;
+  const merchant = normalized.slice(bar + 1);
+  return `${normalized.slice(0, bar)}|${aliasOf.get(merchant) ?? merchant}`;
+}
+
 // ── The roster ────────────────────────────────────────────────────────────
 
 export type RosterGroup = 'subscription' | 'bill' | 'maybe';
@@ -112,6 +137,10 @@ export interface RosterEntry {
   recent: Array<{ date: string; cents: number }>;
   /** findingHandle(key), for button data. */
   handle: string;
+  /** A detected row's aliases (F1): the keys of renamed charges joined into
+   *  it. A hide or Yes stored under one of them applies to this row, so
+   *  Restore clears them along with `key`. Absent when nothing was joined. */
+  aliases?: string[];
 }
 
 /** One cube link suggestion (shared/subscription-links.ts writes them). */
@@ -167,12 +196,19 @@ function nextFromCharge(lastDate: string, cadence: Cadence, today: string): Pick
   return { nextDate: null, overdueSince: predicted };
 }
 
+/** A stable subscription's rise is measured from its median. A plan change is
+ *  priced at the newest charge already (monthlyCents === lastCents), so the
+ *  price it rose FROM is the charge before it — Google One shows $5.29 → $21.19. */
+function creepFromCents(d: DetectedSubscription): number {
+  return d.lastCents === d.monthlyCents && d.prevCents !== undefined ? d.prevCents : d.monthlyCents;
+}
+
 function fromDetection(d: DetectedSubscription, cadence: Cadence, today: string) {
   return {
     // After a price rise the newest charge is the price going forward.
     cents: d.creep ? d.lastCents : d.monthlyCents,
     ...nextFromCharge(d.lastDate, cadence, today),
-    ...(d.creep ? { creep: { fromCents: d.monthlyCents, toCents: d.lastCents, chargedOn: d.lastDate } } : {}),
+    ...(d.creep ? { creep: { fromCents: creepFromCents(d), toCents: d.lastCents, chargedOn: d.lastDate } } : {}),
     recent: d.recent && d.recent.length > 0
       ? d.recent.slice(0, 3).map(({ date, cents }) => ({ date, cents }))
       : [{ date: d.lastDate, cents: d.lastCents }],
@@ -204,10 +240,22 @@ const own = (rec: object, key: string): boolean => Object.prototype.hasOwnProper
 export function buildRoster(input: RosterInput): Roster {
   const { prefs, today } = input;
   const detected = input.detected ?? null;
-  const hidden = new Set(prefs.hidden);
-  const confirmed = new Set(prefs.confirmed);
+  // R6: choices saved before 1.63 are keyed by the bank's old spelling
+  // (`*8712 PAYMENT LOUISVILLE GAS & ACH`); the detector now says `PAYMENT
+  // LOUISVILLE GAS & ACH`. Every stored name is compared through one
+  // normalizer so the old choice still finds its entry.
+  // F1: a name that is a renamed charge's key (`GOOGLE *G1AI101M …`, joined
+  // into `GOOGLE *Google One …`) is the entry it was joined into — a watch,
+  // hide, Yes or link made under it before the join must not add a second
+  // row. An older cube has no aliases, so nothing resolves there.
+  const aliasOf = aliasNames(detected);
+  const entryOf = (key: string) => aliasOf.get(key) ?? key;
+  const storedKey = (key: string) => entryOf(normalizeRosterKey(key));
+  const merchantKey = (merchant: string) => entryOf(subscriptionKey(merchant));
+  const hidden = new Set(prefs.hidden.map(storedKey));
+  const confirmed = new Set(prefs.confirmed.map(storedKey));
   const linkedManual = new Map<string, ManualSubscription>();
-  for (const m of prefs.manual) if (m.merchant) linkedManual.set(m.merchant, m);
+  for (const m of prefs.manual) if (m.merchant) linkedManual.set(merchantKey(m.merchant), m);
   const detectedByName = new Map((detected ?? []).map((d) => [d.name, d] as const));
 
   const naming = (key: string, fallback: string, bank: string | undefined) => {
@@ -224,16 +272,21 @@ export function buildRoster(input: RosterInput): Roster {
     const kind = d.kind ?? 'subscription';
     const group: RosterGroup = confirmed.has(d.name) || kind === 'subscription' ? 'subscription'
       : kind === 'bill' ? 'bill' : 'maybe';
+    const aliases = detectionKeys(d).slice(1);
     all.push({
       key: d.name, ...naming(d.name, d.name, d.name), group, source: 'detected', cadence: 'monthly',
       ...fromDetection(d, 'monthly', today), ...reminder(d.name), handle: findingHandle(d.name),
+      ...(aliases.length > 0 ? { aliases } : {}),
     });
   }
 
   // Watched: confirmed, but the detector has no verdict (one charge so far).
   const prices = recentMerchantPrices(input.merchants);
-  for (const name of new Set(prefs.confirmed)) {
-    if (detectedByName.has(name) || linkedManual.has(name) || isManualKey(name)) continue;
+  const watched = new Set<string>();
+  for (const name of prefs.confirmed) {
+    const norm = storedKey(name);
+    if (watched.has(norm) || detectedByName.has(norm) || linkedManual.has(norm) || isManualKey(name)) continue;
+    watched.add(norm);
     all.push({
       key: name, ...naming(name, name, name), group: 'subscription', source: 'watched',
       cents: prices.get(name) ?? 0, cadence: 'monthly', nextDate: null, recent: [],
@@ -243,7 +296,7 @@ export function buildRoster(input: RosterInput): Roster {
 
   for (const m of prefs.manual) {
     const key = manualKey(m.id);
-    const d = m.merchant ? detectedByName.get(m.merchant) : undefined;
+    const d = m.merchant ? detectedByName.get(merchantKey(m.merchant)) : undefined;
     const base = {
       key, ...naming(key, m.name, m.merchant), group: 'subscription' as const, source: 'manual' as const,
       cadence: m.cadence, ...reminder(key), handle: findingHandle(key),
@@ -255,13 +308,13 @@ export function buildRoster(input: RosterInput): Roster {
       : { ...base, cents: m.cents, nextDate: rollForward(m.nextDate, m.cadence, today), recent: [] });
   }
 
-  const visible = all.filter((e) => !hidden.has(e.key));
+  const visible = all.filter((e) => !hidden.has(normalizeRosterKey(e.key)));
   const group = (g: RosterGroup) => visible.filter((e) => e.group === g).sort(rosterOrder);
   const subscriptions = group('subscription');
   const bills = group('bill');
   const sum = (list: RosterEntry[]) => list.reduce((s, e) => s + e.cents, 0);
 
-  const declined = new Set(prefs.declinedLinks);
+  const declined = new Set(prefs.declinedLinks.map((l) => declinedLinkEntry(l, aliasOf)));
   const manualById = new Map(prefs.manual.map((m) => [m.id, m] as const));
   const linkSuggestions: RosterLinkSuggestion[] = [];
   for (const l of input.links ?? []) {
@@ -279,7 +332,7 @@ export function buildRoster(input: RosterInput): Roster {
     subscriptions,
     bills,
     maybes: group('maybe'),
-    hidden: all.filter((e) => hidden.has(e.key)).sort(rosterOrder),
+    hidden: all.filter((e) => hidden.has(normalizeRosterKey(e.key))).sort(rosterOrder),
     monthlyCents: sum(subscriptions.filter((e) => e.cadence === 'monthly')),
     yearlyCents: sum(subscriptions.filter((e) => e.cadence === 'yearly')),
     billsMonthlyCents: sum(bills),

@@ -67,6 +67,33 @@ describe('hidden hand-added entries (R2 fix wave)', () => {
   });
 });
 
+describe('a renamed charge on the open card (F1)', () => {
+  // Google renamed Nick's charge on Oct 6; the detector joined it under the old name.
+  const OLD = 'GOOGLE *Google One MOUNTAIN VIEW CA';
+  const NEW = 'GOOGLE *G1AI101M MOUNTAIN VIEW CA';
+  const google = () => det(OLD, { monthlyCents: 2119, lastCents: 2119, lastDate: '2026-10-06', count: 5, aliases: [NEW] });
+  const merchants = [[], [{ name: NEW, cents: 2119, count: 1 }, { name: 'CHIPOTLE', cents: 4500, count: 3 }]];
+
+  it('never offers the renamed charge to watch: it is already the joined subscription', () => {
+    render(<SubscriptionsCard full cube={cubeWith([google()], { merchants })}
+      subscriptionPrefs={loaded()} onSubscriptionEdit={vi.fn()} />);
+    expect(screen.getByRole('button', { name: 'Watch CHIPOTLE' })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: `Watch ${NEW}` })).toBeNull();
+  });
+
+  it('Restore clears a hide stored under the renamed key, one row or all', () => {
+    for (const name of [`Restore ${OLD}`, /1 hidden/]) {
+      const onEdit = vi.fn();
+      const base = loaded({ hidden: [NEW] });
+      const { unmount } = render(<SubscriptionsCard full={typeof name === 'string'} cube={cubeWith([google(), det('SPOTIFY')])}
+        subscriptionPrefs={base} onSubscriptionEdit={onEdit} />);
+      fireEvent.click(screen.getByRole('button', { name }));
+      expect(applied(onEdit, base.prefs).hidden).toEqual([]);
+      unmount();
+    }
+  });
+});
+
 describe('subscriptions card rows (1.60)', () => {
   it('rows carry the next date and, in words, the reminder and hand-added marks', () => {
     render(<SubscriptionsCard cube={cubeWith([det('SPOTIFY')])}

@@ -1,6 +1,8 @@
 import { describe, it, expect } from 'vitest';
 import { findLinkSuggestions } from './subscription-links.js';
-import { emptySubscriptionPrefs, type ManualSubscription, type SubscriptionPrefs } from './subscription-prefs.js';
+import { acceptLink, emptySubscriptionPrefs, type ManualSubscription, type SubscriptionPrefs } from './subscription-prefs.js';
+import { buildRoster } from './subscription-roster.js';
+import { aliasNames, detectSubscriptions } from './subscriptions.js';
 
 const NOW = new Date(2026, 9, 12, 9, 0, 0); // Oct 12, local morning
 const HULU: ManualSubscription = { id: 'hulu0001', name: 'Hulu', cents: 999, cadence: 'monthly', nextDate: '2026-10-20' };
@@ -66,5 +68,55 @@ describe('findLinkSuggestions', () => {
   it('matches when the next date typed is after the charge it should link to', () => {
     expect(findLinkSuggestions([charge('2026-10-09', 'HULU 877-824-4858', 999)], prefsWith({ manual: [{ ...HULU, nextDate: '2026-11-10' }] }), NOW))
       .toEqual([{ manualId: 'hulu0001', merchant: 'HULU', date: '2026-10-09', cents: 999 }]);
+  });
+});
+
+describe('names stored under a key from before 1.63 (R6)', () => {
+  const LGE: ManualSubscription = { id: 'lge00001', name: 'LG&E', cents: 6149, cadence: 'monthly', nextDate: '2026-10-19' };
+  const bill = charge('2026-09-19', '*0937 PAYMENT LOUISVILLE GAS & ACH DEBIT', 6149);
+
+  it('a merchant declined or linked under the old key is not offered again', () => {
+    expect(findLinkSuggestions([bill], prefsWith({ manual: [LGE] }), NOW))
+      .toEqual([{ manualId: 'lge00001', merchant: 'PAYMENT LOUISVILLE GAS & ACH', date: '2026-09-19', cents: 6149 }]);
+    expect(findLinkSuggestions([bill], prefsWith({ manual: [LGE], declinedLinks: ['lge00001|*8712 PAYMENT LOUISVILLE GAS & ACH'] }), NOW))
+      .toEqual([]);
+    expect(findLinkSuggestions([bill], prefsWith({ manual: [LGE, { ...HULU, merchant: '*8712 PAYMENT LOUISVILLE GAS & ACH' }] }), NOW))
+      .toEqual([]);
+  });
+});
+
+describe('a renamed charge belongs to the entry it was joined into (F1)', () => {
+  // Nick's Google One on the Citi card: renamed on Oct 6, joined by the
+  // detector under the old name. On Oct 25 only the renamed charge is recent.
+  const OLD = 'GOOGLE *Google One MOUNTAIN VIEW CA';
+  const NEW = 'GOOGLE *G1AI101M MOUNTAIN VIEW CA';
+  const NOW_25 = new Date(2026, 9, 25, 9, 0, 0);
+  const g = (date: string, merchant: string, cents: number) => ({ date, merchant, cents, accountId: 'wf-citi' });
+  const CHARGES = [
+    g('2026-06-06', OLD, 529), g('2026-06-10', 'Google One Mountain View CA', 2649), g('2026-07-06', OLD, 529),
+    g('2026-08-06', OLD, 529), g('2026-09-06', OLD, 2119), g('2026-10-06', NEW, 2119),
+  ];
+  const GOOGLE: ManualSubscription = { id: 'goog0001', name: 'Google One', cents: 2119, cadence: 'monthly', nextDate: '2026-11-06' };
+  const detected = detectSubscriptions(CHARGES, NOW_25);
+
+  it('offers the joined name, so Yes absorbs the detected row: ONE roster entry', () => {
+    const prefs = prefsWith({ manual: [GOOGLE] });
+    const links = findLinkSuggestions(CHARGES, prefs, NOW_25, aliasNames(detected));
+    expect(links).toEqual([{ manualId: 'goog0001', merchant: OLD, date: '2026-10-06', cents: 2119 }]);
+    const r = buildRoster({ detected, merchants: [], links, prefs: acceptLink(prefs, links[0]), today: '2026-10-25' });
+    expect(r.subscriptions.map((e) => [e.key, e.cents])).toEqual([['m:goog0001', 2119]]);
+    expect(r.monthlyCents).toBe(2119);
+  });
+
+  it('a link or a No stored under the renamed key is the same merchant', () => {
+    const aliases = aliasNames(detected);
+    const owner = { ...GOOGLE, id: 'goog0002', merchant: NEW };
+    expect(findLinkSuggestions(CHARGES, prefsWith({ manual: [GOOGLE, owner] }), NOW_25, aliases)).toEqual([]);
+    expect(findLinkSuggestions(CHARGES, prefsWith({ manual: [GOOGLE], declinedLinks: [`goog0001|${NEW}`] }), NOW_25, aliases)).toEqual([]);
+  });
+
+  it('without the joined names (an older caller) it offers the charge under its own key, as before', () => {
+    expect(findLinkSuggestions(CHARGES, prefsWith({ manual: [GOOGLE] }), NOW_25))
+      .toEqual([{ manualId: 'goog0001', merchant: NEW, date: '2026-10-06', cents: 2119 }]);
   });
 });

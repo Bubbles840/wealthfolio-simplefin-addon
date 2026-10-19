@@ -15,13 +15,14 @@ import React from 'react';
 import { Button, Input } from '../ui';
 import type { ReportCube } from '../../../shared/report-cube';
 import {
-  acceptLink, addManual, confirmKey, declineLink, deleteManual, emptySubscriptionPrefs, hideKey, newManualId, renameKey, restoreDeleted, setRemind, unhideKey, updateManual,
+  acceptLink, addManual, confirmKey, declineLink, deleteManual, emptySubscriptionPrefs, hideKey, newManualId, renameKey, restoreDeleted, setRemind, unhideEntry, updateManual,
   type LoadedSubscriptionPrefs, type RemindDays, type SubscriptionEdit,
 } from '../../../shared/subscription-prefs';
 import {
-  aboutDollars, buildRoster, formatRosterTotal, localIsoDay, manualKey, monthDay, rosterMoney, rosterPrice, rosterWhen,
+  aboutDollars, buildRoster, formatRosterTotal, localIsoDay, manualKey, monthDay, normalizeRosterKey, rosterMoney, rosterPrice, rosterWhen,
   type Cadence, type RosterEntry,
 } from '../../../shared/subscription-roster';
+import { detectionKeys } from '../../../shared/subscriptions';
 import {
   parseAmountCents, parseSubscriptionDate, parseSubscriptionName, SUB_AMOUNT_HINT, SUB_DATE_HINT, SUB_NAME_HINT,
 } from '../../../shared/telegram-commands';
@@ -386,7 +387,7 @@ export function SubscriptionsCard({
         </>
       )}
       {!full && roster.hidden.length > 0 && edit && (
-        <Button variant="ghost" onClick={() => edit((p) => roster.hidden.reduce((acc, e) => unhideKey(acc, e.key), p))}>
+        <Button variant="ghost" onClick={() => edit((p) => roster.hidden.reduce(unhideEntry, p))}>
           {roster.hidden.length} hidden — restore
         </Button>
       )}
@@ -399,20 +400,22 @@ export function SubscriptionsCard({
               <span className="sfin-subs-price">{rosterPrice(e)}</span>
               {edit && (
                 <button type="button" className="sfin-subs-answer" aria-label={`Restore ${e.displayName}`}
-                  onClick={() => edit((p) => unhideKey(p, e.key))}>Restore</button>
+                  onClick={() => edit((p) => unhideEntry(p, e))}>Restore</button>
               )}
             </div>
           ))}
         </>
       )}
       {full && edit && (() => {
+        // A bank name, a detected key and a pre-1.63 choice can name one merchant (R6),
+        // and a renamed charge's key names the entry it was joined into (F1).
         const known = new Set<string>([
-          ...(cube.subscriptions ?? []).map((s) => s.name),
+          ...(cube.subscriptions ?? []).flatMap(detectionKeys),
           ...(prefs?.confirmed ?? []),
           ...(prefs?.hidden ?? []),
           ...(prefs?.manual ?? []).flatMap((m) => (m.merchant ? [m.merchant] : [])),
-        ]);
-        const watchable = recentMerchants(cube).filter((m) => !known.has(m.name)).slice(0, 12);
+        ].map(normalizeRosterKey));
+        const watchable = recentMerchants(cube).filter((m) => !known.has(normalizeRosterKey(m.name))).slice(0, 12);
         if (watchable.length === 0) return null;
         return (
           <>

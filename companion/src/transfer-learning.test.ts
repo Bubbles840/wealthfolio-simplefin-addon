@@ -1,4 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
+import { ruleApplies } from '../../shared/mapper.js';
 import { createTransferLearning, rulePatternFor } from './transfer-learning.js';
 
 function make(existing: any[] = []) {
@@ -54,8 +55,31 @@ describe('rulePatternFor', () => {
     expect(rulePatternFor('ACH WITHDRAWAL 99182')).toBe('ACH WITHDRAWAL');
   });
 
-  it('survives punctuation banks sprinkle through descriptors', () => {
-    expect(rulePatternFor('TST*HAMMERHEADS #12')).toBe('TST HAMMERHEADS');
+  it('keeps the bank\'s punctuation: a rule is a contains match on the raw text', () => {
+    // Stripping it ("TST HAMMERHEADS") built a rule that matched nothing, not
+    // even the transaction it was made from.
+    expect(rulePatternFor('TST*HAMMERHEADS #12')).toBe('TST*HAMMERHEADS');
+  });
+
+  it('drops a leading reference, so the rule matches next month\'s payment too', () => {
+    // Live, 2026-10-17: the rule written from this row was
+    // "0082 PAYMENT CITI AUTOPAY ACH WEB", which September's *0062 never matched.
+    const pattern = rulePatternFor('*0082 PAYMENT CITI AUTOPAY ACH WEB-RECUR');
+    expect(pattern).toBe('PAYMENT CITI AUTOPAY ACH WEB-RECUR');
+    const rule = { pattern, matchType: 'contains' as const, activityType: 'TRANSFER_OUT' as const };
+    expect(ruleApplies(rule, '*0082 PAYMENT CITI AUTOPAY ACH WEB-RECUR', -42.4)).toBe(true);
+    expect(ruleApplies(rule, '*0062 PAYMENT CITI AUTOPAY ACH WEB-RECUR', -42.4)).toBe(true);
+  });
+
+  it('always matches the transaction it was made from, built from the bank\'s own words', () => {
+    for (const desc of [
+      '*0082 PAYMENT CITI AUTOPAY ACH WEB-RECUR', 'Payment to Ccb Credit Card Payments', 'TST*HAMMERHEADS #12',
+      '4090 E-PAYMENT DISCOVER ACH WEB', 'AMAZON.COM*2K4 · Amazon: Lawn',
+    ]) {
+      const rule = { pattern: rulePatternFor(desc), matchType: 'contains' as const, activityType: 'TRANSFER_OUT' as const };
+      expect(ruleApplies(rule, desc, -1)).toBe(true);
+    }
+    expect(rulePatternFor('*8768 PAYMENT VENMO ACH WEB · Venmo: Pizza')).toBe('PAYMENT VENMO ACH WEB');
   });
 
   it('is empty for a description with nothing to match on', () => {
