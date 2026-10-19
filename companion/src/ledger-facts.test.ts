@@ -10,7 +10,7 @@ const made: string[] = [];
 afterEach(() => { for (const d of made.splice(0)) rmSync(d, { recursive: true, force: true }); });
 
 /** A ledger shaped like the one these checks were derived from. */
-function ledger(rows: string): string {
+function ledger(rows: string, after = ''): string {
   const dir = mkdtempSync(join(tmpdir(), 'sfin-facts-'));
   made.push(dir);
   const path = join(dir, 'wealthfolio.db');
@@ -34,6 +34,8 @@ function ledger(rows: string): string {
     ALTER TABLE accounts ADD COLUMN is_archived INTEGER DEFAULT 0;
     ALTER TABLE activities ADD COLUMN activity_type_override TEXT;
     ALTER TABLE activities ADD COLUMN currency TEXT;
+    ALTER TABLE activities ADD COLUMN fee TEXT;
+    ALTER TABLE activities ADD COLUMN metadata TEXT;
     ALTER TABLE activity_taxonomy_assignments ADD COLUMN taxonomy_id TEXT;
     ALTER TABLE activity_taxonomy_assignments ADD COLUMN source TEXT;
     ALTER TABLE activity_taxonomy_assignments ADD COLUMN id TEXT;
@@ -42,11 +44,12 @@ function ledger(rows: string): string {
     CREATE TABLE spending_activity_splits (id TEXT, activity_id TEXT, taxonomy_id TEXT, category_id TEXT, amount TEXT, sort_order INTEGER);
     CREATE TABLE app_settings (setting_key TEXT PRIMARY KEY, setting_value TEXT);
     INSERT INTO app_settings VALUES ('timezone', 'UTC'), ('spending.enabled', 'true'), ('spending.account_ids', '["cash","sav","card","card2"]');
+    ${after}
   `);
   db.close();
   return path;
 }
-const facts = (rows: string, bank: Array<[string, number | null]> = []) => getLedgerFacts(ledger(rows), NOW, new Map(bank))!;
+const facts = (rows: string, bank: Array<[string, number | null]> = [], after = '') => getLedgerFacts(ledger(rows, after), NOW, new Map(bank))!;
 
 describe('getLedgerFacts', () => {
   it('is null, not an exception, when the database is not there', () => {
@@ -113,7 +116,7 @@ describe('getLedgerFacts', () => {
     const f = facts(`
       INSERT INTO activities VALUES ('u1','cash','TRANSFER_IN',NULL,'2026-09-10','1300','Transfer from Capital One · t1',NULL,0);
       INSERT INTO activities VALUES ('u2','cash','TRANSFER_OUT',NULL,'2026-09-10','500','Payment to Citi · t2','grp',0);
-      INSERT INTO activities VALUES ('u3','sav','TRANSFER_OUT',NULL,'2026-09-18','600','↔️ In-transit transfer · PNC BANK · t3',NULL,0);
+      INSERT INTO activities VALUES ('u3','sav','TRANSFER_OUT',NULL,'2026-09-18','175','↔️ In-transit transfer · NORTHWIND BANK TRANSFER · t3',NULL,0);
       INSERT INTO activities VALUES ('u4','card','TRANSFER_IN',NULL,'2026-04-20','235.4','Starting balance · sf-card',NULL,0);
       INSERT INTO activities VALUES ('u5','cash','TRANSFER_OUT',NULL,'2026-06-26','700','Payment to Citibank · t5',NULL,0);
     `);
@@ -121,8 +124,26 @@ describe('getLedgerFacts', () => {
     expect(f.unlinkedTransfers).toEqual([{ id: 'u1', description: 'Transfer from Capital One', amount: 1300, direction: 'in', ageDays: 10 }]);
     // 1.65 C: with what "Not a transfer" and the reason need — the account, the bank day, the tx id, the direction.
     expect(f.heldTransfers).toEqual([{
-      id: 'u3', description: 'PNC BANK', amount: 600, ageDays: 2, wfAccountId: 'sav', date: '2026-09-18', txId: 't3', direction: 'out',
+      id: 'u3', description: 'NORTHWIND BANK TRANSFER', amount: 175, ageDays: 2, wfAccountId: 'sav', date: '2026-09-18', txId: 't3', direction: 'out',
     }]);
+  });
+
+  it('lists only placeholders the stale sweep could settle, and reads the direction (1.65 C fix)', () => {
+    const P = '↔️ In-transit transfer · ';
+    const f = facts(`
+      INSERT INTO activities VALUES ('k1','sav','TRANSFER_OUT',NULL,'2026-09-01','80','${P}WIRE TO ACME LLC · k1',NULL,0);
+      INSERT INTO activities VALUES ('k2','sav','TRANSFER_IN',NULL,'2026-09-01','90','${P}WIRE FROM ACME LLC · k2',NULL,0);
+      INSERT INTO activities VALUES ('x1','sav','TRANSFER_OUT',NULL,'2026-09-01','80','${P}LINKED · x1','grp',0);
+      INSERT INTO activities VALUES ('x2','sav','TRANSFER_OUT',NULL,'2026-09-01','80','${P}PENDING · x2 · pending',NULL,0);
+      INSERT INTO activities VALUES ('x3','sav','TRANSFER_OUT',NULL,'2026-09-01','0','${P}FEE SIDE · x3',NULL,0);
+      INSERT INTO activities VALUES ('x4','sav','TRANSFER_OUT',NULL,'2026-09-01','80','${P}LINKED BY FLAG · x4',NULL,0);
+      INSERT INTO activities VALUES ('x5','sav','TRANSFER_OUT',NULL,'2026-09-01','80','${P}FEE COLUMN · x5',NULL,0);
+    `, [], `
+      UPDATE activities SET metadata = '{"flow":{"is_external":false}}' WHERE id = 'x4';
+      UPDATE activities SET fee = '1.5' WHERE id = 'x5';
+      UPDATE activities SET metadata = '{"flow":{"is_external":true}}' WHERE id = 'k1';
+    `);
+    expect(f.heldTransfers.map((h) => [h.id, h.direction])).toEqual([['k1', 'out'], ['k2', 'in']]);
   });
 
   it('finds a DEPOSIT inside a transfer group, and accepts a bare CREDIT there', () => {

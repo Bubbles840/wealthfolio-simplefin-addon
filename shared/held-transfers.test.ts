@@ -51,6 +51,55 @@ describe('judgeHeldTransfer (1.65 C)', () => {
   });
 });
 
+describe('judgeHeldTransfer mirrors the sync (1.65 C fix round 1)', () => {
+  it('an account missing from the last download gets no name words and no life, so it holds every leg', () => {
+    const f: StoredFeeds = {
+      mapping: { 'sfin-chk': 'wf-chk', 'sfin-card': 'wf-card' },
+      balances: { 'sfin-chk': { date: epoch('2026-10-19T12:00:00Z'), aliveThrough: epoch('2026-10-19T12:00:00Z') } },
+      names: { 'sfin-chk': 'Checking', 'sfin-card': 'Harbor Card' },
+    };
+    expect(judgeHeldTransfer(WIRE, f, NOW).heldBy).toBe('Harbor Card');
+  });
+
+  it('picks the reissued card feed that is in the download as the leg\'s own account', () => {
+    const f: StoredFeeds = {
+      mapping: { 'sfin-card-old': 'wf-card', 'sfin-chk': 'wf-chk', 'sfin-card-new': 'wf-card' },
+      balances: {
+        'sfin-chk': { aliveThrough: epoch('2026-10-19T12:00:00Z') },
+        'sfin-card-new': { aliveThrough: epoch('2026-10-19T12:00:00Z') },
+      },
+      names: {},
+    };
+    expect(judgeHeldTransfer({ ...WIRE, wfAccountId: 'wf-card' }, f, NOW).txKey).toBe(accountTxKey('sfin-card-new', 'w-old'));
+    const both = { ...f, balances: { ...f.balances, 'sfin-card-old': { aliveThrough: epoch('2026-10-19T12:00:00Z') } } };
+    const amb = judgeHeldTransfer({ ...WIRE, wfAccountId: 'wf-card' }, both, NOW);
+    expect(amb.txKey).toBeNull();
+    expect(amb).not.toHaveProperty('heldBy');
+  });
+
+  it('cannot tell when the own account has no stored balance object', () => {
+    const f = feeds('2026-09-30T12:00:00Z', { balances: {} });
+    expect(judgeHeldTransfer(WIRE, f, NOW)).not.toHaveProperty('heldBy');
+  });
+
+  it('calls a holder with no stored name "another account"', () => {
+    const f = feeds('2026-09-30T12:00:00Z', { names: { 'sfin-chk': 'Checking' } });
+    const h = judgeHeldTransfer(WIRE, f, NOW);
+    expect(h.heldBy).toBe('another account');
+    expect(heldTransferMessage(h)).toContain("— another account's feed is behind");
+  });
+
+  it('prefers aliveThrough over the balance date, both ways', () => {
+    const cur = epoch('2026-10-19T12:00:00Z');
+    const old = epoch('2026-09-30T12:00:00Z');
+    const f = feeds('2026-09-30T12:00:00Z');
+    const aliveWins = { ...f, balances: { ...f.balances, 'sfin-sav': { date: old, aliveThrough: cur } } };
+    expect(judgeHeldTransfer(WIRE, aliveWins, NOW).heldBy).toBeNull();
+    const dateStale = { ...f, balances: { ...f.balances, 'sfin-sav': { date: cur, aliveThrough: old } } };
+    expect(judgeHeldTransfer(WIRE, dateStale, NOW).heldBy).toBe('Harbor Savings');
+  });
+});
+
 describe('heldTransferMessage (1.65 C)', () => {
   it('says why: the feed that is behind, that the next sync settles it, or nothing when it cannot tell', () => {
     const held = judgeHeldTransfer(WIRE, feeds('2026-09-30T12:00:00Z'), NOW);

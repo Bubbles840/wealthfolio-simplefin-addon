@@ -11,6 +11,7 @@ import { bankDayInstant } from './bank-day.js';
 import { accountNameWords, expiryHoldAccount } from './sync-core.js';
 import { formatDollars } from './telegram.js';
 import { accountTxKey } from './transfers.js';
+import { sfinIdsFor } from './tx-story.js';
 
 /** A transfer held at least this long is worth saying something about. */
 export const HELD_MIN_AGE_DAYS = 14;
@@ -50,10 +51,21 @@ export interface HeldTransfer {
 
 const finite = (v: unknown): number | null => (typeof v === 'number' && Number.isFinite(v) ? v : null);
 
+const isObj = (v: unknown): v is object => typeof v === 'object' && v !== null;
+
+/** The leg's own SimpleFin account: the one mapped feed in the last download,
+ *  else the only mapped one; null when it cannot be told (a reissued card with
+ *  two feeds both present). */
+function ownFeedId(feeds: StoredFeeds, wfAccountId: string): string | null {
+  const candidates = sfinIdsFor(feeds.mapping as Record<string, string>, wfAccountId);
+  const present = candidates.filter((id) => isObj(feeds.balances[id]));
+  if (present.length === 1) return present[0];
+  if (present.length === 0 && candidates.length === 1) return candidates[0];
+  return null;
+}
+
 export function judgeHeldTransfer(row: HeldRow, feeds: StoredFeeds | undefined, now: Date): HeldTransfer {
-  const sfinId = feeds && row.wfAccountId
-    ? Object.keys(feeds.mapping).find((k) => feeds.mapping[k] === row.wfAccountId) ?? null
-    : null;
+  const sfinId = feeds && row.wfAccountId ? ownFeedId(feeds, row.wfAccountId) : null;
   const own = feeds && sfinId ? feeds.names[sfinId] : undefined;
   const base: HeldTransfer = {
     activityId: row.id,
@@ -64,20 +76,25 @@ export function judgeHeldTransfer(row: HeldRow, feeds: StoredFeeds | undefined, 
     txKey: sfinId && row.txId ? accountTxKey(sfinId, row.txId) : null,
     label: own ? `${row.description} · ${own}` : row.description,
   };
-  if (!feeds || !sfinId || !row.date) return base;
+  // Unusable stored balances for the leg's own account: cannot tell why.
+  if (!feeds || !sfinId || !row.date || !isObj(feeds.balances[sfinId])) return base;
 
+  // Mirrors the sync: only an account that was in the last download has life
+  // and name words; any other mapped account has neither, so it holds every leg.
   const mappedIds = Object.keys(feeds.mapping);
   const alive = new Map<string, number>();
   const nameWords = new Map<string, readonly string[]>();
   for (const id of mappedIds) {
     const b = feeds.balances[id];
-    alive.set(id, finite(b?.aliveThrough) ?? finite(b?.date) ?? 0);
+    if (!isObj(b)) continue;
+    const bal = b as { date?: unknown; aliveThrough?: unknown };
+    alive.set(id, finite(bal.aliveThrough) ?? finite(bal.date) ?? 0);
     nameWords.set(id, accountNameWords(feeds.names[id] ?? ''));
   }
   const holder = expiryHoldAccount(sfinId, Date.parse(bankDayInstant(row.date)) / 1000, mappedIds, alive, {
     nowSec: Math.floor(now.getTime() / 1000), legDescription: row.description, nameWords,
   });
-  return { ...base, heldBy: holder === null ? null : feeds.names[holder] ?? holder };
+  return { ...base, heldBy: holder === null ? null : feeds.names[holder] ?? 'another account' };
 }
 
 export function heldTransferMessage(h: HeldTransfer): string {

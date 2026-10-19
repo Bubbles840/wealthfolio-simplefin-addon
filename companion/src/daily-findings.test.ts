@@ -75,7 +75,7 @@ describe('gatherFindings', () => {
       account_mapping: JSON.stringify({ 'sfin-chk': 'wf-chk', 'sfin-sav': 'wf-sav' }),
       account_balances: JSON.stringify({
         'sfin-chk': { balance: 10, date: unixDaysAgo(0), aliveThrough: unixDaysAgo(0) },
-        // Balance date current, but no transaction since before the leg's pairing deadline.
+        // Last proof of life is before the leg's pairing deadline (leg + 5 days).
         'sfin-sav': { balance: 10, date: unixDaysAgo(18), aliveThrough: unixDaysAgo(18) },
       }),
       account_names: JSON.stringify({ 'sfin-chk': 'Checking', 'sfin-sav': 'Harbor Savings' }),
@@ -83,6 +83,22 @@ describe('gatherFindings', () => {
     const found = await gatherFindings(deps, NOW, { recordLedgerChecks: false, ...healthy });
     const held = found.visible.find((f) => f.key === 'held-transfer:h1')!;
     expect(held.message).toContain("Harbor Savings's feed is behind");
+  });
+
+  it('still shows a held transfer, with no reason, when the stored balances are corrupt (1.65 C)', async () => {
+    const facts = cleanFacts();
+    facts.heldTransfers = [{
+      id: 'h1', description: 'WIRE TRANSFER TO ACME LLC', amount: 250, ageDays: 20,
+      wfAccountId: 'wf-chk', date: '2026-09-19', txId: 'w-old', direction: 'out',
+    }];
+    const { deps } = makeDeps({
+      account_mapping: JSON.stringify({ 'sfin-chk': 'wf-chk', 'sfin-sav': 'wf-sav' }),
+      account_balances: '{not json',
+      account_names: JSON.stringify({ 'sfin-chk': 'Checking', 'sfin-sav': 'Harbor Savings' }),
+    }, facts);
+    const found = await gatherFindings(deps, NOW, { recordLedgerChecks: false, ...healthy });
+    const held = found.visible.find((f) => f.key === 'held-transfer:h1')!;
+    expect(held.message).not.toContain(' — ');
   });
 
   it('names a non-card account that differs from the bank, leaving cards to the ledger audit', async () => {

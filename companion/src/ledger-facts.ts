@@ -177,7 +177,15 @@ export function getLedgerFacts(
     const heldTransfers = all<{ id: string; notes: string; amt: number; age: number; account_id: string; t: string; d: string }>(
       `SELECT a.id, a.notes, a.account_id, UPPER(a.activity_type) t, substr(a.activity_date,1,10) d,
               ABS(CAST(a.amount AS REAL)) amt, ${age} age
-       FROM activities a WHERE COALESCE(a.notes,'') LIKE '${IN_TRANSIT_COMMENT_PREFIX}%'`,
+       FROM activities a WHERE COALESCE(a.notes,'') LIKE '${IN_TRANSIT_COMMENT_PREFIX}%'
+         -- Only what the stale sweep could settle: never a linked, pending or
+         -- fee-side placeholder, or one the link repair marked as a real pair.
+         AND COALESCE(a.source_group_id,'') = ''
+         AND a.notes NOT LIKE '%${PENDING_SUFFIX}'
+         AND CAST(COALESCE(a.amount,'0') AS REAL) <> 0
+         AND COALESCE(CAST(a.fee AS REAL),0) = 0
+         AND NOT (json_valid(COALESCE(a.metadata,''))
+                  AND COALESCE(json_type(a.metadata, '$.flow.is_external'), '') IN ('false'))`,
     ).map((r) => ({
       id: r.id, description: describe(r.notes), amount: Number(r.amt), ageDays: Number(r.age),
       wfAccountId: String(r.account_id), date: String(r.d), txId: txIdFromComment(String(r.notes)),
