@@ -82,6 +82,9 @@ export interface SelfCheckFinding {
  * already previews before it writes — no finding gets a one-tap write of its
  * own, because the findings are judged from a read-only database snapshot and a
  * write built on a stale snapshot is how a fix becomes a second problem.
+ *
+ * `not-transfer` is the one fix that writes from the menu — only the overrides
+ * document, only after a confirm, and both taps re-judge the findings first.
  */
 export type FindingFix =
   /** Write a mapping rule through the transfer-learning confirm step. A bare
@@ -89,7 +92,10 @@ export type FindingFix =
    *  differs from what the feed resolves to. */
   | { kind: 'make-transfer'; activityId: string; description: string; amount: number; activityType: string }
   /** Open the category picker on exactly this transaction. */
-  | { kind: 'pick-category'; activityId: string };
+  | { kind: 'pick-category'; activityId: string }
+  /** Records `notTransfer` for this bank transaction after a confirm — the
+   *  override the change log's Undo writes. */
+  | { kind: 'not-transfer'; txKey: string; label: string; description: string; amount: number; direction: 'in' | 'out' };
 
 export interface SelfCheckInput {
   /** ISO timestamp of the last SUCCESSFUL sync; null = never synced. */

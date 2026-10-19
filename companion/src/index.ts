@@ -82,7 +82,7 @@ import { createCategorizeController, SPENDING_TAXONOMY_ID } from './categorize.j
 import { createAmazonLabelMenu, type AmazonLabelMenu } from './amazon-labels.js';
 import { fileAmazonCharges } from './amazon-filing.js';
 import { companionChangeSink, readCompanionChangeLog, recordCompanionChanges } from './change-log-host.js';
-import { emptySyncOverrides, hasAccountOverride, hasTxOverride, loadSyncOverrides, syncOverridesOrEmpty, type SyncOverrides } from '../../shared/sync-overrides.js';
+import { editSyncOverrides, emptySyncOverrides, hasAccountOverride, hasTxOverride, loadSyncOverrides, notTransferEdit, syncOverridesOrEmpty, type SyncOverrides } from '../../shared/sync-overrides.js';
 import { TRANSFER_NAMES_SECRET_KEY } from '../../shared/transfer-names.js';
 import { publishTransferNames } from './transfer-names.js';
 import { getNativeAuditLedger } from './sqlite-audit.js';
@@ -3980,6 +3980,15 @@ export function buildTelegramListenerDeps(wfClient: WealthfolioClient): Telegram
     },
     snooze: (key, now) => updateSnoozes(findingsDeps(wfClient), now, (current) => withSnooze(current, key, now)),
     unsnoozeAll: (now) => updateSnoozes(findingsDeps(wfClient), now, () => ({})),
+    // 1.65 C: the override the change log's Undo writes, through the one re-reading writer.
+    markNotTransfer: async (fix, now) => {
+      await editSyncOverrides(
+        (k) => wfClient.getAddonSecret('simplefin-sync', k),
+        (k, v) => wfClient.setAddonSecret('simplefin-sync', k, v),
+        notTransferEdit(fix.txKey, fix.label, now),
+        now,
+      );
+    },
     makeTransfer: (fix, ui) => transferLearning.openForCandidate({
       description: fix.description,
       amountCents: Math.round(fix.amount * 100),
