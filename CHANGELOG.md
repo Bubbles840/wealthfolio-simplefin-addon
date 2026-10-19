@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.64.0] - 2026-10-19
+
 ### Added
 - **A transfer between your accounts is held whichever half posts first.**
   The companion learns the bank wording of every transfer it has seen linked
