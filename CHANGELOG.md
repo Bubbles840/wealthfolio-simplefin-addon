@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.65.0] - 2026-10-19
+
 Update the add-on and the companion together: both decide how a transfer is
 typed, and a 1.64 writer beside a 1.65 one retypes the same payment back and
 forth on each sync until both are on 1.65.
