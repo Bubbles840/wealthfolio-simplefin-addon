@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { afterEach, describe, it, expect, vi } from 'vitest';
 import { toHoldingsSnapshot } from './holdings.js';
 import type { SimplefinAccount } from './types.js';
 
@@ -7,7 +7,9 @@ const account = (over: Partial<SimplefinAccount> = {}): SimplefinAccount => ({
   name: 'Brokerage',
   currency: 'USD',
   balance: '512.34',
-  'balance-date': 1789214400, // 2026-09-12 12:00Z: the same calendar day in every zone UTC-11..UTC+11
+  // Noon UTC: the same calendar day in every zone from UTC−11 to UTC+11, so
+  // the snapshot's LOCAL day is 2026-09-12 wherever the suite runs.
+  'balance-date': 1789214400, // 2026-09-12T12:00Z
   ...over,
 });
 
@@ -198,5 +200,21 @@ describe('toHoldingsSnapshot', () => {
       ]);
       expect(snapshot?.cashBalances).toEqual({ USD: '3.00' });
     });
+  });
+});
+
+describe('toHoldingsSnapshot — dated by the local day (1.63.1)', () => {
+  afterEach(() => { vi.unstubAllEnvs(); });
+
+  it('dates an evening balance by the local day, never the UTC day Wealthfolio would refuse as the future', () => {
+    // Live, 2026-10-18 at 10:43 PM in Kentucky: Robinhood's balance-date was
+    // 02:43 UTC on Oct 19, the snapshot was dated "2026-10-19", and Wealthfolio
+    // refused it ("Use a date from 1970-01-01 to 2026-10-18").
+    vi.stubEnv('TZ', 'America/New_York');
+    const snapshot = toHoldingsSnapshot(account({
+      'balance-date': Date.parse('2026-10-19T02:43:00Z') / 1000,
+      holdings: [{ symbol: 'VTI', shares: '1' }],
+    }));
+    expect(snapshot?.date).toBe('2026-10-18');
   });
 });

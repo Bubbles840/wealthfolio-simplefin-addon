@@ -2253,8 +2253,8 @@ describe('runSyncCore with ONE SimpleFin tx id in two accounts', () => {
 
       // Both accounts measured as in sync, and neither was alerted about.
       expect(await store.getAccountBalances()).toEqual({
-        'sfin-sav': { balance: 610.65, currency: 'USD', date: expect.any(Number), drift: null, driftSince: null, measured: true },
-        'sfin-spend': { balance: 3475.23, currency: 'USD', date: expect.any(Number), drift: null, driftSince: null, measured: true },
+        'sfin-sav': { balance: 610.65, currency: 'USD', date: expect.any(Number), drift: null, driftSince: null, measured: true, fetchedAt: expect.any(Number) },
+        'sfin-spend': { balance: 3475.23, currency: 'USD', date: expect.any(Number), drift: null, driftSince: null, measured: true, fetchedAt: expect.any(Number) },
       });
       expect(result.balanceDriftAlerts).toEqual([]);
     });
@@ -2352,8 +2352,8 @@ describe('runSyncCore with ONE SimpleFin tx id in two accounts', () => {
     // comparable here, and "verified in sync" is now a different claim from
     // "nothing to report".
     expect(await store.getAccountBalances()).toEqual({
-      'sfin-sav': { balance: 610.65, currency: 'USD', date: expect.any(Number), drift: null, driftSince: null, measured: true },
-      'sfin-spend': { balance: 3475.23, currency: 'USD', date: expect.any(Number), drift: null, driftSince: null, measured: true },
+      'sfin-sav': { balance: 610.65, currency: 'USD', date: expect.any(Number), drift: null, driftSince: null, measured: true, fetchedAt: expect.any(Number) },
+      'sfin-spend': { balance: 3475.23, currency: 'USD', date: expect.any(Number), drift: null, driftSince: null, measured: true, fetchedAt: expect.any(Number) },
     });
     expect(result.balanceDriftAlerts).toEqual([]);
   });
@@ -3612,7 +3612,10 @@ describe('holdings snapshots for investment accounts', () => {
   const brokerageSeed = (): FakeHostSeed => ({
     accountSet: { errors: [], accounts: [{
       id: 'sfin-b', name: 'Robinhood', currency: 'USD', balance: '512.34',
-      'balance-date': 1789214400,
+      // Noon UTC: the snapshot takes the LOCAL day of this instant (9d194d6),
+      // and noon is 2026-09-12 in every zone from UTC−11 to UTC+11. Midnight
+      // UTC was the 11th anywhere west of Greenwich.
+      'balance-date': 1789214400, // 2026-09-12T12:00Z
       transactions: [],
       holdings: [
         { symbol: 'VTI', shares: '2.5', purchase_price: '210.11' },

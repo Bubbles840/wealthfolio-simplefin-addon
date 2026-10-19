@@ -14,6 +14,7 @@ import {
   formatStatusReply,
   formatReportFooter,
   formatSyncReply,
+  formatSyncSkipReply,
   parseAmountCents,
   parseDateInput,
   nextOccurrence,
@@ -563,6 +564,22 @@ describe('formatReportFooter', () => {
 
   it('null lastSyncAt reports no sync has ever run', () => {
     expect(formatReportFooter(null, now)).toBe('No sync has run yet — /sync to pull transactions.');
+  });
+});
+
+describe('formatStatusReply — the SimpleFin count (1.64, C4)', () => {
+  const input: StatusReplyInput = { version: '1.64.0', lastSyncAt: null, lastSyncSummary: null, accounts: [], uncategorizedCount: null, amazonUnparsed: null };
+  it('shows "SimpleFin: N of 20 today" when the count was read, and nothing otherwise', () => {
+    expect(formatStatusReply({ ...input, simplefinToday: 7 }, now)).toContain('SimpleFin: 7 of 20 today');
+    expect(formatStatusReply({ ...input, simplefinToday: null }, now)).not.toContain('SimpleFin:');
+    expect(formatStatusReply(input, now)).not.toContain('SimpleFin:');
+  });
+});
+
+describe('formatSyncSkipReply (1.64, C3)', () => {
+  it('is the one line, escaped for Markdown', () => {
+    expect(formatSyncSkipReply("SimpleFin's daily limit is used up — next sync at 3:10 PM.")).toBe("SimpleFin's daily limit is used up — next sync at 3:10 PM.");
+    expect(formatSyncSkipReply('a_b')).toBe('a\\_b');
   });
 });
 

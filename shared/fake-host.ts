@@ -1,8 +1,10 @@
+import { postedLedgerTotal } from './ledger-total.js';
 import type { AccountMapping, MappingRule, SimplefinAccountSet } from './types.js';
 import type { AmazonLedger } from './amazon-ledger.js';
 import type { VenmoLedger } from './venmo-ledger.js';
 import type { HoldingsSnapshot } from './holdings.js';
 import type { SkippedTransaction } from './skipped-transactions.js';
+import type { TransferNames } from './transfer-names.js';
 import type { SyncOverrides } from './sync-overrides.js';
 import type {
   ActivityWrite,
@@ -76,6 +78,8 @@ export interface FakeHostSeed {
    *  valuations API omits. Absent means the host lacks the capability, which is
    *  the addon's shape. */
   ledgerBalances?: Map<string, number>;
+  /** Give the host `postedLedgerTotals`, computed over its LIVE rows. */
+  cardTotals?: boolean;
   /**
    * Model two Wealthfolio 3.8 write rules that only do damage together
    * (activities_service.rs), off by default so older tests keep their simpler host:
@@ -97,9 +101,15 @@ export interface FakeHostSeed {
   cardTransferOut?: boolean;
   /** The user's skip list (see shared/skipped-transactions.ts). */
   skippedTransactions?: SkippedTransaction[];
+  /** The learned transfer names (absent: the store has no `getTransferNames`). */
+  transferNames?: TransferNames;
   /** What Undo told the sync not to do (shared/sync-overrides.ts). Absent
    *  leaves `getSyncOverrides` off the store, the shape of an older host. */
   syncOverrides?: SyncOverrides;
+  /** The SimpleFin request record (1.64 C1). Shared BY REFERENCE: two hosts given
+   *  the same object are two writers sharing one count. Absent leaves the two
+   *  store methods off (no budget). `failReads` makes the read reject. */
+  requestLog?: { raw: string | null; failReads?: boolean };
 }
 
 export interface FakeHost {
@@ -336,6 +346,19 @@ export function createFakeHost(seed: FakeHostSeed = {}): FakeHost {
         }
       : {}),
 
+    ...(seed.cardTotals
+      ? {
+          async postedLedgerTotals(accounts: Array<{ wfAccountId: string; accountType: string }>) {
+            const out = new Map<string, number>();
+            for (const a of accounts) {
+              const total = postedLedgerTotal(rowsFor(a.wfAccountId), a.accountType);
+              if (total !== null) out.set(a.wfAccountId, total);
+            }
+            return out;
+          },
+        }
+      : {}),
+
     ...(seed.noHoldingsSupport
       ? {}
       : {
@@ -551,6 +574,18 @@ export function createFakeHost(seed: FakeHostSeed = {}): FakeHost {
     async getSkippedTransactions() {
       return seed.skippedTransactions ?? [];
     },
+    ...(seed.transferNames
+      ? { async getTransferNames() { return seed.transferNames!; } }
+      : {}),
+    ...(seed.requestLog
+      ? {
+          async getSimplefinRequests() {
+            if (seed.requestLog!.failReads) throw new Error('secrets unavailable');
+            return seed.requestLog!.raw;
+          },
+          async setSimplefinRequests(raw: string) { seed.requestLog!.raw = raw; },
+        }
+      : {}),
     ...(seed.syncOverrides
       ? { async getSyncOverrides() { return seed.syncOverrides!; } }
       : {}),

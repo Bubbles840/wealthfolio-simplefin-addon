@@ -118,4 +118,20 @@ describe('SetupPage', () => {
       vi.useRealTimers();
     }
   });
+
+  it('counts Setup against the SimpleFin budget: refused at 24 in one line, before the token is claimed (1.64, C5)', async () => {
+    const { claimToken } = await import('../utils/simplefin');
+    vi.mocked(claimToken).mockClear();
+    vi.mocked(fetchAccounts).mockClear();
+    const props = makeProps();
+    const recent = Array.from({ length: 24 }, (_, i) => new Date(Date.now() - (60 + i) * 60_000).toISOString());
+    props.store.getSimplefinRequests = vi.fn(async () => JSON.stringify(recent));
+    props.store.setSimplefinRequests = vi.fn(async () => {});
+    render(<SetupPage {...props} />);
+    fireEvent.change(screen.getByPlaceholderText(/setup token/i), { target: { value: 'token' } });
+    fireEvent.click(screen.getByRole('button', { name: /connect/i }));
+    expect(await screen.findByText(/SimpleFin's daily limit is used up — next sync at/)).toBeInTheDocument();
+    expect(claimToken).not.toHaveBeenCalled();
+    expect(fetchAccounts).not.toHaveBeenCalled();
+  });
 });

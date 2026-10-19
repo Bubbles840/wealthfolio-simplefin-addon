@@ -66,3 +66,49 @@ describe('AddonSyncHost passes its log to the in-place linker', () => {
     expect(log).toHaveBeenCalledWith('link out-1/in-1: re-creating instead of linking in place (in-1 is stored as DEPOSIT and links as TRANSFER_IN)');
   });
 });
+
+describe('AddonSyncHost totals a card from its whole history on a manual run (1.64, B1)', () => {
+  /** A card with `n` posted $1 charges, served 500 to a page, newest first. */
+  const cardCtx = (n: number, extra: Array<Record<string, unknown>> = []) => {
+    const rows = [
+      ...extra,
+      ...Array.from({ length: n }, (_, i) => ({ id: `c${i}`, accountId: 'wf-citi', activityType: 'WITHDRAWAL', date: '2026-10-01', amount: '1', comment: `CHARGE · t${i}` })),
+    ];
+    const search = vi.fn(async (page: number, size: number, _filter?: unknown) => ({ data: rows.slice(page * size, (page + 1) * size), meta: { totalRowCount: rows.length } }));
+    return { ctx: { api: { activities: { search } } } as any, search };
+  };
+
+  it('pages 500 at a time until a short page, and signs what search reports', async () => {
+    const { ctx, search } = cardCtx(1001, [
+      { id: 'pay', accountId: 'wf-citi', activityType: 'TRANSFER_IN', date: '2026-10-02', amount: '500', comment: 'AUTOPAY · p1' },
+      { id: 'pend', accountId: 'wf-citi', activityType: 'WITHDRAWAL', date: '2026-10-03', amount: '40', comment: 'NOT YET · p2 · pending' },
+    ]);
+    const host = new AddonSyncHost(ctx, { fullCardHistory: true });
+    const totals = await host.postedLedgerTotals([{ wfAccountId: 'wf-citi', accountType: 'CREDIT_CARD' }]);
+    expect(totals.get('wf-citi')).toBe(-501);
+    expect(search.mock.calls.map((c) => [c[0], c[1], c[2]])).toEqual([
+      [0, 500, { accountIds: ['wf-citi'] }], [1, 500, { accountIds: ['wf-citi'] }], [2, 500, { accountIds: ['wf-citi'] }],
+    ]);
+  });
+
+  it('reads nothing on a scheduled run (R7)', async () => {
+    const { ctx, search } = cardCtx(3);
+    const totals = await new AddonSyncHost(ctx).postedLedgerTotals([{ wfAccountId: 'wf-citi', accountType: 'CREDIT_CARD' }]);
+    expect(totals.size).toBe(0);
+    expect(search).not.toHaveBeenCalled();
+  });
+
+  it('omits a card holding an in-transit placeholder, and one whose read fails', async () => {
+    const { ctx } = cardCtx(2, [
+      { id: 'held', accountId: 'wf-citi', activityType: 'TRANSFER_IN', date: '2026-10-02', amount: '42.40', comment: '↔️ In-transit transfer · AUTOPAY · p1' },
+    ]);
+    const host = new AddonSyncHost(ctx, { fullCardHistory: true });
+    expect((await host.postedLedgerTotals([{ wfAccountId: 'wf-citi', accountType: 'CREDIT_CARD' }])).has('wf-citi')).toBe(false);
+
+    const failing = { api: { activities: { search: vi.fn(async () => { throw new Error('offline'); }) } } } as any;
+    const log = vi.fn();
+    const broken = new AddonSyncHost(failing, { fullCardHistory: true, log });
+    expect((await broken.postedLedgerTotals([{ wfAccountId: 'wf-citi', accountType: 'CREDIT_CARD' }])).size).toBe(0);
+    expect(log).toHaveBeenCalledWith(expect.stringContaining('offline'));
+  });
+});

@@ -1,4 +1,5 @@
 import { bankFirstTransferOut } from './bank-first-payment.js';
+import { learnedNameKeys, learnedTransferType } from './transfer-names.js';
 import { mapTransactionWithSource } from './mapper.js';
 import { REIMBURSEMENT_SUBTYPE } from './cash-flow-bucket.js';
 import { accountTxKey, detectTransferPairs, TRANSFER_MATCH_WINDOW_SECONDS } from './transfers.js';
@@ -17,7 +18,7 @@ import type { AmazonLedger } from './amazon-ledger.js';
 import {
   consumeVenmoMatch, isReadableVenmoLedger, matchVenmoPayments, venmoDescription, type VenmoLedger, type VenmoMatch,
 } from './venmo-ledger.js';
-import type { ActivityType, SimplefinAccount, SimplefinTransaction, UnmappedAccount } from './types.js';
+import type { AccountMapping, ActivityType, SimplefinAccount, SimplefinTransaction, UnmappedAccount } from './types.js';
 import type { ActivityWrite, HoldingsSyncOutcome, HostActivity, ImportRow, LinkLeg, LinkResult, SaveManyRequest, SaveManyResult, SyncHost, SyncStore } from './sync-host.js';
 import { unlinkPairByRecreate, type UnlinkLeg, type UnlinkResult } from './link-pair.js';
 import { ledgerGroupId } from './link-in-place.js';
@@ -29,6 +30,7 @@ import {
 } from './change-entries.js';
 import { emptySyncOverrides, hasAccountOverride, hasTxOverride, syncOverridesIgnoredLog } from './sync-overrides.js';
 import { bankDayInstant } from './bank-day.js';
+import { checkedLine, gateLine, requestLogIo, reserveSimplefinRequest } from './simplefin-budget.js';
 
 /**
  * A datable timestamp for a SimpleFin transaction: `posted` when present, else
@@ -423,6 +425,13 @@ const SPENDING_TYPES = new Set<string>(['WITHDRAWAL', 'FEE', 'TAX']);
  *  back into this module. */
 const noHoldings = (): HoldingsSyncOutcome => ({ imported: 0, skipped: 0, unresolvedSymbols: [] });
 
+/** A run that sent nothing to SimpleFin and changed nothing. A function for the
+ *  same reason as `noHoldings`: every result owns its arrays. */
+const notDownloaded = (): SyncResult => ({
+  imported: 0, skipped: 0, errors: [], stuckTransferAlerts: [], importedTransactions: [], largeTransactionAlerts: [],
+  balanceDriftAlerts: [], prunedDuplicates: [], unmappedAccounts: null, refusedCreates: [], holdingsSnapshots: noHoldings(),
+});
+
 export interface SyncResult {
   imported: number;
   skipped: number;
@@ -431,6 +440,13 @@ export interface SyncResult {
    *  snapshot capability, and on a set of accounts that publishes no holdings —
    *  which is every bank and card account. */
   holdingsSnapshots: HoldingsSyncOutcome;
+  /** Present only on a run the SimpleFin budget stopped (shared/simplefin-budget.ts):
+   *  `checkOnly` re-checked balances against the last download, `skipped` was
+   *  refused by the daily limit, the gap or an unreadable request record. `line`
+   *  is the one sentence to show. Never an error: nothing went wrong.
+   *  `lastAt` (checkOnly only): when the newest request was sent, epoch ms, so a
+   *  Deep scan can say when it may download (F3b). */
+  download?: { kind: 'checkOnly' | 'skipped'; line: string; lastAt?: number };
   stuckTransferAlerts: Array<{ outTxId: string; description: string; amountCents: number; currency: string }>;
   /** Every feed transaction this run CONFIRMED as created, for the companion's
    *  import notice. Driven off the create echo, so a rejected create is not
@@ -586,6 +602,24 @@ export interface SyncOptions {
    * append is caught here and never alters the result.
    */
   changeLog?: ChangeLogSink;
+  /**
+   * A person asked for this run (the Sync button, Deep scan, the companion's
+   * `/sync`). In 1.64 it only turns on the add-on's whole-history card read,
+   * so a manual Sync can total every card after its own saves; a scheduled run
+   * leaves cards "not checked" (R7).
+   */
+  manual?: boolean;
+}
+
+/**
+ * The badge's verdict for a card totalled AFTER a run's own saves: `d` is the
+ * bank's figure minus Wealthfolio's, to the cent; inside the display threshold
+ * it is "in sync" (drift null). Always `measured`: the caller only asks once it
+ * has a trustworthy posted total.
+ */
+export function badgeVerdict(bankBalance: number, wealthfolioFigure: number): { drift: number | null; measured: true } {
+  const d = Math.round((bankBalance - wealthfolioFigure) * 100) / 100;
+  return { drift: Math.abs(d) > DRIFT_THRESHOLD_DOLLARS ? d : null, measured: true };
 }
 
 /** Distinct marker so the UI can recognise an interval skip and offer to
@@ -615,6 +649,24 @@ interface AccountBalanceSnapshot {
    * about the current state either, and every sync rewrites it.
    */
   measured?: boolean;
+  /**
+   * Set ONLY by the after-save card check (1.64, B2) when it fills a verdict.
+   * That figure is for the account-list BADGE alone (R15): it opened no drift
+   * episode, so it has no `driftSince`, and the Home banner would otherwise
+   * show it red with a one-click plug that skips the young-drift guard
+   * (plugging feed lag double-counts the moment the feed catches up). Readers
+   * that raise banners, plugs or report findings must ignore a tagged drift.
+   */
+  checkedAfterSave?: true;
+  /**
+   * Epoch ms when the download that produced `balance`/`date` was sent. A
+   * check-only pass (C3) compares these figures against Wealthfolio's current
+   * state only while no NEWER request has been sent (R16): the figures are the
+   * bank's as of this moment, and a request in flight may already be changing
+   * the ledger under them. A snapshot written by an older build lacks it and is
+   * therefore never compared.
+   */
+  fetchedAt?: number;
   /**
    * Present when this run PROVED the drift belongs to the starting-balance
    * baseline rather than to any transaction: the reconciliation plan came back
@@ -1702,6 +1754,97 @@ export async function runSyncCore(
   }
 }
 
+/**
+ * A manual Sync that lands inside the gap since the last download (C3): nothing
+ * is asked of SimpleFin. Every mapped account's badge is re-checked against the
+ * figures the last download kept, with Wealthfolio's CURRENT state. Writes only
+ * `account_balances`, and only a verdict that CHANGED, tagged badge-only like
+ * the after-save check's, with that account's stale baseline-fix offer dropped
+ * (a Deep scan re-offers it); alerts, corrections and the drift-episode ledger
+ * are untouched (R15). Every other entry is kept exactly as stored (F3).
+ *
+ * A stored figure is compared only when it carries a `fetchedAt` at or after
+ * `newestRequestAt` (R16: a newer request in flight may be changing the ledger
+ * under older figures) and a numeric balance. A valued account is compared with
+ * its valuation less the asset-backed TRANSFER_OUT legs, unless a pending row
+ * makes that unsafe; any other account whose type is known against the
+ * posted-ledger total.
+ * Returns the newest `fetchedAt` among the compared-fresh accounts (how old the
+ * bank data is). Null means no account was COMPARED (none fresh, or the
+ * stored snapshots could not be read, in which case nothing is written).
+ */
+export async function checkBalancesOnly(
+  host: SyncHost,
+  store: SyncStore,
+  opts: { mapping: AccountMapping; newestRequestAt: number | null },
+): Promise<{ dataAt: number | null }> {
+  // A failed read writes NOTHING: rewriting from an empty document would erase
+  // every balance, R16 stamp, drift episode start and baseline-fix offer.
+  const read = await store.getAccountBalances().catch(() => null);
+  if (read === null || read === undefined) return { dataAt: null };
+  const stored = read as Record<string, AccountBalanceSnapshot>;
+  const { mapping, newestRequestAt } = opts;
+  const fresh = (snap: AccountBalanceSnapshot): boolean =>
+    typeof snap.fetchedAt === 'number' && (newestRequestAt === null || snap.fetchedAt >= newestRequestAt) &&
+    typeof snap.balance === 'number';
+  const freshIds = Object.keys(stored).filter((id) => !!mapping[id] && fresh(stored[id]));
+  const wfIds = [...new Set(freshIds.map((id) => mapping[id]))];
+
+  const types = new Map<string, string>();
+  if (wfIds.length > 0) {
+    for (const a of await host.listAccounts().catch(() => [])) types.set(a.id, a.accountType);
+  }
+  const valuations = wfIds.length > 0
+    ? await host.latestValuations(wfIds).catch(() => null)
+    : new Map<string, number>();
+
+  // Valued accounts: valuation less asset-backed TRANSFER_OUT legs, unless pending.
+  const figures = new Map<string, number>();
+  if (valuations !== null) {
+    for (const wfId of wfIds) {
+      const valuation = valuations.get(wfId);
+      if (valuation === undefined) continue;
+      const rows = await host.listActivities(wfId).catch(() => null);
+      if (rows === null || rows.some((r) => (r.comment ?? '').endsWith(PENDING_SUFFIX))) continue;
+      const assetBackedOut = rows
+        .filter((r) => r.activityType === 'TRANSFER_OUT' && !!r.assetId && txIdFromComment(r.comment) !== null)
+        .reduce((sum, r) => sum + Math.abs(parseFloat(String(r.amount ?? '0')) || 0), 0);
+      figures.set(wfId, valuation - assetBackedOut);
+    }
+    // Not an account whose type is unknown (listAccounts failed): an untyped
+    // total counts a card's interest as income (F5).
+    const unvalued = wfIds.filter((id) => !valuations.has(id) && !!types.get(id));
+    if (unvalued.length > 0 && host.postedLedgerTotals) {
+      const totals = await host.postedLedgerTotals(unvalued.map((wfAccountId) => ({ wfAccountId, accountType: types.get(wfAccountId) ?? '' })))
+        .catch(() => null);
+      for (const [id, total] of totals ?? []) figures.set(id, total);
+    }
+  }
+
+  // Only a verdict this pass re-measured AND found changed is written (F3). An
+  // account it did not compare (not fresh, an older writer's snapshot, a read
+  // that failed) keeps exactly what the download left; so does one whose
+  // verdict agrees, tag or no tag: re-tagging a download's own measured drift
+  // would take the Home banner, its plug and its Deep scan away while the badge
+  // still said "off by $X". Nothing changed, nothing is written.
+  const next: Record<string, AccountBalanceSnapshot> = { ...stored };
+  let dataAt: number | null = null;
+  let changed = false;
+  for (const id of freshIds) {
+    const snap = stored[id];
+    const figure = figures.get(mapping[id]);
+    if (figure === undefined || typeof snap.balance !== 'number') continue;
+    dataAt = Math.max(dataAt ?? 0, snap.fetchedAt as number);
+    const verdict = badgeVerdict(snap.balance, figure);
+    if (snap.measured === true && snap.drift === verdict.drift) continue;
+    const { baselineFix: _dropped, checkedAfterSave: _tag, ...rest } = snap;
+    next[id] = { ...rest, ...verdict, checkedAfterSave: true };
+    changed = true;
+  }
+  if (changed) await store.setAccountBalances(next);
+  return { dataAt };
+}
+
 /** Records one change-log entry for a write that succeeded. */
 type RecordChange = (build: () => ChangeDraft) => void;
 
@@ -1865,9 +2008,11 @@ async function runSyncPass(
   const heal = opts.heal || autoAdjust || (await store.getAutoHeal());
   console.log('[simplefin-sync] starting sync core', { heal, force: !!opts.force, autoAdjust });
 
-  // Enforce minimum interval unless the caller forces (Sync anyway) or heals
+  // Enforce the one-hour minimum interval on SCHEDULED runs only (C6, R18). A
+  // person is governed by the 5-minute gap and the daily limit instead (below):
+  // a Sync pressed 5-60 minutes after the last one used to check nothing at all.
   const lastSync = await store.getLastSyncAt();
-  if (!opts.force && !heal && lastSync && Date.now() - lastSync.getTime() < MIN_SYNC_INTERVAL_MS) {
+  if (!opts.manual && !opts.force && !heal && lastSync && Date.now() - lastSync.getTime() < MIN_SYNC_INTERVAL_MS) {
     return { imported: 0, skipped: 0, errors: [INTERVAL_SKIP_MESSAGE], stuckTransferAlerts: [], importedTransactions: [], largeTransactionAlerts: [], balanceDriftAlerts: [], prunedDuplicates: [], unmappedAccounts: null, refusedCreates: [], holdingsSnapshots: noHoldings() };
   }
 
@@ -1879,6 +2024,26 @@ async function runSyncPass(
   const mapping = await store.getAccountMapping();
   if (!mapping) {
     return { imported: 0, skipped: 0, errors: ['Not configured: no account mapping'], stuckTransferAlerts: [], importedTransactions: [], largeTransactionAlerts: [], balanceDriftAlerts: [], prunedDuplicates: [], unmappedAccounts: null, refusedCreates: [], holdingsSnapshots: noHoldings() };
+  }
+
+  // The SimpleFin budget (C1-C3). The request is recorded BEFORE the download is
+  // sent (SimpleFin counts attempts, a failed one included), in the one record
+  // both writers share, and it fails closed. A store with no record keeps no budget.
+  const requestLog = requestLogIo(store);
+  let fetchedAt = Date.now();
+  if (requestLog) {
+    const now = new Date();
+    const gate = await reserveSimplefinRequest(requestLog, opts.manual ? 'manual' : 'scheduled', now);
+    if (gate.kind === 'checkOnly') {
+      const { dataAt } = await checkBalancesOnly(host, store, { mapping, newestRequestAt: gate.lastAt.getTime() });
+      return { ...notDownloaded(), download: { kind: 'checkOnly', line: checkedLine(dataAt, now), lastAt: gate.lastAt.getTime() } };
+    }
+    if (gate.kind !== 'go') {
+      const line = gateLine(gate, now)!;
+      console.log(`[simplefin-sync] ${line}`);
+      return { ...notDownloaded(), download: { kind: 'skipped', line } };
+    }
+    fetchedAt = gate.at.getTime();
   }
 
   const rules = await store.getMappingRules();
@@ -1899,6 +2064,7 @@ async function runSyncPass(
         ? THIRTY_DAYS_AGO
         : new Date(lastSync.getTime() - SYNC_LOOKBACK_OVERLAP_MS);
   const authKey = await store.getAuthB64Key();
+  // `fetchedAt` (set above from the recorded request time) is stamped on every bank figure.
   const accountSet = await host.fetchSimplefin(accessUrl, startDate, authKey);
 
   for (const sfErr of accountSet.errors) {
@@ -1967,6 +2133,9 @@ async function runSyncPass(
   } catch {
     errors.push('Could not read account balances — starting-balance checks skipped this run');
   }
+  // The accounts Wealthfolio itself VALUED, before the ledger fallback fills
+  // the gaps: the after-save card check below is for the rest.
+  const valuedWfIds = new Set(wfBalances?.keys() ?? []);
   // Fill the gaps the valuations API leaves, which in practice is every credit
   // card: Wealthfolio reports valuations for CASH accounts only, so a card had
   // no balance to compare against, the one-time starting-balance correction
@@ -2159,6 +2328,24 @@ async function runSyncPass(
     })))
     : new Map();
 
+  // The learned transfer names (A5). No list (no companion, or one not yet on
+  // 1.64) is an empty set and typing is exactly as before (R6).
+  const learnedNames = learnedNameKeys(await store.getTransferNames?.().catch(() => null));
+  // The ids of an account's stored paybacks, read lazily and once (only when a
+  // learned name matches a payback candidate). A failed read is null.
+  const paybackIdCache = new Map<string, Promise<Set<string> | null>>();
+  const storedPaybacksOf = (wfId: string): Promise<Set<string> | null> => {
+    let p = paybackIdCache.get(wfId);
+    if (!p) {
+      p = fetchExistingRows(host, wfId).then(
+        (rows) => new Set(rows.filter((r) => r.type === 'CREDIT' && (r.subtype ?? '').toUpperCase() === REIMBURSEMENT_SUBTYPE).map((r) => r.txId)),
+        () => null,
+      );
+      paybackIdCache.set(wfId, p);
+    }
+    return p;
+  };
+
   // Each mapped account's name words, built once and BEFORE typing: typing needs
   // them to see a payment that names another connected account (spec A), and the
   // in-transit expiry hold below reads the same map.
@@ -2218,9 +2405,28 @@ async function runSyncPass(
       // Decided HERE, before the payback and `notTransfer` handling below, so both
       // still win (R4); a mapping rule already won inside the helper.
       // `tx.description` is the bank's raw text — enrichment comes later.
-      const mapped = bankFirstTransferOut(tx.description, amount, acctType, builtIn, otherAccountWords)
+      const bankFirst = bankFirstTransferOut(tx.description, amount, acctType, builtIn, otherAccountWords);
+      // R13: from the bank text ALONE, before learned typing.
+      const keepPayback = !payback && !builtIn.fromRule && builtIn.type === 'DEPOSIT' && amount > 0 && (!acctType || acctType === 'CASH');
+      // Live, 2026-10-18: a savings -> Spend landing ("... TRANSFER CAPITAL ONE ACH
+      // WEB PAYMENT") posted before the savings half and read as a plain deposit,
+      // and 360 Checking's withdrawal to Performance Savings read as spending. A
+      // wording the companion learned from a past LINK types the row a transfer so
+      // the in-transit path holds it. Decided before the payback and notTransfer
+      // handling below, so both still win. An unreadable stored-row read means no
+      // learned typing, i.e. today's typing.
+      let learned = bankFirst ? null : learnedTransferType(learnedNames, {
+        wfAccountId, accountType: acctType, amount, mapped: builtIn, description: tx.description,
+      });
+      let heldAsPayback = false;
+      if (learned && keepPayback) {
+        const paybackIds = await storedPaybacksOf(wfAccountId);
+        if (!paybackIds || paybackIds.has(tx.id)) learned = null;
+        heldAsPayback = !!paybackIds && paybackIds.has(tx.id);
+      }
+      const mapped = bankFirst
         ? { ...builtIn, type: 'TRANSFER_OUT' as ActivityType }
-        : builtIn;
+        : learned ? { ...builtIn, type: learned as ActivityType } : builtIn;
       const { type, fromRule, subtype } = payback
         ? { type: 'CREDIT' as ActivityType, fromRule: true, subtype: REIMBURSEMENT_SUBTYPE as string | undefined }
         : notTransfer && isTransferType(mapped.type)
@@ -2234,7 +2440,7 @@ async function runSyncPass(
         ...(!payback && !(notTransfer && isTransferType(mapped.type)) && mapped.createOnly ? { createOnly: true as const } : {}),
         // Neither a rule nor the flag decided: a stored payback (filed, made by hand, or
         // made by a rule since undone) is not the sync's to turn into a deposit.
-        ...(!payback && !mapped.fromRule && mapped.type === 'DEPOSIT' && amount > 0 && (!acctType || acctType === 'CASH') ? { keepPayback: true as const } : {}),
+        ...(keepPayback ? { keepPayback: true as const } : {}),
       });
       // Amazon categories go on AFTER typing: `mapTransactionWithSource` above
       // matches the user's merchant rules against the bank's own text, and
@@ -2300,7 +2506,8 @@ async function runSyncPass(
       if (tx.pending) continue;
       // Never paired: pairing would type it a transfer and link it again — or,
       // for a payback, turn it into a transfer leg.
-      if (notTransfer || payback) continue;
+      // (A stored payback a learned name matched stays out too, R13.)
+      if (notTransfer || payback || heldAsPayback) continue;
       // A rule's type is never overridden by pair detection, which is why ruled
       // rows sit out of it — except a rule that already says "transfer, this way".
       // Pairing assigns that very type, so all it adds is the link; leaving such a
@@ -3309,6 +3516,7 @@ async function runSyncPass(
       // the account was comparable — so it, not `drift`, decides this. `drift`
       // additionally goes null for "in sync" and for "plugged this run".
       measured: measuredDrift !== null,
+      fetchedAt,
       ...(baselineFix ? { baselineFix } : {}),
     };
 
@@ -4375,6 +4583,35 @@ async function runSyncPass(
     }
   }
 
+  // The badge for every card Wealthfolio does not value, totalled AFTER this
+  // run's own saves. Live case (2026-10-18): after an in-app Sync every card
+  // said "not checked", because the valuations API is cash-only and the add-on
+  // had no ledger figure. B3: a POSTED-only total is comparable to the bank's
+  // posted balance whatever is pending, so pending rows no longer block it.
+  // R15: the BADGE ONLY. Alerts, the starting balance, auto-heal, the
+  // baseline-fix offer and every write keep the before-save figure, which
+  // subtracts this run's rows from a before-save read and would count them
+  // twice if fed this one. A verdict the run already measured stands.
+  // Cards only (B1, F5): an account whose type is unknown (listAccounts failed)
+  // is not asked either, since an untyped total counts a card's interest as income.
+  if (host.postedLedgerTotals && wfBalances !== null) {
+    const unchecked = accountSet.accounts.filter((sf) => {
+      const wf = mapping[sf.id];
+      const snap = accountBalances[sf.id];
+      return !!wf && wfTypes.get(wf) === 'CREDIT_CARD' && !valuedWfIds.has(wf) && !!snap && snap.measured !== true && snap.balance !== null;
+    });
+    if (unchecked.length > 0) {
+      const wanted = [...new Set(unchecked.map((sf) => mapping[sf.id]))]
+        .map((wfAccountId) => ({ wfAccountId, accountType: wfTypes.get(wfAccountId) ?? '' }));
+      const totals = await host.postedLedgerTotals(wanted).catch(() => null);
+      for (const sf of unchecked) {
+        const total = totals?.get(mapping[sf.id]);
+        const snap = accountBalances[sf.id];
+        if (total === undefined || snap.balance === null) continue;
+        Object.assign(snap, badgeVerdict(snap.balance, total), { checkedAfterSave: true as const });
+      }
+    }
+  }
   await store.setAccountBalances(accountBalances);
   // Persisted as well as returned: the sync that discovers a new account is
   // normally the COMPANION's, and the addon's UI has no way to see a return

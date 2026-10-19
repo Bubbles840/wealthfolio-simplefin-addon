@@ -210,6 +210,25 @@ describe('HomeTab', () => {
   });
 
   describe('banners', () => {
+    it('a badge-only (after-save) drift raises no banner and no plug; an untagged one still does (R15)', async () => {
+      const plain = makeProps();
+      plain.store.getAccountBalances = vi.fn(async () => ({
+        'sfin-1': { balance: 100, currency: 'USD', date: 1700000000, drift: 15.22, measured: true },
+      })) as any;
+      render(<SyncPage {...plain} />);
+      expect(await screen.findByRole('button', { name: /^(Add|Subtract) \$/ })).toBeInTheDocument();
+      cleanup();
+      const props = makeProps();
+      props.store.getAccountBalances = vi.fn(async () => ({
+        'sfin-1': { balance: 100, currency: 'USD', date: 1700000000, drift: 15.22, measured: true, checkedAfterSave: true },
+      })) as any;
+      render(<SyncPage {...props} />);
+      await waitFor(() => expect(props.store.getAccountBalances).toHaveBeenCalled());
+      await new Promise((r) => setTimeout(r, 50));
+      expect(screen.queryByRole('button', { name: /^(Add|Subtract) \$/ })).toBeNull();
+      expect(screen.queryByText(/is off by/)).toBeNull();
+    });
+
     it('names a SimpleFin account nothing is mapped to, and points at where to fix it', async () => {
       // Read from the persisted secret, NOT a sync return value: the run that
       // discovers a newly-linked bank is normally the companion's, and this

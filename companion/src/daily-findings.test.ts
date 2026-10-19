@@ -84,6 +84,20 @@ describe('gatherFindings', () => {
     expect(found.visible.map((f) => f.key)).toEqual(['balance-drift:Checking']);
   });
 
+  it('never reports a badge-only (after-save) drift as a balance-drift finding (R15)', async () => {
+    const since = new Date(NOW.getTime() - 20 * 86_400_000).toISOString();
+    const { deps } = makeDeps({
+      account_balances: JSON.stringify({
+        sf1: { balance: 500, date: unixDaysAgo(1), drift: 36.1, driftSince: since, checkedAfterSave: true },
+        sf2: { balance: 90, date: unixDaysAgo(1), drift: 12, driftSince: since },
+      }),
+      account_names: JSON.stringify({ sf1: 'Checking', sf2: 'Savings' }),
+      account_mapping: JSON.stringify({ sf1: 'wf-chk', sf2: 'wf-sav' }),
+    }, cleanFacts());
+    const found = await gatherFindings(deps, NOW, { recordLedgerChecks: false, ...healthy });
+    expect(found.visible.map((f) => f.key)).toEqual(['balance-drift:Savings']);
+  });
+
   it('still names a card the ledger audit skips because a transfer is in flight', async () => {
     // `card-balance` cannot judge a card mid-transfer, so the sync's own
     // measure — the old drift alert's — is the only voice left for it.
