@@ -39,9 +39,9 @@ forth on each sync until both are on 1.65.
   stayed "In-transit" forever. Every sync now settles stored placeholders
   outside the download exactly as it settles those inside: ordinary money in
   or out, marked Needs review, unless a connected feed that has not caught
-  up still holds it. The first 1.65 sync settles every older stuck transfer
-  at once, so past months' spending or income can change; each one waits in
-  Needs review.
+  up still holds it. The first 1.65 sync settles the older stuck transfers
+  it can reach (each account's newest 500 rows) at once, so past months'
+  spending or income can change; each one waits in Needs review.
 
 ## [1.64.1] - 2026-10-19
 

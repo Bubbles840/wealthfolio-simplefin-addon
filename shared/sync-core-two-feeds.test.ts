@@ -1,6 +1,7 @@
 // Two SimpleFin feeds mapped to ONE Wealthfolio card account (a reissued card), both in the download:
 // the old feed must not sweep the new feed's in-download placeholder as if it were outside it (1.65 A).
-// re-creates it under a new id (the CREDIT update left a $CASH asset). This repeats every other run.
+// Before the fix the old feed's pass settled it, the new feed's pass re-held it, and the relink sweep
+// re-created it under a new id (the CREDIT update left a $CASH asset), every other run.
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { createFakeHost, type FakeHostSeed } from './fake-host.js';
 import { EXTERNAL_BOOKKEEPING_METADATA, IN_TRANSIT_COMMENT_PREFIX, runSyncCore, VALUATION_POLL } from './sync-core.js';
