@@ -13,10 +13,12 @@
  *
  * The fixes themselves are hand-offs to flows that already exist and already
  * preview before writing (transfer-learning's rule confirmation, the category
- * picker). Nothing here writes to the ledger directly.
+ * picker). Nothing here writes to the ledger directly; the one write is
+ * "Not a transfer", which records an override after a confirm.
  */
 import { MENU_CALLBACK_PREFIX } from '../../shared/categorize-menu.js';
-import type { InlineKeyboard } from '../../shared/telegram.js';
+import { formatDollars, type InlineKeyboard } from '../../shared/telegram.js';
+import { isUnreadableOverridesError, SYNC_OVERRIDES_UNREADABLE_MESSAGE } from '../../shared/sync-overrides.js';
 import { escapeFindingText, type FindingFix, type SelfCheckFinding } from '../../shared/self-check.js';
 import { findingHandle, findingLabel, formatFindingsList, isSnoozable, SNOOZE_DAYS } from '../../shared/findings.js';
 import type { GatheredFindings } from './daily-findings.js';
@@ -30,6 +32,8 @@ const LIST = `${FINDINGS_CALLBACK_PREFIX}l`;
 const DETAIL = `${FINDINGS_CALLBACK_PREFIX}d:`;
 const SNOOZE = `${FINDINGS_CALLBACK_PREFIX}s:`;
 const FIX = `${FINDINGS_CALLBACK_PREFIX}f:`;
+/** "Not a transfer", after its confirm screen. */
+const NOT_TRANSFER = `${FINDINGS_CALLBACK_PREFIX}n:`;
 const UNSNOOZE_ALL = `${FINDINGS_CALLBACK_PREFIX}u`;
 
 /** The one button the morning report carries when anything is folded. */
@@ -53,6 +57,8 @@ export interface FindingsMenuDeps {
   makeTransfer(fix: Extract<FindingFix, { kind: 'make-transfer' }>, ui: FindingsMenuUi): Promise<void>;
   /** Opens the category picker on one transaction, as a new message. */
   pickCategory(activityId: string, chatId: number, ui: FindingsMenuUi): Promise<void>;
+  /** Records "not a transfer" through the re-reading overrides writer. May throw an unreadable-overrides error. */
+  markNotTransfer(fix: Extract<FindingFix, { kind: 'not-transfer' }>, now: Date): Promise<void>;
   now(): Date;
   log(msg: string): void;
 }
@@ -60,6 +66,7 @@ export interface FindingsMenuDeps {
 const FIX_BUTTON_TEXT: Record<FindingFix['kind'], string> = {
   'make-transfer': '↔ Make it a transfer',
   'pick-category': '🏷 Pick a category',
+  'not-transfer': '✋ Not a transfer',
 };
 
 /** Only these get a row of their own: a finding with nothing to do and no
@@ -79,6 +86,23 @@ export function renderFindingsList(found: GatheredFindings): { text: string; key
   }
   rows.push(footer);
   return { text, keyboard: { inline_keyboard: rows } };
+}
+
+const spendingWord = (fix: Extract<FindingFix, { kind: 'not-transfer' }>) => (fix.direction === 'out' ? 'spending' : 'money in');
+
+export function renderNotTransferConfirm(
+  fix: Extract<FindingFix, { kind: 'not-transfer' }>,
+  handle: string,
+): { text: string; keyboard: InlineKeyboard } {
+  return {
+    text: escapeFindingText(
+      `Count ${fix.description} (${formatDollars(Math.abs(fix.amount), 2)}) as ${spendingWord(fix)} and stop waiting for its other half? The next sync makes the change.`,
+    ),
+    keyboard: { inline_keyboard: [
+      [{ text: '✋ Yes, not a transfer', callback_data: NOT_TRANSFER + handle }],
+      [{ text: '‹ Back', callback_data: DETAIL + handle }],
+    ] },
+  };
 }
 
 export function renderFindingDetail(f: SelfCheckFinding): { text: string; keyboard: InlineKeyboard } {
@@ -126,7 +150,7 @@ export function createFindingsMenu(deps: FindingsMenuDeps): FindingsMenu {
           return void await showList(ui, 'edit', 'Snoozes cleared');
         }
 
-        const [prefix, handle] = [DETAIL, SNOOZE, FIX]
+        const [prefix, handle] = [DETAIL, SNOOZE, FIX, NOT_TRANSFER]
           .filter((p) => cb.data.startsWith(p))
           .map((p) => [p, cb.data.slice(p.length)] as const)[0] ?? [null, ''];
         if (!prefix) return void await ui.answer();
@@ -145,9 +169,24 @@ export function createFindingsMenu(deps: FindingsMenuDeps): FindingsMenu {
           await deps.snooze(finding.key!, deps.now());
           return void await showList(ui, 'edit', `Snoozed for ${SNOOZE_DAYS} days`);
         }
-        // FIX
         const fix = finding.fix;
         if (!fix) return void await ui.answer();
+        if (prefix === NOT_TRANSFER) {
+          if (fix.kind !== 'not-transfer') return void await ui.answer();
+          try {
+            await deps.markNotTransfer(fix, deps.now());
+          } catch (err) {
+            if (!isUnreadableOverridesError(err)) throw err;
+            return void await ui.answer(SYNC_OVERRIDES_UNREADABLE_MESSAGE);
+          }
+          return void await showList(ui, 'edit', `Done — the next sync counts it as ${spendingWord(fix)}`);
+        }
+        // FIX
+        if (fix.kind === 'not-transfer') {
+          const { text, keyboard } = renderNotTransferConfirm(fix, handle);
+          await ui.edit(text, keyboard);
+          return void await ui.answer();
+        }
         if (fix.kind === 'make-transfer') return void await deps.makeTransfer(fix, ui);
         await deps.pickCategory(fix.activityId, cb.chatId, ui);
         await ui.answer();

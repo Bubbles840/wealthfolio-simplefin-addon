@@ -6,6 +6,7 @@ import { AUDIT_SNAPSHOT_SECRET_KEY, buildAuditSnapshot } from '../../shared/audi
 import { explainBalances } from '../../shared/audit-balance.js';
 import { explainHeadline } from '../../shared/audit-headline.js';
 import { healthIssues } from '../../shared/audit-health.js';
+import { accountTxKey } from '../../shared/transfers.js';
 
 const NOW = new Date('2026-10-09T12:00:00Z');
 const unixDaysAgo = (d: number) => Math.floor((NOW.getTime() - d * 86_400_000) / 1000);
@@ -83,6 +84,10 @@ describe('gatherFindings', () => {
     const found = await gatherFindings(deps, NOW, { recordLedgerChecks: false, ...healthy });
     const held = found.visible.find((f) => f.key === 'held-transfer:h1')!;
     expect(held.message).toContain("Harbor Savings's feed is behind");
+    expect(held.fix).toEqual({
+      kind: 'not-transfer', txKey: accountTxKey('sfin-chk', 'w-old'), label: 'WIRE TRANSFER TO ACME LLC · Checking',
+      description: 'WIRE TRANSFER TO ACME LLC', amount: 250, direction: 'out',
+    });
   });
 
   it('still shows a held transfer, with no reason, when the stored balances are corrupt (1.65 C)', async () => {

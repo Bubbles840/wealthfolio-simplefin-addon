@@ -4,7 +4,10 @@ import type { ChangeEntry, ChangeLogSink } from './change-entries.js';
 import { createFakeHost, type FakeHostSeed } from './fake-host.js';
 import { EXTERNAL_BOOKKEEPING_METADATA, IN_TRANSIT_COMMENT_PREFIX, planStaleInTransit, runSyncCore, VALUATION_POLL } from './sync-core.js';
 import type { ActivityWrite, HostActivity } from './sync-host.js';
-import { emptySyncOverrides, setTxOverride } from './sync-overrides.js';
+import { evaluateLedgerChecks, type LedgerFacts } from './ledger-checks.js';
+import {
+  editSyncOverrides, emptySyncOverrides, notTransferEdit, parseSyncOverrides, setTxOverride, SYNC_OVERRIDES_SECRET_KEY,
+} from './sync-overrides.js';
 import { accountTxKey } from './transfers.js';
 import type { SimplefinAccount, SimplefinTransaction } from './types.js';
 
@@ -217,5 +220,42 @@ describe('runSyncCore — each feed\'s proven-alive time is stored for the held-
     const balances = await fh.store.getAccountBalances() as Record<string, { date: number; aliveThrough?: number }>;
     expect(balances['sfin-sav']).toMatchObject({ date: epoch('2026-09-30T12:00:00Z'), aliveThrough: epoch('2026-10-18T12:00:00Z') });
     expect(balances['sfin-chk'].aliveThrough).toBe(epoch('2026-10-19T12:00:00Z'));
+  });
+});
+
+describe('"Not a transfer" on the held-transfer finding (1.65 C acceptance)', () => {
+  beforeEach(() => {
+    VALUATION_POLL.delayMs = 1;
+    VALUATION_POLL.attempts = 1;
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(NOW);
+  });
+  afterEach(() => { vi.useRealTimers(); });
+
+  it('writes notTransfer for that transaction, and the next sync makes the held row an ordinary WITHDRAWAL', async () => {
+    const facts: LedgerFacts = {
+      month: '2026-10', cardBalances: [], idleRefunds: [], incomeReimbursements: [], unlinkedTransfers: [], groupedNonTransfers: [],
+      heldTransfers: [{ id: 'ph-1', description: WIRE, amount: 250, ageDays: 20, wfAccountId: 'wf-chk', date: '2026-09-29', txId: 'w-old', direction: 'out' }],
+      needsReview: 0, categories: [], chronicallyOver: [], missingLegs: [], cardsOpenedInCredit: [],
+    };
+    const LAGGING = '2026-09-30T12:00:00Z';
+    const feeds = {
+      mapping: { 'sfin-chk': 'wf-chk', 'sfin-sav': 'wf-sav' },
+      balances: { 'sfin-chk': { aliveThrough: epoch('2026-10-19T12:00:00Z') }, 'sfin-sav': { aliveThrough: epoch(LAGGING) } },
+      names: { 'sfin-chk': 'Checking', 'sfin-sav': 'Harbor Savings' },
+    };
+    const fix = evaluateLedgerChecks(facts, {}, NOW, feeds).findings[0].fix;
+    if (fix?.kind !== 'not-transfer') throw new Error('expected a "Not a transfer" fix');
+    const secrets = new Map<string, string>();
+    await editSyncOverrides(async (k) => secrets.get(k) ?? null, async (k, v) => { secrets.set(k, v); }, notTransferEdit(fix.txKey, fix.label, NOW), NOW);
+    const parsed = parseSyncOverrides(secrets.get(SYNC_OVERRIDES_SECRET_KEY));
+    if (parsed.kind !== 'ok') throw new Error('overrides not written');
+    // The very entry the change log's Undo writes for a held leg.
+    expect(parsed.overrides.tx[fix.txKey]).toEqual({ notTransfer: true, at: NOW.toISOString(), label: 'WIRE TRANSFER TO ACME LLC · Checking' });
+
+    // The same lagging feed that held it: "Not a transfer" is the way out.
+    const fh = createFakeHost(seedOf([placeholder('ph-1', 'w-old', '2026-09-29')], { syncOverrides: parsed.overrides }, LAGGING));
+    await runSyncCore(fh.host, fh.store, {});
+    expect(updatesFor(fh.saved, 'ph-1')).toEqual([expect.objectContaining({ activityType: 'WITHDRAWAL', comment: `${WIRE} · w-old` })]);
   });
 });

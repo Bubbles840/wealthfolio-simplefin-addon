@@ -271,6 +271,9 @@ export function evaluateLedgerChecks(
       finding: warn(
         heldTransferMessage(h),
         `${short(h.description)} ${money(h.amount)} still in transit`,
+        h.txKey
+          ? { kind: 'not-transfer', txKey: h.txKey, label: h.label, description: h.description, amount: h.amount, direction: h.direction }
+          : undefined,
       ),
     });
   }

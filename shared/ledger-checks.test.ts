@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { evaluateLedgerChecks, nextLedgerCheckSeen, type LedgerFacts } from './ledger-checks.js';
+import { accountTxKey } from './transfers.js';
 
 const NOW = new Date('2026-09-20T13:00:00Z');
 const daysAgo = (n: number) => new Date(NOW.getTime() - n * 86_400_000).toISOString();
@@ -145,6 +146,36 @@ describe('evaluateLedgerChecks', () => {
     const { findings } = evaluateLedgerChecks(f, {}, NOW);
     expect(findings).toHaveLength(1);
     expect(findings[0].message).toContain('DEPOSIT');
+  });
+
+  it('offers "Not a transfer" for the bank transaction when the stored feeds name it (1.65 C)', () => {
+    const f = clean();
+    f.heldTransfers = [{
+      id: 'h1', description: 'WIRE TRANSFER TO ACME LLC', amount: 250, ageDays: 20,
+      wfAccountId: 'wf-chk', date: '2026-08-31', txId: 'w-old', direction: 'out',
+    }];
+    expect(evaluateLedgerChecks(f, {}, NOW, HELD_FEEDS).findings[0].fix).toEqual({
+      kind: 'not-transfer', txKey: accountTxKey('sfin-chk', 'w-old'), label: 'WIRE TRANSFER TO ACME LLC · Checking',
+      description: 'WIRE TRANSFER TO ACME LLC', amount: 250, direction: 'out',
+    });
+    // Without the stored feeds there is no transaction to name: no fix.
+    expect(evaluateLedgerChecks(f, {}, NOW).findings[0].fix).toBeUndefined();
+  });
+
+  it('offers no fix when two feeds share the account, so the transaction cannot be named (1.65 C)', () => {
+    const f = clean();
+    f.heldTransfers = [{
+      id: 'h1', description: 'WIRE TRANSFER TO ACME LLC', amount: 250, ageDays: 20,
+      wfAccountId: 'wf-chk', date: '2026-08-31', txId: 'w-old', direction: 'out',
+    }];
+    const shared = {
+      ...HELD_FEEDS,
+      mapping: { ...HELD_FEEDS.mapping, 'sfin-chk2': 'wf-chk' },
+      balances: { ...HELD_FEEDS.balances, 'sfin-chk2': { aliveThrough: NOW.getTime() / 1000 } },
+    };
+    const { findings } = evaluateLedgerChecks(f, {}, NOW, shared);
+    expect(findings).toHaveLength(1);
+    expect(findings[0].fix).toBeUndefined();
   });
 
   it('shows a transfer held past 14 days every day it stays held, saying why (1.65 C, R7)', () => {
