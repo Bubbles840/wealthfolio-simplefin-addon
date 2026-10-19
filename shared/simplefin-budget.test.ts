@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 import {
-  budgetStatusLine, checkedLine, clockTime, decideSimplefinRequest, gateLine, parseRequestLog, requestLogIo,
+  budgetStatusLine, checkedLine, clockTime, decideSimplefinRequest, directCallLine, gateLine, parseRequestLog, requestLogIo,
   requestsToday, reserveSimplefinRequest, SIMPLEFIN_DAILY_LIMIT, SIMPLEFIN_GAP_MS, SIMPLEFIN_SETUP_CEILING, type RequestLogIo,
 } from './simplefin-budget.js';
 
@@ -134,5 +134,18 @@ describe('the one lines (C3, C4)', () => {
     expect(requestsToday(null, NOW)).toBe(0);
     expect(requestsToday('{bad', NOW)).toBeNull();
     expect(budgetStatusLine(7)).toBe('SimpleFin: 7 of 20 today');
+  });
+});
+
+describe('directCallLine — a SimpleFin call outside a sync (C5)', () => {
+  it('records and allows Setup into the headroom; refuses an automatic call past 20 or inside the gap', async () => {
+    let raw: string | null = JSON.stringify(logOf(23, 1).map((t) => new Date(t).toISOString()));
+    const store = { getSimplefinRequests: async () => raw, setSimplefinRequests: async (v: string) => { raw = v; } };
+    expect(await directCallLine(store, 'setup', NOW)).toBeNull();
+    expect(JSON.parse(raw!)).toHaveLength(24);
+    expect(await directCallLine(store, 'setup', NOW)).toMatch(/^SimpleFin's daily limit is used up/);
+    raw = JSON.stringify(logOf(3, 2).map((t) => new Date(t).toISOString()));
+    expect(await directCallLine(store, 'auto', NOW)).not.toBeNull();
+    expect(await directCallLine({}, 'auto', NOW)).toBeNull();
   });
 });

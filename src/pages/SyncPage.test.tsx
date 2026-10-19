@@ -1,15 +1,14 @@
 import { render, screen, fireEvent, waitFor, within } from '@testing-library/react';
 import { describe, it, expect, vi } from 'vitest';
 import { SyncPage } from './SyncPage';
-import { runSync, INTERVAL_SKIP_MESSAGE } from '../utils/sync';
+import { runSync } from '../utils/sync';
 // Shared with copy-policy.test.tsx, so the copy policy is proved against the
 // same page state the behaviour tests use.
 import { makeProps } from './test-props';
 
-// The real INTERVAL_SKIP_MESSAGE has to travel through the mock: SyncPage
-// compares the sync's single error against it to tell "skipped, offer to force"
-// from a genuine failure, and a mock that omitted it left that branch dead.
-// Re-exported from the real module (not re-typed) so it cannot drift.
+// The mock still re-exports the real INTERVAL_SKIP_MESSAGE (from the real
+// module, so it cannot drift) for any module that imports it; the page itself
+// no longer compares against it — a manual Sync never gets the interval skip.
 vi.mock('../utils/sync', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../utils/sync')>();
   return {
@@ -143,29 +142,38 @@ describe('SyncPage', () => {
     expect(box.getAttribute('title')).toBeNull();
   });
 
-  it('refreshes the displayed last-synced time when a sync reports the interval skip', async () => {
-    // Both statements read the same `last_sync_at`, so "Last synced 4 hours ago"
-    // beside "Last sync was under an hour ago, so Sync now was skipped" cannot
-    // both be current: the page loaded a value and the COMPANION then synced.
-    // The skip is the moment we learn our copy is stale.
+  it('says in one line, as a status, why SimpleFin was not asked — and offers no "Sync anyway" (1.64, C3, C6)', async () => {
     const props = makeProps();
-    const stale = new Date(Date.now() - 4 * 60 * 60 * 1000);
-    const fresh = new Date(Date.now() - 10 * 60 * 1000);
-    props.store.getLastSyncAt = vi.fn()
-      .mockResolvedValueOnce(stale)   // initial page load
-      .mockResolvedValue(fresh);      // what the companion has since written
     vi.mocked(runSync).mockResolvedValueOnce({
-      imported: 0, skipped: 0, errors: [INTERVAL_SKIP_MESSAGE],
+      imported: 0, skipped: 0, errors: [], download: { kind: 'skipped', line: "SimpleFin's daily limit is used up — next sync at 3:10 PM." },
     } as any);
-
     render(<SyncPage {...props} />);
-    await waitFor(() => expect(screen.getByText(/Last synced 4 hours ago/)).toBeInTheDocument());
+    await waitFor(() => screen.getByRole('button', { name: /sync now/i }));
     fireEvent.click(screen.getByRole('button', { name: /sync now/i }));
+    const status = await screen.findByText("SimpleFin's daily limit is used up — next sync at 3:10 PM.");
+    expect(status.closest('[role="status"]')).not.toBeNull();
+    expect(screen.queryByRole('button', { name: /sync anyway/i })).not.toBeInTheDocument();
+  });
 
-    await waitFor(() => expect(screen.getByText(/so Sync now was skipped/)).toBeInTheDocument());
-    // The two statements now agree.
-    expect(screen.getByText(/Last synced 10 minutes ago/)).toBeInTheDocument();
-    expect(screen.queryByText(/Last synced 4 hours ago/)).not.toBeInTheDocument();
+  it('re-reads the balances after a check-only Sync, and says how old the bank data is (1.64, C3)', async () => {
+    const props = makeProps();
+    vi.mocked(runSync).mockResolvedValueOnce({
+      imported: 0, skipped: 0, errors: [], download: { kind: 'checkOnly', line: 'Balances checked · bank data is from 2 min ago.' },
+    } as any);
+    render(<SyncPage {...props} />);
+    await waitFor(() => screen.getByRole('button', { name: /sync now/i }));
+    const reads = props.store.getAccountBalances.mock.calls.length;
+    fireEvent.click(screen.getByRole('button', { name: /sync now/i }));
+    expect(await screen.findByText('Balances checked · bank data is from 2 min ago.')).toBeInTheDocument();
+    await waitFor(() => expect(props.store.getAccountBalances.mock.calls.length).toBeGreaterThan(reads));
+  });
+
+  it('shows the day\'s SimpleFin count quietly beside the last sync (1.64, C4)', async () => {
+    const props = makeProps();
+    const recent = Array.from({ length: 7 }, (_, i) => new Date(Date.now() - (10 + i) * 60_000).toISOString());
+    props.store.getSimplefinRequests = vi.fn(async () => JSON.stringify(recent));
+    render(<SyncPage {...props} />);
+    expect(await screen.findByText(/SimpleFin: 7 of 20 today/)).toBeInTheDocument();
   });
 
   // ── The tabbed shell ───────────────────────────────────────────────────

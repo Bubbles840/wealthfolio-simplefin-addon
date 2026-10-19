@@ -611,6 +611,47 @@ describe('SettingsTab', () => {
       expect(screen.getByRole('button', { name: /^Accounts/ })).toHaveTextContent('3 accounts');
     });
 
+    it('counts a refresh against the SimpleFin budget: allowed into the headroom, refused at 24 with the one line (1.64, C5)', async () => {
+      const { fetchAccounts } = await import('../utils/simplefin');
+      const recent = (n: number) => JSON.stringify(Array.from({ length: n }, (_, i) => new Date(Date.now() - (60 + i) * 60_000).toISOString()));
+      const run = async (count: number) => {
+        vi.mocked(fetchAccounts).mockClear();
+        const props = makeProps();
+        let raw: string | null = recent(count);
+        props.store.getSimplefinRequests = vi.fn(async () => raw);
+        props.store.setSimplefinRequests = vi.fn(async (v: string) => { raw = v; });
+        const view = render(<SyncPage {...props} />);
+        await switchTab(/settings/i);
+        await openMapper();
+        return { view, raw: () => raw };
+      };
+      const allowed = await run(20);
+      await waitFor(() => expect(fetchAccounts).toHaveBeenCalledOnce());
+      expect(JSON.parse(allowed.raw()!)).toHaveLength(21);
+      allowed.view.unmount();
+
+      await run(24);
+      expect(await screen.findByText(/SimpleFin's daily limit is used up — next sync at/)).toBeInTheDocument();
+      expect(fetchAccounts).not.toHaveBeenCalled();
+    });
+
+    it('skips the automatic name backfill quietly once the day\'s 20 are used (1.64, C5)', async () => {
+      const { fetchAccounts } = await import('../utils/simplefin');
+      const recent = (n: number) => JSON.stringify(Array.from({ length: n }, (_, i) => new Date(Date.now() - (60 + i) * 60_000).toISOString()));
+      for (const [count, calls] of [[20, 0], [3, 1]] as const) {
+        vi.mocked(fetchAccounts).mockClear();
+        const props = makeProps();
+        props.store.getAccountNames = vi.fn(async () => ({}));
+        props.store.getSimplefinRequests = vi.fn(async () => recent(count));
+        props.store.setSimplefinRequests = vi.fn(async () => {});
+        const view = render(<SyncPage {...props} />);
+        await waitFor(() => expect(props.store.getSimplefinRequests).toHaveBeenCalled());
+        await waitFor(() => expect(fetchAccounts).toHaveBeenCalledTimes(calls));
+        expect(props.store.setSimplefinRequests).toHaveBeenCalledTimes(calls);
+        view.unmount();
+      }
+    });
+
     it('reports a bridge failure instead of showing an empty mapper', async () => {
       // An empty mapper would read as "you have no accounts", and saving from
       // it could overwrite a good mapping.

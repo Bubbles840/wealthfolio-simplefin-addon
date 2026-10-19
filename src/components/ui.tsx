@@ -160,8 +160,6 @@ const css = `
 /* Deep scan + Sync now. Never shrinks, so the pair keeps its width and the
    title beside it is what gives way on a narrow window. */
 .sfin-head-actions { display: flex; gap: 8px; flex: none; }
-/* "Sync anyway", which sits inline at the end of the interval-skip sentence. */
-.sfin-callout-action { margin-left: 4px; }
 /* The addon/companion version line, below the tab panel. */
 .sfin-foot { margin-top: 20px; font-size: var(--sfin-sz-xs); }
 .sfin-foot-warn { margin-left: 6px; opacity: 0.9; }
