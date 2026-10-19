@@ -1756,16 +1756,17 @@ export async function runSyncCore(
  * A manual Sync that lands inside the gap since the last download (C3): nothing
  * is asked of SimpleFin. Every mapped account's badge is re-checked against the
  * figures the last download kept, with Wealthfolio's CURRENT state. Writes only
- * `account_balances`; alerts, corrections and the drift-episode ledger are
- * untouched (R15), and every verdict filled is tagged badge-only like the
- * after-save check's. A stale baseline-fix offer is dropped (a Deep scan
- * re-offers it); unmapped entries are kept as they were.
+ * `account_balances`, and only a verdict that CHANGED, tagged badge-only like
+ * the after-save check's, with that account's stale baseline-fix offer dropped
+ * (a Deep scan re-offers it); alerts, corrections and the drift-episode ledger
+ * are untouched (R15). Every other entry is kept exactly as stored (F3).
  *
  * A stored figure is compared only when it carries a `fetchedAt` at or after
  * `newestRequestAt` (R16: a newer request in flight may be changing the ledger
  * under older figures) and a numeric balance. A valued account is compared with
  * its valuation less the asset-backed TRANSFER_OUT legs, unless a pending row
- * makes that unsafe; any other account against the posted-ledger total.
+ * makes that unsafe; any other account whose type is known against the
+ * posted-ledger total.
  * Returns the newest `fetchedAt` among the compared-fresh accounts (how old the
  * bank data is). Null means no account was COMPARED (none fresh, or the
  * stored snapshots could not be read, in which case nothing is written).
@@ -1808,7 +1809,9 @@ export async function checkBalancesOnly(
         .reduce((sum, r) => sum + Math.abs(parseFloat(String(r.amount ?? '0')) || 0), 0);
       figures.set(wfId, valuation - assetBackedOut);
     }
-    const unvalued = wfIds.filter((id) => !valuations.has(id));
+    // Not an account whose type is unknown (listAccounts failed): an untyped
+    // total counts a card's interest as income (F5).
+    const unvalued = wfIds.filter((id) => !valuations.has(id) && !!types.get(id));
     if (unvalued.length > 0 && host.postedLedgerTotals) {
       const totals = await host.postedLedgerTotals(unvalued.map((wfAccountId) => ({ wfAccountId, accountType: types.get(wfAccountId) ?? '' })))
         .catch(() => null);
@@ -1816,20 +1819,27 @@ export async function checkBalancesOnly(
     }
   }
 
-  const next: Record<string, AccountBalanceSnapshot> = {};
+  // Only a verdict this pass re-measured AND found changed is written (F3). An
+  // account it did not compare (not fresh, an older writer's snapshot, a read
+  // that failed) keeps exactly what the download left; so does one whose
+  // verdict agrees, tag or no tag: re-tagging a download's own measured drift
+  // would take the Home banner, its plug and its Deep scan away while the badge
+  // still said "off by $X". Nothing changed, nothing is written.
+  const next: Record<string, AccountBalanceSnapshot> = { ...stored };
   let dataAt: number | null = null;
-  for (const [id, snap] of Object.entries(stored)) {
-    if (!mapping[id]) { next[id] = snap; continue; }
+  let changed = false;
+  for (const id of freshIds) {
+    const snap = stored[id];
+    const figure = figures.get(mapping[id]);
+    if (figure === undefined || typeof snap.balance !== 'number') continue;
+    dataAt = Math.max(dataAt ?? 0, snap.fetchedAt as number);
+    const verdict = badgeVerdict(snap.balance, figure);
+    if (snap.measured === true && snap.drift === verdict.drift) continue;
     const { baselineFix: _dropped, checkedAfterSave: _tag, ...rest } = snap;
-    const figure = freshIds.includes(id) ? figures.get(mapping[id]) : undefined;
-    if (figure !== undefined && typeof snap.balance === 'number') {
-      next[id] = { ...rest, ...badgeVerdict(snap.balance, figure), checkedAfterSave: true };
-      dataAt = Math.max(dataAt ?? 0, snap.fetchedAt as number);
-    } else {
-      next[id] = { ...rest, drift: null, measured: false };
-    }
+    next[id] = { ...rest, ...verdict, checkedAfterSave: true };
+    changed = true;
   }
-  await store.setAccountBalances(next);
+  if (changed) await store.setAccountBalances(next);
   return { dataAt };
 }
 
@@ -4580,11 +4590,13 @@ async function runSyncPass(
   // baseline-fix offer and every write keep the before-save figure, which
   // subtracts this run's rows from a before-save read and would count them
   // twice if fed this one. A verdict the run already measured stands.
+  // Cards only (B1, F5): an account whose type is unknown (listAccounts failed)
+  // is not asked either, since an untyped total counts a card's interest as income.
   if (host.postedLedgerTotals && wfBalances !== null) {
     const unchecked = accountSet.accounts.filter((sf) => {
       const wf = mapping[sf.id];
       const snap = accountBalances[sf.id];
-      return !!wf && !valuedWfIds.has(wf) && !!snap && snap.measured !== true && snap.balance !== null;
+      return !!wf && wfTypes.get(wf) === 'CREDIT_CARD' && !valuedWfIds.has(wf) && !!snap && snap.measured !== true && snap.balance !== null;
     });
     if (unchecked.length > 0) {
       const wanted = [...new Set(unchecked.map((sf) => mapping[sf.id]))]

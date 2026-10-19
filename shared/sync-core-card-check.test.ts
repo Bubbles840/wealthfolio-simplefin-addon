@@ -83,6 +83,31 @@ describe('runSyncCore — a card gets a real verdict after the run\'s own saves 
     expect(await badge(failing)).toMatchObject({ measured: false });
   });
 
+  it('asks about cards only: an unvalued account of another type is not asked (F5)', async () => {
+    const seed = citiSeed('-161.20', [NEW_CHARGE], { cardTotals: true });
+    seed.accountSet.accounts.push({ id: 'sfin-loan', name: 'Car Loan', currency: 'USD', balance: '-900.00', 'balance-date': epoch('2026-10-18T12:00:00Z'), transactions: [] });
+    seed.mapping!['sfin-loan'] = 'wf-loan';
+    seed.accountTypes!['wf-loan'] = 'LOAN';
+    const fh = createFakeHost(seed);
+    const asked: string[][] = [];
+    const read = fh.host.postedLedgerTotals!.bind(fh.host);
+    fh.host.postedLedgerTotals = async (accounts) => { asked.push(accounts.map((a) => a.wfAccountId)); return read(accounts); };
+    await runSyncCore(fh.host, fh.store, { manual: true });
+    expect(asked).toEqual([['wf-citi']]);
+    expect(await badge(fh, 'sfin-loan')).toMatchObject({ measured: false });
+  });
+
+  it('asks about nothing when the account types could not be read: a card\'s interest would count as income (F5)', async () => {
+    const fh = createFakeHost(citiSeed('-161.20', [NEW_CHARGE], { cardTotals: true }));
+    const asked: string[][] = [];
+    const read = fh.host.postedLedgerTotals!.bind(fh.host);
+    fh.host.postedLedgerTotals = async (accounts) => { asked.push(accounts.map((a) => a.wfAccountId)); return read(accounts); };
+    fh.host.listAccounts = async () => { throw new Error('offline'); };
+    await runSyncCore(fh.host, fh.store, { manual: true });
+    expect(asked).toEqual([]);
+    expect(await badge(fh)).toMatchObject({ measured: false });
+  });
+
   it('asks only about unvalued accounts left unchecked; a verdict the run already measured stands', async () => {
     // The companion's shape: a ledger figure before the saves (here stale by
     // $11.20) and a live total after. Nothing was imported, so the before-save
