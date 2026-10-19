@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { bankFirstTransferOut, MONEY_MOVEMENT_WORDS, namesConnectedAccount } from './bank-first-payment.js';
+import { bankFirstTransferOut, genericTransferNeedsCorroboration, MONEY_MOVEMENT_WORDS, namesConnectedAccount } from './bank-first-payment.js';
 import { accountNameWords } from './sync-core.js';
 import type { MappedType } from './mapper.js';
 
@@ -84,5 +84,30 @@ describe('MONEY_MOVEMENT_WORDS (R3)', () => {
     expect(MONEY_MOVEMENT_WORDS.test('ACH DEBIT ROBINHOOD CCB')).toBe(true);
     expect(MONEY_MOVEMENT_WORDS.test('XPAYMENT')).toBe(false);
     expect(MONEY_MOVEMENT_WORDS.test('9ACH')).toBe(false);
+  });
+});
+
+describe('genericTransferNeedsCorroboration (1.65 B)', () => {
+  const GENERIC: MappedType = { type: 'TRANSFER_OUT', fromRule: false, genericTransferWording: true };
+  const needs = (description: string, over: { amount?: number; accountType?: string | undefined; mapped?: MappedType } = {}) =>
+    genericTransferNeedsCorroboration(description, over.amount ?? -250, 'accountType' in over ? over.accountType : 'CASH', over.mapped ?? GENERIC, OTHERS);
+
+  it('is true for generic money out of a cash account that names no other connected account', () => {
+    expect(needs('WIRE TRANSFER TO ACME LLC')).toBe(true);
+    expect(needs('ONLINE TRANSFERS TO 0000')).toBe(true);
+  });
+
+  it('is false when the text names another connected account, as a whole word', () => {
+    expect(needs('ONLINE TRANSFER TO CITI CARD 0000')).toBe(false);
+    expect(needs('WIRE TRANSFER TO ROBINHOOD')).toBe(false);
+    expect(needs('WIRE TRANSFER TO CITIZENS LLC')).toBe(true);
+  });
+
+  it('is false for money in, a card or an unknown account type, a rule, and an unflagged type', () => {
+    expect(needs('WIRE TRANSFER FROM ACME LLC', { amount: 250 })).toBe(false);
+    expect(needs('WIRE TRANSFER TO ACME LLC', { accountType: 'CREDIT_CARD' })).toBe(false);
+    expect(needs('WIRE TRANSFER TO ACME LLC', { accountType: undefined })).toBe(false);
+    expect(needs('WIRE TRANSFER TO ACME LLC', { mapped: { type: 'TRANSFER_OUT', fromRule: true } })).toBe(false);
+    expect(needs('WIRE TRANSFER TO ACME LLC', { mapped: { type: 'TRANSFER_OUT', fromRule: false } })).toBe(false);
   });
 });

@@ -280,6 +280,8 @@ describe('runSyncCore', () => {
     }] },
     mapping: { 'sfin-1': 'wf-a' } as Record<string, string>,
     accountTypes: { 'wf-a': 'CASH' } as Record<string, string>,
+    // 1.65 B: generic wording alone no longer makes money out a transfer; the rule keeps this leg transfer-typed.
+    mappingRules: [{ pattern: 'Online Transfer to Savings', matchType: 'contains' as const, activityType: 'TRANSFER_OUT' as const }],
   });
 
   it('imports a solo transfer-typed leg as a spending-neutral placeholder, not a bare transfer', async () => {
@@ -450,6 +452,8 @@ describe('runSyncCore', () => {
       }] },
       mapping: { 'sfin-1': 'wf-a' },
       accountTypes: { 'wf-a': 'CASH' },
+      // 1.65 B: generic wording alone no longer makes money out a transfer; the rule keeps this leg transfer-typed.
+      mappingRules: [{ pattern: 'Online Transfer to Savings', matchType: 'contains' as const, activityType: 'TRANSFER_OUT' as const }],
     });
     const result = await runSyncCore(host, store, { force: true });
     expect(result.imported).toBe(1);
@@ -3418,6 +3422,8 @@ describe('legacy fee-side placeholders (pre-v1.49 CREDIT amount 0 / fee X)', () 
     s.accountSet!.accounts[0].transactions = [{
       id: 'tx-live', posted, amount: '-429.71', description: 'Online Transfer to Savings',
     }];
+    // 1.65 B: generic wording alone no longer makes money out a transfer; the rule keeps this leg transfer-typed.
+    s.mappingRules = [{ pattern: 'Online Transfer to Savings', matchType: 'contains' as const, activityType: 'TRANSFER_OUT' as const }];
     const { host, store, saved } = createFakeHost(s);
     await runSyncCore(host, store, { force: true });
     const updates = saved.flatMap((r) => r.updates ?? []).filter((u) => u.id === 'ph-live');
@@ -3849,6 +3855,8 @@ describe("the sync's own unlinked transfer rows are marked external (v1.54)", ()
     s.accountSet!.accounts[0].transactions = [{
       id: 'tx-live', posted, amount: '-429.71', description: 'Online Transfer to Savings',
     }];
+    // 1.65 B: generic wording alone no longer makes money out a transfer; the rule keeps this leg transfer-typed.
+    s.mappingRules = [{ pattern: 'Online Transfer to Savings', matchType: 'contains' as const, activityType: 'TRANSFER_OUT' as const }];
     const { host, store, saved } = createFakeHost(s);
     await runSyncCore(host, store, { force: true });
     const create = saved.flatMap((r) => r.creates ?? []).find((c) => c.comment.includes('tx-live'))!;
