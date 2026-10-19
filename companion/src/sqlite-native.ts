@@ -10,6 +10,7 @@ import { execFileSync } from 'child_process';
 import { DatabaseSync } from 'node:sqlite';
 import { descriptionFromComment, PENDING_SUFFIX as PENDING_NOTE_SUFFIX } from '../../shared/sync-core.js';
 import { IN_TRANSIT_COMMENT_PREFIX } from '../../shared/reconcile.js';
+import { cashSignSql } from '../../shared/audit-ledger.js';
 import { CLI_SEPARATOR, isDay, isTrue, NOTES, shiftDay, SPENDING_BUDGET_TARGET_FILTER, tail, TOP_CATEGORY_CTE } from './sqlite-cli-helpers.js';
 import { spendLines, topCategoryId, SPENDING_TAXONOMY, type SpendLine, type SpendRow } from '../../shared/wf-spending.js';
 
@@ -85,6 +86,20 @@ export function queryNativeDbStrict<Row>(
   return rows;
 }
 
+/**
+ * The URIs a read tries, in order. The `immutable=1` snapshot ignores the
+ * write-ahead log and has been seen two days stale, so a read that must see
+ * writes made seconds ago passes `liveOnly`: better unread than stale.
+ */
+export function nativeDbUris(dbPath: string, liveOnly = false): string[] {
+  if (dbPath.startsWith('file:')) return [dbPath];
+  return [
+    `file:${dbPath}?mode=ro`,
+    `file:${dbPath}?mode=ro&readonly_shm=1`,
+    ...(liveOnly ? [] : [`file:${dbPath}?immutable=1`]),
+  ];
+}
+
 /** The two-path read behind both: null — not [] — when every path failed. */
 function tryQueryNativeDb<Row>(
   dbPath: string,
@@ -95,6 +110,9 @@ function tryQueryNativeDb<Row>(
    *  `|`; a query whose free text can contain one passes an unambiguous one. */
   separator = '|',
   maxBuffer?: number,
+  /** Skip the `immutable=1` snapshot (see `nativeDbUris`). The CLI fallback
+   *  opens the file normally, which reads the log or fails. */
+  liveOnly = false,
 ): Row[] | null {
   // LIVE read first, snapshot only as a fallback. `immutable=1` reads the main
   // DB file alone and ignores the write-ahead log — and Wealthfolio checkpoints
@@ -106,13 +124,7 @@ function tryQueryNativeDb<Row>(
   // Requires the -wal/-shm files to be visible, i.e. the DIRECTORY mounted, not
   // the bare .db file; with a file-only mount both live opens fail and the
   // immutable fallback preserves the old (stale but working) behaviour.
-  const uris = dbPath.startsWith('file:')
-    ? [dbPath]
-    : [
-        `file:${dbPath}?mode=ro`,
-        `file:${dbPath}?mode=ro&readonly_shm=1`,
-        `file:${dbPath}?immutable=1`,
-      ];
+  const uris = nativeDbUris(dbPath, liveOnly);
   for (const uri of uris) {
     try {
       const db = new DatabaseSync(uri);
@@ -272,10 +284,13 @@ const NOT_AWAITING_TRANSFER_HALF = `
  * against, which is why the starting-balance correction has never run on one,
  * and why a card carried a $235.40 opening gap for five months with no alert.
  *
- * The sign table is transcribed from Wealthfolio 3.8's
- * `type_directed_cash_effect`, including its one account-dependent exception:
- * INTEREST is income on a brokerage and a charge on a credit card
- * (`resolve_cash_with_account_context`). Since 3.8 `amount` is the final cash
+ * The sign table is `typeCashSign` (shared/audit-ledger.ts) through
+ * `cashSignSql` - Wealthfolio 3.8's `type_directed_cash_effect`, including its
+ * one account-dependent exception: INTEREST is income on a brokerage and a
+ * charge on a credit card (`resolve_cash_with_account_context`). Since 1.64
+ * (R14) it signs the EFFECTIVE type (override first), as Wealthfolio and the
+ * app's own total do; that corrects a card holding an overridden row, which the
+ * raw type used to sign backwards. Since 3.8 `amount` is the final cash
  * and `fee` is informational, so `fee` is deliberately absent from the
  * arithmetic — adding it back would double-count every charge.
  *
@@ -297,19 +312,17 @@ const NOT_AWAITING_TRANSFER_HALF = `
  * already has — a caller reads a missing entry as "cannot check this account
  * right now", and the correction simply waits for a settled run.
  */
-export function getNativeAccountBalances(dbPath: string): Map<string, number> {
+export function getNativeAccountBalances(dbPath: string, opts: { liveOnly?: boolean } = {}): Map<string, number> {
   const out = new Map<string, number>();
   if (!dbPath || !existsSync(dbPath)) return out;
 
+  const T = hasActivityTypeOverride(dbPath)
+    ? "UPPER(COALESCE(NULLIF(TRIM(a.activity_type_override), ''), a.activity_type, ''))"
+    : "UPPER(COALESCE(a.activity_type, ''))";
   const query = `
     SELECT a.account_id,
            ROUND(SUM(
-             CASE
-               WHEN UPPER(acc.account_type) = 'CREDIT_CARD' AND UPPER(a.activity_type) = 'INTEREST' THEN -1
-               WHEN UPPER(a.activity_type) IN ('DEPOSIT','CREDIT','TRANSFER_IN','DIVIDEND','INTEREST','SELL') THEN 1
-               WHEN UPPER(a.activity_type) IN ('WITHDRAWAL','TRANSFER_OUT','FEE','TAX','BUY') THEN -1
-               ELSE 0
-             END * ABS(CAST(COALESCE(a.amount, '0') AS REAL))
+             (${cashSignSql(T, "UPPER(COALESCE(acc.account_type, ''))")}) * ABS(CAST(COALESCE(a.amount, '0') AS REAL))
            ), 2) AS balance
     FROM activities a
     JOIN accounts acc ON a.account_id = acc.id
@@ -321,12 +334,15 @@ export function getNativeAccountBalances(dbPath: string): Map<string, number> {
       )
     GROUP BY a.account_id;
   `;
-  const rows = queryNativeDb<{ account_id: string; balance: number | string }>(
+  const rows = tryQueryNativeDb<{ account_id: string; balance: number | string }>(
     dbPath,
     'account balances',
     query,
     (parts) => (parts.length >= 2 ? { account_id: parts[0], balance: parseFloat(parts[1]) || 0 } : null),
-  );
+    '|',
+    undefined,
+    !!opts.liveOnly,
+  ) ?? [];
   for (const row of rows) {
     const value = typeof row.balance === 'number' ? row.balance : parseFloat(String(row.balance ?? '0'));
     if (Number.isFinite(value)) out.set(String(row.account_id), value);

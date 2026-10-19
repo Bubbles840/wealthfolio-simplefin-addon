@@ -132,6 +132,25 @@ describe('runSync', () => {
     VALUATION_POLL.attempts = 3;
   });
 
+  it('totals a card after the saves on a manual run, and leaves it unchecked on a scheduled one (1.64, B1, R7)', async () => {
+    const run = async (opts: { manual?: boolean }) => {
+      vi.mocked(fetchAccounts).mockResolvedValueOnce({ errors: [], accounts: [{
+        id: 'sfin-2', name: 'Card', currency: 'USD', balance: '-61.20', 'balance-date': Date.now() / 1000, transactions: [],
+      }] } as any);
+      const ctx = makeCtx();
+      // Wealthfolio values cash accounts only: nothing for the card.
+      ctx.api.portfolio.getLatestValuations = vi.fn(async () => []);
+      ctx.api.activities.search = vi.fn(async () => ({ data: [
+        { id: 'a1', accountId: 'wf-account-b', activityType: 'WITHDRAWAL', date: '2026-10-17', amount: '61.20', comment: 'HARDWARE STORE · t1' },
+      ] }));
+      const store = makeStore({ getAccountMapping: vi.fn(async () => ({ 'sfin-2': 'wf-account-b' })) });
+      await runSync(ctx, store as any, opts);
+      return (store.setAccountBalances.mock.calls.at(-1)![0] as Record<string, unknown>)['sfin-2'];
+    };
+    expect(await run({ manual: true })).toMatchObject({ measured: true, drift: null });
+    expect(await run({})).toMatchObject({ measured: false });
+  });
+
   it('returns 0 imported when no transactions', async () => {
     vi.mocked(fetchAccounts).mockResolvedValueOnce(makeAccountSet([]));
     const result = await runSync(makeCtx(), makeStore() as any);

@@ -5,7 +5,7 @@ import {
   bookkeepingChange, categoryFiledChange, importChange, stampChange, transferLinkChange, type ChangeDraft,
 } from '../../shared/change-entries';
 import type { ChangeLogItem, ChangeLogRead } from '../../shared/change-log';
-import { ChangeLogCard, CHANGE_LOG_EMPTY, CHANGE_LOG_NO_MATCH, CHANGE_LOG_READ_FAILED } from './ChangeLogCard';
+import { ChangeLogCard, CHANGE_LOG_EMPTY, CHANGE_LOG_NO_MATCH, CHANGE_LOG_READ_FAILED, syncNowSentence } from './ChangeLogCard';
 
 /** Local wall-clock moments, so times and day headings hold in any TZ. */
 const at = (month: number, day: number, h: number, m: number) => new Date(2026, month, day, h, m);
@@ -141,5 +141,19 @@ describe('ChangeLogCard', () => {
     const row = await screen.findByRole('button', { name: /Moved VENMO/ });
     expect(row.className).toContain('sfin-log-row--undone');
     expect(row.textContent).toContain('· Undone by you Oct 12');
+  });
+});
+
+describe('syncNowSentence — what Sync now says after an Undo, here and in a transaction\'s story (F2)', () => {
+  it('says what was downloaded', () => {
+    expect(syncNowSentence({ imported: 3, errors: [] })).toBe('Synced — 3 imported.');
+    expect(syncNowSentence({ imported: 0, errors: ['boom'] })).toBe('Synced, with a problem: boom');
+  });
+
+  it('never claims a sync SimpleFin was not asked for: it shows the budget\'s one line', () => {
+    const checked = 'Balances checked · bank data is from 2 min ago.';
+    const skipped = "SimpleFin's daily limit is used up — next sync at 3:10 PM.";
+    expect(syncNowSentence({ imported: 0, errors: [], download: { kind: 'checkOnly', line: checked } })).toBe(checked);
+    expect(syncNowSentence({ imported: 0, errors: [], download: { kind: 'skipped', line: skipped } })).toBe(skipped);
   });
 });

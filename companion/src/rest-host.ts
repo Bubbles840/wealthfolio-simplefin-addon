@@ -7,6 +7,8 @@ import type { AmazonLedger } from '../../shared/amazon-ledger.js';
 import { VENMO_LEDGER_SECRET_KEY, type VenmoLedger } from '../../shared/venmo-ledger.js';
 import { linkPairPreferInPlace, unlinkPairPreferInPlace, type InPlaceIo } from '../../shared/link-in-place.js';
 import type { UnlinkLeg, UnlinkResult } from '../../shared/link-pair.js';
+import { SIMPLEFIN_REQUESTS_SECRET_KEY } from '../../shared/simplefin-budget.js';
+import { TRANSFER_NAMES_SECRET_KEY, parseTransferNames, type TransferNames } from '../../shared/transfer-names.js';
 import { SKIPPED_TRANSACTIONS_SECRET_KEY, parseSkippedTransactions, type SkippedTransaction } from '../../shared/skipped-transactions.js';
 import { loadSyncOverrides, syncOverridesIgnoredLog, syncOverridesOrEmpty, type LoadedSyncOverrides, type SyncOverrides } from '../../shared/sync-overrides.js';
 import { hostTakesCardTransferOut, WEALTHFOLIO_VERSION_SECRET_KEY } from '../../shared/version.js';
@@ -91,6 +93,23 @@ export class RestSyncHost implements SyncHost {
     for (const id of accountIds) {
       const balance = all.get(id);
       if (balance !== undefined) out.set(id, balance);
+    }
+    return out;
+  }
+
+  /**
+   * Each requested account's posted total, read LIVE from the database after
+   * the run's saves (1.64, B2). Only a live open is allowed: when just the
+   * stale `immutable` snapshot opens, nothing is returned and every card stays
+   * "not checked" rather than showing a verdict from days ago.
+   */
+  async postedLedgerTotals(accounts: Array<{ wfAccountId: string; accountType: string }>): Promise<Map<string, number>> {
+    const out = new Map<string, number>();
+    if (!this.dbPath) return out;
+    const all = getNativeAccountBalances(this.dbPath, { liveOnly: true });
+    for (const a of accounts) {
+      const balance = all.get(a.wfAccountId);
+      if (balance !== undefined) out.set(a.wfAccountId, balance);
     }
     return out;
   }
@@ -363,6 +382,19 @@ export class RestSyncStore implements SyncStore {
   async getIgnoredAccounts(): Promise<string[]> {
     const list = await this.getJson<unknown>('ignored_accounts');
     return Array.isArray(list) ? (list as string[]) : [];
+  }
+
+  /** The learned transfer names this companion publishes (shared/transfer-names.ts); null when absent or unreadable. */
+  async getTransferNames(): Promise<TransferNames | null> {
+    return parseTransferNames(await this.client.getAddonSecret(this.addonId, TRANSFER_NAMES_SECRET_KEY));
+  }
+
+  /** The request record both writers share; a failed read rejects (fail closed). */
+  async getSimplefinRequests(): Promise<string | null> {
+    return (await this.client.getAddonSecret(this.addonId, SIMPLEFIN_REQUESTS_SECRET_KEY)) ?? null;
+  }
+  async setSimplefinRequests(raw: string): Promise<void> {
+    await this.client.setAddonSecret(this.addonId, SIMPLEFIN_REQUESTS_SECRET_KEY, raw);
   }
 
   /** Read-only, like the ignored accounts: the list is written by the addon or a

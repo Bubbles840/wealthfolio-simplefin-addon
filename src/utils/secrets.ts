@@ -1,4 +1,6 @@
 import { parseReportStore, reportsSecretKey, type ReportKind, type ReportStore } from '../../shared/reports-archive';
+import { SIMPLEFIN_REQUESTS_SECRET_KEY } from '../../shared/simplefin-budget';
+import { TRANSFER_NAMES_SECRET_KEY, parseTransferNames, type TransferNames } from '../../shared/transfer-names';
 import { SKIPPED_TRANSACTIONS_SECRET_KEY, parseSkippedTransactions, parseSkippedTransactionsStrict, type ParsedSkippedTransactions, type SkippedTransaction } from '../../shared/skipped-transactions';
 import type { AddonContext } from '@wealthfolio/addon-sdk';
 import { AMAZON_LEDGER_SECRET_KEY } from '../../shared/amazon-ledger';
@@ -86,6 +88,17 @@ export interface AccountBalanceInfo {
    *  cannot express, since it covers both "verified in sync" and "could not check".
    *  Absent means unmeasured (an older build's snapshot proves nothing either). */
   measured?: boolean;
+  /**
+   * Set ONLY by the after-save card check (1.64, B2) when it fills a verdict.
+   * That figure is for the account-list BADGE alone (R15): it opened no drift
+   * episode, so it has no `driftSince`, and the Home banner would otherwise
+   * show it red with a one-click plug that skips the young-drift guard
+   * (plugging feed lag double-counts the moment the feed catches up). Readers
+   * that raise banners, plugs or report findings must ignore a tagged drift.
+   */
+  checkedAfterSave?: true;
+  /** Epoch ms when the download behind `balance`/`date` was sent; absent on an older build's snapshot. */
+  fetchedAt?: number;
 }
 
 const KEYS = {
@@ -105,6 +118,8 @@ const KEYS = {
   unmappedAccounts: 'unmapped_accounts',
   ignoredAccounts: 'ignored_accounts',
   skippedTransactions: SKIPPED_TRANSACTIONS_SECRET_KEY,
+  // Companion-published, add-on-read-only; the companion recomputes it, so Reset clears it.
+  transferNames: TRANSFER_NAMES_SECRET_KEY,
   autoHeal: 'auto_heal',
   autoAdjust: 'auto_adjust',
   telegramConfig: 'telegram_config',
@@ -628,6 +643,23 @@ export class SecretsStore {
   }
   async setIgnoredAccounts(ids: string[]): Promise<void> {
     await this.ctx.api.secrets.set(KEYS.ignoredAccounts, JSON.stringify(ids));
+  }
+
+  /** The learned transfer names the companion publishes (null when absent or unreadable). */
+  async getTransferNames(): Promise<TransferNames | null> {
+    return parseTransferNames(await this.ctx.api.secrets.get(KEYS.transferNames));
+  }
+
+  /**
+   * The SimpleFin request record both writers share (shared/simplefin-budget.ts).
+   * Deliberately NOT in `KEYS`: Reset must not erase a count SimpleFin keeps
+   * making. A failed read rejects, so the budget fails closed.
+   */
+  async getSimplefinRequests(): Promise<string | null> {
+    return (await this.ctx.api.secrets.get(SIMPLEFIN_REQUESTS_SECRET_KEY)) ?? null;
+  }
+  async setSimplefinRequests(raw: string): Promise<void> {
+    await this.ctx.api.secrets.set(SIMPLEFIN_REQUESTS_SECRET_KEY, raw);
   }
 
   /** Bank transactions never to import (see shared/skipped-transactions.ts). */

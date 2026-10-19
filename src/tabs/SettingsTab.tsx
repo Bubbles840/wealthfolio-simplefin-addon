@@ -18,6 +18,7 @@ import type { SecretsStore, CategoryCatalogEntry, AccountBalanceInfo } from '../
 import type { Scheduler } from '../utils/scheduler';
 import type { MappingRule, SimplefinAccount, AccountMapping } from '../../shared/types';
 import { accountCreatedChange } from '../../shared/change-entries';
+import { directCallLine } from '../../shared/simplefin-budget';
 import { ChangeLogCard, syncNowSentence } from '../components/ChangeLogCard';
 import { emptySyncOverrides, removeOverrideRow, type OverrideRow } from '../../shared/sync-overrides';
 import type { ChangeLogItem } from '../../shared/change-log';
@@ -209,6 +210,9 @@ export function SettingsTab({
         setAccountsError('No SimpleFin connection — run setup first.');
         return;
       }
+      // A refresh is a SimpleFin download like any other: it counts (C5).
+      const refused = await directCallLine(store, 'setup');
+      if (refused) { setAccountsError(refused); return; }
       const authKey = await store.getAuthB64Key();
       // A one-day window: this needs the account LIST, not history, and the
       // narrow window keeps a refresh cheap on the bridge.
@@ -328,7 +332,7 @@ export function SettingsTab({
     (entry: ChangeLogItem, entries: ChangeLogItem[], op: UndoOp) => undoFromApp(ctx, store, entry, entries, op),
     [ctx, store],
   );
-  const syncNowForLog = useCallback(async () => syncNowSentence(await runSync(ctx, store, { force: true })), [ctx, store]);
+  const syncNowForLog = useCallback(async () => syncNowSentence(await runSync(ctx, store, { force: true, manual: true })), [ctx, store]);
   const loadOverrides = useCallback(
     async () => (store.readSyncOverrides ? store.readSyncOverrides() : { overrides: emptySyncOverrides(), unreadable: false }),
     [store],
