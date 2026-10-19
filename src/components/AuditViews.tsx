@@ -9,6 +9,7 @@ import {
   linkablePair, linkablePairs, linkAllButton, LINK_BUTTON, LINK_UNREACHABLE, type LinkPair, type LinkRun,
 } from '../../shared/audit-link';
 import { auditSnapshotStatus, AUDIT_CORRUPT, type AuditSnapshotRead } from '../../shared/audit-snapshot';
+import { heldTransferMessage, type HeldTransfer } from '../../shared/held-transfers';
 import { Button } from './ui';
 
 /**
@@ -236,13 +237,53 @@ export function HealthView({ report, fix, at }: { report: HealthReport; fix?: He
   );
 }
 
+export const HELD_TITLE = 'Still in transit';
+export const NOT_TRANSFER_BUTTON = 'Not a transfer';
+
+/** Transfers held 14+ days (1.65 C), each with why and, when it can be written, "Not a transfer". */
+export function HeldTransfersView({ held, notTransfer }: { held: readonly HeldTransfer[]; notTransfer?: (h: HeldTransfer) => Promise<string> }) {
+  const [busy, setBusy] = useState(false);
+  const [done, setDone] = useState<ReadonlySet<string>>(new Set());
+  const [status, setStatus] = useState('');
+  const run = async (h: HeldTransfer) => {
+    if (!notTransfer) return;
+    setBusy(true);
+    const line = await notTransfer(h);
+    setBusy(false);
+    setStatus(line);
+    if (line.startsWith('Saved')) setDone((d) => new Set(d).add(h.activityId));
+  };
+  return (
+    <div className="sfin-audit-body sfin-audit-held">
+      <div className="sfin-audit-head">{HELD_TITLE}</div>
+      <ul className="sfin-audit-issues">
+        {held.map((h) => (
+          <li key={h.activityId} className="sfin-audit-issue">
+            <div className="sfin-subtle" id={`sfin-held-${h.activityId}`}>{heldTransferMessage(h)}</div>
+            {notTransfer && h.txKey && !h.marked && !done.has(h.activityId) && (
+              <div className="sfin-audit-fix">
+                <Button variant="ghost" disabled={busy} aria-busy={busy} aria-describedby={`sfin-held-${h.activityId}`} onClick={() => void run(h)}>{NOT_TRANSFER_BUTTON}</Button>
+              </div>
+            )}
+          </li>
+        ))}
+      </ul>
+      {/* Mounted from the first render, so what lands in it is announced. */}
+      {notTransfer && <div role="status" className="sfin-subtle">{status}</div>}
+    </div>
+  );
+}
+
 /** Settings → Checks: what Health flags, and where the checks came from.
  *  R2: `link` adds Link; `onFixed` reads the snapshot again after a fix. */
-export function ChecksCard({ link, onFixed, ...source }: AuditSource & Partial<HealthFix>) {
+export function ChecksCard({ link, onFixed, notTransfer, ...source }: AuditSource & Partial<HealthFix> & { notTransfer?: (h: HeldTransfer) => Promise<string> }) {
   return (
     <div className="sfin-audit-checks">
       <AuditBoundary read={source.read}>
         {source.read.kind === 'ok' && <HealthView report={source.read.snapshot.health} fix={link ? { link, onFixed } : undefined} at={source.read.snapshot.at} />}
+        {source.read.kind === 'ok' && source.read.snapshot.held && source.read.snapshot.held.length > 0 && (
+          <HeldTransfersView held={source.read.snapshot.held} notTransfer={notTransfer} />
+        )}
         <AuditStatusLine {...source} />
       </AuditBoundary>
     </div>

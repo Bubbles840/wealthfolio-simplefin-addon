@@ -25,7 +25,8 @@ import { healthIssues, type HealthFacts, type HealthRead } from '../../shared/au
 import type { AuditLedger } from '../../shared/audit-ledger.js';
 import { AUDIT_SNAPSHOT_SECRET_KEY, buildAuditSnapshot, type AuditResults } from '../../shared/audit-snapshot.js';
 import { monthlySpendTotals, parseReportCube, REPORT_CUBE_SECRET_KEY } from '../../shared/report-cube.js';
-import { loadSyncOverrides } from '../../shared/sync-overrides.js';
+import { heldFromLedger } from '../../shared/held-transfers.js';
+import { hasTxOverride, loadSyncOverrides } from '../../shared/sync-overrides.js';
 import { getNativeAuditLedger, getNativeAuditSettings, getNativeHeadlineRows } from './sqlite-audit.js';
 import type { WealthfolioClient } from './wealthfolio.js';
 
@@ -229,10 +230,23 @@ export async function runAudit(r: AuditReaders, now: Date, cubeNotBefore?: Date)
   const balanceFacts = await gatherBalanceFacts(r, ledger, mapping);
   const headlineFacts = await gatherHeadlineFacts(r, now, mapping, cubeNotBefore);
   const healthFacts = await gatherHealthFacts(r, ledger, mapping);
+  // Transactions already marked "not a transfer" (read-only; an unreadable
+  // document or a failed read means none, as in the daily findings).
+  const overrides = await loadSyncOverrides((k) => r.secret(k)).catch(() => null);
+  const marked = new Set(
+    overrides ? Object.keys(overrides.overrides.tx).filter((k) => hasTxOverride(overrides.overrides, k, 'notTransfer')) : [],
+  );
+  const held = heldFromLedger(
+    ledger,
+    balanceFacts.mapping ? { mapping: balanceFacts.mapping, balances: balanceFacts.balances ?? {}, names: balanceFacts.names ?? {} } : undefined,
+    now,
+    marked,
+  );
   return {
     balances: explainBalances(balanceFacts),
     headline: explainHeadline(headlineFacts),
     health: healthIssues(healthFacts),
+    ...(held ? { held } : {}),
     reached: !balanceFacts.failed?.includes('mapping'),
   };
 }

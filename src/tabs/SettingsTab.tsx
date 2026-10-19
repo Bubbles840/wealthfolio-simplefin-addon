@@ -25,7 +25,8 @@ import type { ChangeLogItem } from '../../shared/change-log';
 import type { UndoOp } from '../../shared/change-undo';
 import { undoFromApp } from '../utils/change-undo';
 import type { LinkPair } from '../../shared/audit-link';
-import { linkFromApp } from '../utils/audit-fix';
+import { linkFromApp, notTransferFromApp } from '../utils/audit-fix';
+import type { HeldTransfer } from '../../shared/held-transfers';
 
 /** Ids for this tab's collapsible cards. Doubles as the persisted key set (the
  *  page owns the open-card map), so these strings must not change — a rename
@@ -115,6 +116,7 @@ export function SettingsTab({
     : 'Not set';
   // 2c R2: Link on the Checks card, through the add-on's own host.
   const linkChecks = useCallback((pairs: LinkPair[]) => linkFromApp(ctx, store, pairs), [ctx, store]);
+  const notTransfer = useCallback((h: HeldTransfer) => notTransferFromApp(store, h), [store]);
   const [scheduleHours, setScheduleHours] = useState<number | null>(null);
   const [autoHeal, setAutoHeal] = useState(false);
   const [autoAdjust, setAutoAdjust] = useState(false);
@@ -478,6 +480,7 @@ export function SettingsTab({
           <ChecksCard
             read={auditSnapshot} companionVersion={companionVersion} now={new Date()}
             link={linkChecks} onFixed={onAuditChanged}
+            notTransfer={typeof store.editSyncOverrides === 'function' ? notTransfer : undefined}
           />
         </CollapsibleCard>
       )}

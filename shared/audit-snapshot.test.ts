@@ -249,6 +249,34 @@ describe('a snapshot from a newer companion', () => {
   });
 });
 
+describe('the held transfers in the snapshot (1.65 C)', () => {
+  const HELD = {
+    activityId: 'ph-1', description: 'WIRE TRANSFER TO ACME LLC', amount: 250, ageDays: 20, direction: 'out' as const,
+    heldBy: 'Harbor Savings', txKey: 'sfin-chk\u0000w-old', label: 'WIRE TRANSFER TO ACME LLC · Checking',
+  };
+  const results = (held?: unknown): AuditResults => ({
+    balances: { accounts: [], notes: [] },
+    headline: { month: '2026-10', reportCents: null, wealthfolioCents: null, unexplainedCents: null, reasons: null, notes: [] },
+    health: { issues: [], notes: [] },
+    ...(held === undefined ? {} : { held: held as AuditResults['held'] }),
+  });
+
+  it('carries them to the app, and an older companion\'s snapshot simply has none', () => {
+    const rows = [HELD, { ...HELD, activityId: 'ph-2', txKey: null, heldBy: null }, { ...HELD, activityId: 'ph-3', marked: true as const }];
+    const read = parseAuditSnapshot(JSON.stringify(buildAuditSnapshot(results(rows), NOW)));
+    expect(read.kind === 'ok' && read.snapshot.held).toEqual(rows);
+    const old = parseAuditSnapshot(JSON.stringify(buildAuditSnapshot(results(), NOW)));
+    expect(old.kind === 'ok' && 'held' in old.snapshot).toBe(false);
+  });
+
+  it('is corrupt when a held transfer is malformed', () => {
+    for (const bad of [{}, [{ ...HELD, amount: '250' }], [{ ...HELD, direction: 'sideways' }], [{ ...HELD, txKey: 7 }], [{ ...HELD, heldBy: 3 }], [{ ...HELD, marked: 'yes' }]]) {
+      const snapshot = { ...buildAuditSnapshot(results(), NOW)!, held: bad };
+      expect(parseAuditSnapshot(JSON.stringify(snapshot)).kind).toBe('corrupt');
+    }
+  });
+});
+
 describe('auditSnapshotStatus', () => {
   const at = new Date(2026, 9, 13, 14, 0);
   const ok = parseAuditSnapshot(JSON.stringify(buildAuditSnapshot(small(), at)!));

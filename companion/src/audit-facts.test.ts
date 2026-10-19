@@ -8,6 +8,7 @@ import { explainHeadline, HEADLINE_READ_NOTES } from '../../shared/audit-headlin
 import { HEALTH_READ_NOTES } from '../../shared/audit-health.js';
 import type { AuditLedger, AuditLedgerRow } from '../../shared/audit-ledger.js';
 import { AUDIT_SNAPSHOT_SECRET_KEY, parseAuditSnapshot } from '../../shared/audit-snapshot.js';
+import { emptySyncOverrides, notTransferEdit } from '../../shared/sync-overrides.js';
 import type { ReportCube } from '../../shared/report-cube.js';
 import { snapshotTripwire } from '../../shared/spending-tripwire.js';
 
@@ -86,6 +87,28 @@ describe('runAudit', () => {
   ])('a failed read of %s becomes its note and costs only its own part', async (_what, over, notes) => {
     const out = await runAudit(readers(over), NOW);
     expect([out.balances.notes, out.headline.notes, out.health.notes]).toEqual(notes());
+  });
+
+  it('lists the transfers held past 14 days for the app, with the feed that holds each, and which are marked (1.65 C)', async () => {
+    const placeholder = row({
+      id: 'ph-1', rawType: 'TRANSFER_OUT', type: 'TRANSFER_OUT', absCents: 25000, date: '2026-09-20', external: true,
+      notes: '↔️ In-transit transfer · WIRE TRANSFER TO ACME LLC · w-old',
+    });
+    const withLedger = { ledger: () => ({ ...LEDGER, rows: [...LEDGER.rows, placeholder] }) };
+    const out = await runAudit(readers(withLedger), NOW);
+    expect(out.held).toEqual([expect.objectContaining({
+      activityId: 'ph-1', description: 'WIRE TRANSFER TO ACME LLC', amount: 250, ageDays: 23, direction: 'out',
+      txKey: 'sfin-chk\u0000w-old', label: 'WIRE TRANSFER TO ACME LLC · PNC Checking', heldBy: null,
+    })]);
+    expect(out.held?.[0]).not.toHaveProperty('marked');
+    expect((await runAudit(readers({ ledger: boom }), NOW)).held).toBeUndefined();
+
+    const doc = JSON.stringify(notTransferEdit('sfin-chk\u0000w-old', 'x', NOW)(emptySyncOverrides()));
+    const marked = await runAudit(readers({ ...withLedger, secret: async (k) => (k === 'sync_overrides' ? doc : SECRETS[k] ?? null) }), NOW);
+    expect(marked.held?.[0]).toMatchObject({ activityId: 'ph-1', marked: true });
+    const unreadable = await runAudit(readers({ ...withLedger, secret: async (k) => { if (k === 'sync_overrides') throw new Error('401'); return SECRETS[k] ?? null; } }), NOW);
+    expect(unreadable.held?.[0]).toMatchObject({ activityId: 'ph-1' });
+    expect(unreadable.held?.[0]).not.toHaveProperty('marked');
   });
 
   it('keeps cash compared when only the database is down: the type comes from REST, cards stay uncompared', async () => {
