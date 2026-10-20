@@ -5,6 +5,7 @@ import { Button, CollapsibleCard, ErrorBox, Why } from '../components/ui';
 import { AmazonCard, type AmazonDraftState } from '../components/AmazonCard';
 import { AccountMapper } from '../components/AccountMapper';
 import { RuleEditor } from '../components/RuleEditor';
+import { mappingRuleProblem } from '../../shared/mapper';
 import { AccountList, accountsSummary } from '../components/AccountList';
 import { AccountAudit, ChecksCard, checksSummary } from '../components/AuditViews';
 import { DockerSnippet } from '../components/DockerSnippet';
@@ -292,7 +293,9 @@ export function SettingsTab({
     }
   }, [ctx, store, scheduler]);
 
-  /** Saves the edited list unless the stored one changed since this page last read it. */
+  /** Saves the edited list unless the stored one changed since this page last read it.
+   *  A rule that would match every transaction (an empty pattern, a new row not
+   *  yet typed into) stays on screen but is never stored: see `mappingRuleProblem`. */
   const saveRules = useCallback((next: MappingRule[]) => {
     setRules(next);
     const run = async () => {
@@ -302,8 +305,9 @@ export function SettingsTab({
           setRulesNote(RULES_CHANGED_ELSEWHERE);
           return;
         }
-        await store.setMappingRules(next);
-        knownRules.current = JSON.stringify(next);
+        const usable = next.filter((r) => mappingRuleProblem(r) === null);
+        await store.setMappingRules(usable);
+        knownRules.current = JSON.stringify(usable);
         setRulesNote('');
       } catch (e: any) {
         setRulesNote(String(e?.message ?? e));

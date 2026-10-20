@@ -13,6 +13,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   with "Invalid symbol '$CASH-'". The sync now uses the Wealthfolio account's
   currency (or, failing that, its holdings' when they agree) and never guesses
   one; an account with none anywhere is named once in the sync's errors.
+- **An empty transaction rule no longer turns every transaction into a
+  deposit.** "+ Add rule" saved a blank Deposit rule at once, and a blank
+  pattern matches every description, so money out was imported as money in
+  (and a card account refused the sync). A new row is now saved only once it
+  has a pattern, and the sync ignores any rule that would match everything (an
+  empty pattern, or a regex like `.*`), including one already stored.
 
 ## [1.65.0] - 2026-10-19
 

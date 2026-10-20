@@ -172,3 +172,15 @@ describe('RuleEditor — a rule with limits (PB-K)', () => {
   });
 });
 
+
+describe('RuleEditor, a rule that would match everything', () => {
+  it('says an empty row is not saved until it has a pattern', () => {
+    render(<RuleEditor rules={[{ pattern: '', matchType: 'contains', activityType: 'DEPOSIT' }]} onChange={vi.fn()} />);
+    expect(screen.getByRole('status')).toHaveTextContent(/empty rule is not saved/);
+  });
+
+  it('says nothing for a rule with a pattern', () => {
+    render(<RuleEditor rules={[{ pattern: 'PAYROLL', matchType: 'contains', activityType: 'DEPOSIT' }]} onChange={vi.fn()} />);
+    expect(screen.queryByRole('status')).toBeNull();
+  });
+});

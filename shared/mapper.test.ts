@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { mapTransaction, mapTransactionWithSource, CARD_PAYMENT_KEYWORDS, BANK_TRANSFER_KEYWORDS, GENERIC_TRANSFER_KEYWORDS, INSTITUTION_TRANSFER_KEYWORDS } from './mapper';
+import { mapTransaction, mapTransactionWithSource, mappingRuleProblem, CARD_PAYMENT_KEYWORDS, BANK_TRANSFER_KEYWORDS, GENERIC_TRANSFER_KEYWORDS, INSTITUTION_TRANSFER_KEYWORDS } from './mapper';
 import type { MappingRule } from './types';
 
 describe('mapTransaction', () => {
@@ -229,5 +229,27 @@ describe('the four generic transfer phrases (1.65 B)', () => {
     expect(mapTransactionWithSource('ONLINE TRANSFER CREDIT CARD PAYMENT', -10, [], 'CASH')).toEqual({ type: 'TRANSFER_OUT', fromRule: false });
     const rules = [{ pattern: 'WIRE TRANSFER', matchType: 'contains' as const, activityType: 'TRANSFER_OUT' as const }];
     expect(mapTransactionWithSource('WIRE TRANSFER TO ACME LLC', -10, rules, 'CASH')).toEqual({ type: 'TRANSFER_OUT', fromRule: true });
+  });
+});
+
+describe('a rule that would match every transaction', () => {
+  // "+ Add rule" once saved an empty Deposit rule straight away, and it typed
+  // every transaction a deposit, money out included.
+  const blank: MappingRule = { pattern: '', matchType: 'contains', activityType: 'DEPOSIT' };
+
+  it('is named for what is wrong with it', () => {
+    expect(mappingRuleProblem(blank)).toBe('empty');
+    expect(mappingRuleProblem({ ...blank, pattern: '   ' })).toBe('empty');
+    expect(mappingRuleProblem({ ...blank, pattern: '.*', matchType: 'regex' })).toBe('matches-everything');
+    expect(mappingRuleProblem({ ...blank, pattern: 'PAYROLL' })).toBeNull();
+    expect(mappingRuleProblem({ ...blank, pattern: '^PAY', matchType: 'regex' })).toBeNull();
+    expect(mappingRuleProblem({ ...blank, pattern: '(bad', matchType: 'regex' })).toBeNull();
+  });
+
+  it('is never obeyed: the defaults and the rules after it still decide', () => {
+    const payroll: MappingRule = { pattern: 'PAYROLL', matchType: 'contains', activityType: 'DEPOSIT' };
+    expect(mapTransactionWithSource('DIRECT DEBIT CARD AUTOPAY', -400, [blank])).toEqual({ type: 'WITHDRAWAL', fromRule: false });
+    expect(mapTransactionWithSource('COFFEE', -5, [{ ...blank, pattern: '.*', matchType: 'regex' }])).toEqual({ type: 'WITHDRAWAL', fromRule: false });
+    expect(mapTransactionWithSource('EMPLOYER PAYROLL', 2500, [blank, payroll]).fromRule).toBe(true);
   });
 });
