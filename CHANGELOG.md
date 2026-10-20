@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **An account whose bank sends no currency imports again.** Some providers
+  (seen on a retirement plan) send SimpleFin a blank currency, and every row failed
+  with "Invalid symbol '$CASH-'". The sync now uses the Wealthfolio account's
+  currency (or, failing that, its holdings' when they agree) and never guesses
+  one; an account with none anywhere is named once in the sync's errors.
+
 ## [1.65.0] - 2026-10-19
 
 Update the add-on and the companion together: both decide how a transfer is

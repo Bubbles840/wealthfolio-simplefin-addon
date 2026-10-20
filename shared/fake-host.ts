@@ -30,6 +30,8 @@ export interface FakeHostSeed {
   accountSet?: SimplefinAccountSet;
   mapping?: AccountMapping;
   accountTypes?: Record<string, string>;
+  /** Wealthfolio account currencies by id; absent keys report none. */
+  accountCurrencies?: Record<string, string>;
   /** Wealthfolio account display names, keyed by Wealthfolio account id. Absent
    *  entries make `listAccounts` report no name, which is what a host that
    *  cannot supply one looks like. */
@@ -311,6 +313,7 @@ export function createFakeHost(seed: FakeHostSeed = {}): FakeHost {
         // Key absent rather than `undefined` when unseeded, so an unnamed
         // account looks exactly like one the real host reports no name for.
         ...(accountNames[id] !== undefined ? { name: accountNames[id] } : {}),
+        ...(seed.accountCurrencies?.[id] !== undefined ? { currency: seed.accountCurrencies[id] } : {}),
       }));
     },
 
