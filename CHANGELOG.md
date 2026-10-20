@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.66.0] - 2026-10-20
+
+Update the add-on and the companion together: a companion older than 1.66.0
+never reads ignore rules, so its syncs keep importing the rows they leave out,
+and the app won't add a rule until the companion is on 1.66.0.
+
 ### Added
 - **Ignore rules: keep a kind of bank row out of the import.** Settings →
   Categorizing → **Ignore rules** leaves out every transaction whose
@@ -20,9 +26,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `.*` or `.`), is refused, and the sync drops one it finds stored. Rows
   already imported are left alone: delete them in Wealthfolio once, then fix
   the balance. Don't point a rule at one side of a transfer between two of
-  your accounts: the other side then pairs with the wrong row or expires. A Docker companion
-  has to be updated too, or its syncs import those rows again: it must be on
-  1.66.0 or later, and the app won't add rules until it is.
+  your accounts: the other side then pairs with the wrong row or expires. A
+  Docker companion has to be updated too, or its syncs import those rows
+  again: it must be on 1.66.0 or later, and the app won't add rules until it
+  is.
 
 ### Fixed
 - **An account whose bank sends no currency imports again.** Some providers
