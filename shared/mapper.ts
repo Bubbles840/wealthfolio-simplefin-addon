@@ -33,13 +33,6 @@ export interface MappedType {
   genericTransferWording?: true;
 }
 
-/**
- * Whether one transaction rule decides this transaction. A payback rule
- * ("Make every … deposit a payback", 1.62 W10) carries two limits no older
- * rule has: `onlyMoneyIn` — it reads money in only, so a payment out that
- * shares the pattern is never typed a CREDIT (a rule's type is otherwise
- * direction-blind) — and `accountId`, the one Wealthfolio account it reads.
- */
 export type MappingRuleProblem = 'empty' | 'matches-everything';
 
 export const MAPPING_RULE_PROBLEM_TEXT: Record<MappingRuleProblem, string> = {
@@ -69,8 +62,15 @@ export function mappingRuleProblem(rule: { pattern: string; matchType: string })
   return null;
 }
 
+/**
+ * Whether one transaction rule decides this transaction. A payback rule
+ * ("Make every … deposit a payback", 1.62 W10) carries two limits no older
+ * rule has: `onlyMoneyIn` — it reads money in only, so a payment out that
+ * shares the pattern is never typed a CREDIT (a rule's type is otherwise
+ * direction-blind) — and `accountId`, the one Wealthfolio account it reads.
+ */
 export function ruleApplies(rule: MappingRule, description: string, amount: number, wfAccountId?: string, txDay?: string): boolean {
-  // A stored rule that would match everything is never obeyed (see above).
+  // A stored rule that would match everything is never obeyed (`mappingRuleProblem`).
   if (mappingRuleProblem(rule) !== null) return false;
   if (rule.onlyMoneyIn && !(amount > 0)) return false;
   if (rule.accountId && rule.accountId !== wfAccountId) return false;
