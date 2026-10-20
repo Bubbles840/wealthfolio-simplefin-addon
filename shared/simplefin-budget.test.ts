@@ -214,4 +214,22 @@ describe('directCallLine — a SimpleFin call outside a sync (C5)', () => {
     expect(await directCallLine(store, 'auto', NOW)).not.toBeNull();
     expect(await directCallLine({}, 'auto', NOW)).toBeNull();
   });
+
+  it('holds a manual call to the 20 and the 5-minute gap, and says it downloaded nothing', async () => {
+    const storeOf = (log: number[]) => {
+      let raw: string | null = JSON.stringify(log.map((t) => new Date(t).toISOString()));
+      return { store: { getSimplefinRequests: async () => raw, setSimplefinRequests: async (v: string) => { raw = v; } }, raw: () => raw };
+    };
+    const open = storeOf(logOf(3, 60));
+    expect(await directCallLine(open.store, 'manual', NOW)).toBeNull();
+    expect(JSON.parse(open.raw()!)).toHaveLength(4);
+
+    // Setup's headroom is not a manual call's: 20 used is the end of it.
+    expect(await directCallLine(storeOf(logOf(20, 60)).store, 'manual', NOW)).toMatch(/^SimpleFin's daily limit is used up/);
+
+    const gap = storeOf(logOf(3, 2));
+    const line = await directCallLine(gap.store, 'manual', NOW);
+    expect(line).toBe(`SimpleFin was asked 2 min ago — try again at ${clockTime(new Date(minutes(2) + SIMPLEFIN_GAP_MS))}.`);
+    expect(JSON.parse(gap.raw()!)).toHaveLength(3);
+  });
 });

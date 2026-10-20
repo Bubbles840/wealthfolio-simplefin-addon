@@ -119,7 +119,7 @@ describe('IgnoreRulesEditor', () => {
   });
 
   it('previews what the draft would leave out, in its account only, after reading the feed once', async () => {
-    const loadFeed = vi.fn(async () => feed);
+    const loadFeed = vi.fn(async () => ({ accounts: feed, errors: [] as string[] }));
     render(<IgnoreRulesEditor rules={[]} accounts={accounts} onChange={vi.fn()} loadFeed={loadFeed} />);
     fireEvent.click(screen.getByRole('button', { name: 'Preview last 30 days' }));
     await screen.findByTestId('ignore-preview');
@@ -142,7 +142,7 @@ describe('IgnoreRulesEditor', () => {
       ...feed[0],
       transactions: Array.from({ length: 15 }, (_, i) => ({ id: `S${i}`, posted: NOON, amount: '1.00', description: 'SWEEP FROM CORE FUND' })),
     };
-    render(<IgnoreRulesEditor rules={[sweep]} accounts={accounts} onChange={vi.fn()} loadFeed={async () => [many]} />);
+    render(<IgnoreRulesEditor rules={[sweep]} accounts={accounts} onChange={vi.fn()} loadFeed={async () => ({ accounts: [many], errors: [] })} />);
     fireEvent.click(screen.getByRole('button', { name: 'Preview last 30 days' }));
     const preview = await screen.findByTestId('ignore-preview');
     expect(preview).toHaveTextContent('Your rules match 15 of 15 transactions');
@@ -155,5 +155,33 @@ describe('IgnoreRulesEditor', () => {
       loadFeed={async () => { throw new Error('SimpleFin allows 24 downloads a day'); }} />);
     fireEvent.click(screen.getByRole('button', { name: 'Preview last 30 days' }));
     expect(await screen.findByText(/24 downloads a day/)).toBeInTheDocument();
+  });
+
+  it('shows what SimpleFin reported beside the preview, rather than a bare "matches 0"', async () => {
+    render(<IgnoreRulesEditor rules={[sweep]} accounts={accounts} onChange={vi.fn()}
+      loadFeed={async () => ({ accounts: [], errors: ['Connection to Fidelity may need attention'] })} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Preview last 30 days' }));
+    await screen.findByTestId('ignore-preview');
+    expect(screen.getByText(/SimpleFin reported: Connection to Fidelity may need attention/)).toBeInTheDocument();
+  });
+
+  describe('against a companion that does not know ignore rules yet', () => {
+    it('says to update it first, and will not add a rule; stored rules still show', () => {
+      render(<IgnoreRulesEditor rules={[sweep]} accounts={accounts} onChange={vi.fn()} companionVersion="1.65.0" />);
+      expect(screen.getByText(/Update the companion to 1\.66\.0 or newer first/)).toBeInTheDocument();
+      expect(screen.getByTestId('ignore-rule')).toHaveTextContent('SWEEP FROM CORE FUND');
+      fill('SWEEP TO CORE FUND', 'sfin-cash');
+      expect(screen.getByRole('button', { name: 'Add rule…' })).toBeDisabled();
+    });
+
+    it('is open with no companion, and with one that is new enough', () => {
+      for (const version of [null, '1.66.0']) {
+        const { unmount } = render(<IgnoreRulesEditor rules={[]} accounts={accounts} onChange={vi.fn()} companionVersion={version} />);
+        expect(screen.queryByText(/Update the companion/)).toBeNull();
+        fill('SWEEP TO CORE FUND', 'sfin-cash');
+        expect(screen.getByRole('button', { name: 'Add rule…' })).toBeEnabled();
+        unmount();
+      }
+    });
   });
 });

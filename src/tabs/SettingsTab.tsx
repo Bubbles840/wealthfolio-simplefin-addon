@@ -351,16 +351,17 @@ export function SettingsTab({
   const ignoreRuleAccounts = Object.keys(accountMapping)
     .filter((id) => !!accountMapping[id])
     .map((id) => ({ id, name: sfinNames[id] ?? id }));
-  /** The preview's feed: one SimpleFin download, made only when the person asks,
-   *  and counted like "Refresh from SimpleFin" (C5). */
+  /** The preview's feed: one SimpleFin download, made only when the person asks.
+   *  Counted as a manual call (the 20 and the 5-minute gap): the button can be
+   *  clicked again and again, and the headroom past 20 is Setup's and Refresh's. */
   const loadIgnorePreview = useCallback(async (days: number) => {
     const accessUrl = await store.getAccessUrl();
     if (!accessUrl) throw new Error('No SimpleFin connection — run setup first.');
-    const refused = await directCallLine(store, 'setup');
+    const refused = await directCallLine(store, 'manual');
     if (refused) throw new Error(refused);
     const authKey = await store.getAuthB64Key();
     const set = await fetchAccounts(accessUrl, new Date(Date.now() - days * 24 * 60 * 60 * 1000), ctx.api.network, authKey);
-    return set.accounts;
+    return { accounts: set.accounts, errors: set.errors };
   }, [ctx, store]);
 
   // Stable, so the card reads once each time it opens. Optional-called: an
@@ -726,6 +727,7 @@ export function SettingsTab({
             accounts={ignoreRuleAccounts}
             onChange={saveIgnoreRules}
             loadFeed={loadIgnorePreview}
+            companionVersion={companionVersion}
             unreadable={ignoreRulesUnreadable}
           />
         </CollapsibleCard>

@@ -3281,8 +3281,12 @@ async function runSyncPass(
     /** The bank's transactions this account's plan may act on: none under a
      *  key the unlink pre-pass froze, whose rows stay exactly as they are. */
     const liveFeed = feed.filter((t) => !frozenKeys.has(accountTxKey(sfAccount.id, t.txId)));
+    // A row a rule ignores is absent from `feed` for that reason alone, yet its
+    // id is still in the partner account's raw feed, so it would pass for a leg
+    // Wealthfolio overwrote and a new, unrelated row would be adopted into it.
+    const adoptable = existing.filter((r) => !skippedTxKeys.has(accountTxKey(sfAccount.id, r.txId)));
     const adoptions = planOverwrittenLegAdoptions(
-      liveFeed, existing,
+      liveFeed, adoptable,
       (txId) => (signedByKey.get(accountTxKey(sfAccount.id, txId)) ?? 0) > 0,
       (txId) => [...(accountsByTxId.get(txId) ?? [])].some((id) => id !== sfAccount.id),
     );

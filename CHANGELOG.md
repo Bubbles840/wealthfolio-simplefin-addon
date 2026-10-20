@@ -16,10 +16,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Transactions-mode account those rows never cancel, so the account's value
   drifts far above its bank balance. **Preview last 30
   days** shows which rows a rule would catch before you save it. An empty
-  pattern, or a regular expression that matches everything, is refused, and
-  the sync drops one it finds stored. Rows already imported are left alone:
+  pattern, or a regular expression that matches any text at all (such as
+  `.*` or `.`), is refused, and the sync drops one it finds stored. Rows already imported are left alone:
   delete them in Wealthfolio once, then fix the balance. A Docker companion
-  has to be updated too, or its syncs import those rows again.
+  has to be updated too, or its syncs import those rows again: it must be on
+  1.66.0 or later, and the app won't add rules until it is.
 
 ### Fixed
 - **An account whose bank sends no currency imports again.** Some providers

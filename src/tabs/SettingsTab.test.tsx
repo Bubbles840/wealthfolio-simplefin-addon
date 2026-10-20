@@ -572,6 +572,49 @@ describe('SettingsTab', () => {
         vi.mocked(fetchAccounts).mockClear();
       }
     });
+    it('holds the preview to a manual call: refused at 20 with the one line, and nothing is downloaded', async () => {
+      const { fetchAccounts } = await import('../utils/simplefin');
+      const props = withIgnoreRules({ kind: 'absent' });
+      // 20 downloads in the last day: Setup's headroom would still allow one more.
+      let raw: string | null = JSON.stringify(Array.from({ length: 20 }, (_, i) => new Date(Date.now() - (60 + i) * 60_000).toISOString()));
+      props.store.getSimplefinRequests = vi.fn(async () => raw);
+      props.store.setSimplefinRequests = vi.fn(async (v: string) => { raw = v; });
+      render(<SyncPage {...props} />);
+      await switchTab(/settings/i);
+      await openSection(/^Ignore rules/i);
+      vi.mocked(fetchAccounts).mockClear();
+      fireEvent.click(await screen.findByRole('button', { name: 'Preview last 30 days' }));
+      expect(await screen.findByText(/SimpleFin's daily limit is used up — next sync at/)).toBeInTheDocument();
+      expect(fetchAccounts).not.toHaveBeenCalled();
+    });
+
+    it('shows the errors SimpleFin sent with the feed', async () => {
+      const { fetchAccounts } = await import('../utils/simplefin');
+      const props = withIgnoreRules({ kind: 'absent' });
+      render(<SyncPage {...props} />);
+      await switchTab(/settings/i);
+      await openSection(/^Ignore rules/i);
+      vi.mocked(fetchAccounts).mockClear();
+      vi.mocked(fetchAccounts).mockResolvedValueOnce({ errors: ['Connection to Fidelity may need attention'], accounts: [] });
+      try {
+        fireEvent.click(await screen.findByRole('button', { name: 'Preview last 30 days' }));
+        expect(await screen.findByText(/SimpleFin reported: Connection to Fidelity may need attention/)).toBeInTheDocument();
+      } finally {
+        vi.mocked(fetchAccounts).mockClear();
+      }
+    });
+
+    it('asks for a companion update before rules can be added, when the connected one is older', async () => {
+      const props = withIgnoreRules({ kind: 'absent' });
+      props.store.getCompanionVersion = vi.fn(async () => '1.65.0');
+      render(<SyncPage {...props} />);
+      await switchTab(/settings/i);
+      await openSection(/^Ignore rules/i);
+      expect(await screen.findByText(/Update the companion to 1\.66\.0 or newer first/)).toBeInTheDocument();
+      fireEvent.change(screen.getByLabelText('Description pattern'), { target: { value: 'SWEEP TO CORE FUND' } });
+      fireEvent.change(screen.getByLabelText('Account'), { target: { value: 'sfin-2' } });
+      expect(screen.getByRole('button', { name: 'Add rule…' })).toBeDisabled();
+    });
   });
 
   describe('Accounts card', () => {

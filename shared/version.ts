@@ -140,6 +140,21 @@ export function companionUnderstandsPaybacks(companionVersion: string | null): b
   return isAtLeastVersion(companionVersion.trim(), PAYBACK_SINCE);
 }
 
+/**
+ * The first release whose companion obeys ignore rules (1.66.0). An older
+ * companion never reads the `ignore_rules` secret, so its syncs keep importing
+ * every row the add-on is told to ignore. The app disables adding rules until a
+ * connected companion is this new. The same pattern as `SYNC_OVERRIDES_SINCE`.
+ */
+export const IGNORE_RULES_SINCE = '1.66.0';
+
+/** True when `companionVersion` obeys ignore rules. No companion at all (null)
+ *  is true: nothing else is syncing that could import the rows. */
+export function companionUnderstandsIgnoreRules(companionVersion: string | null): boolean {
+  if (companionVersion === null) return true;
+  return isAtLeastVersion(companionVersion.trim(), IGNORE_RULES_SINCE);
+}
+
 /** The companion's half: an installed add-on that reads `asReimbursement`.
  *  Unknown (null — the companion cannot see the addons directory) is false. */
 export function addonUnderstandsPaybacks(installedAddonVersion: string | null): boolean {

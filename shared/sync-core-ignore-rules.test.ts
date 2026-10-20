@@ -2,6 +2,8 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import { runSyncCore, VALUATION_POLL } from './sync-core.js';
 import { createFakeHost, type FakeHostSeed } from './fake-host.js';
 import type { IgnoreRule } from './ignore-rules.js';
+import { linkPairByRecreate } from './link-pair.js';
+import type { SyncHost } from './sync-host.js';
 
 /**
  * A brokerage cash-management account reports the movement INSIDE the account
@@ -156,5 +158,53 @@ describe('ignore rules', () => {
 
     expect(result.ignoredByRules).toBe(2);
     expect(activities.get('wf-cash') ?? []).toHaveLength(2);
+  });
+
+  // SimpleFin gives both sides of a same-institution transfer one id, so the
+  // ignored leg's id is still in the OTHER account's raw feed. Adoption treats a
+  // stored linked row whose id is missing from this account's feed as an
+  // overwritten leg; a rule-ignored row is missing for that reason only.
+  it('does not adopt a stored transfer leg a rule ignores into an unrelated new row', async () => {
+    const DAY = 86_400;
+    const now = Math.floor(Date.now() / 1000);
+    const xAt = now - 3 * DAY;
+    const yAt = now - DAY;
+    const iso = (sec: number) => new Date(sec * 1000).toISOString().slice(0, 10);
+    const fake = createFakeHost({
+      accountSet: { errors: [], accounts: [
+        { id: 'sfin-chk', name: 'Checking', currency: 'USD', balance: '0', 'balance-date': now, transactions: [
+          { id: 'TRN-X', posted: xAt, amount: '-100.00', description: 'ONLINE TRANSFER TO SAVINGS' },
+          { id: 'TRN-Y', posted: yAt, amount: '-100.00', description: 'ATM WITHDRAWAL 4471 MAIN ST' },
+        ] },
+        { id: 'sfin-sav', name: 'Savings', currency: 'USD', balance: '0', 'balance-date': now, transactions: [
+          { id: 'TRN-X', posted: xAt, amount: '100.00', description: 'ONLINE TRANSFER FROM CHECKING' },
+        ] },
+      ] },
+      mapping: { 'sfin-chk': 'wf-chk', 'sfin-sav': 'wf-sav' },
+      accountTypes: { 'wf-chk': 'CASH', 'wf-sav': 'CASH' },
+      existing: new Map([
+        ['wf-chk', [{ id: 'chk-x', accountId: 'wf-chk', activityType: 'TRANSFER_OUT', date: iso(xAt), amount: 100,
+          comment: 'ONLINE TRANSFER TO SAVINGS · TRN-X', sourceGroupId: 'g1' } as any]],
+        ['wf-sav', [{ id: 'sav-x', accountId: 'wf-sav', activityType: 'TRANSFER_IN', date: iso(xAt), amount: 100,
+          comment: 'ONLINE TRANSFER FROM CHECKING · TRN-X', sourceGroupId: 'g1' } as any]],
+      ]),
+      ignoreRules: [{ pattern: 'TRANSFER TO SAVINGS', matchType: 'contains', account: 'sfin-chk' }],
+      upstreamWriteRules: true,
+    });
+    const host: SyncHost = { ...fake.host, linkPair: (legs) => linkPairByRecreate((req) => fake.host.saveMany(req), legs) };
+    await runSyncCore(host, fake.store, { force: true });
+
+    const rows = fake.activities.get('wf-chk') ?? [];
+    const stored = rows.find((r) => r.id === 'chk-x');
+    expect(stored).toMatchObject({
+      activityType: 'TRANSFER_OUT', comment: 'ONLINE TRANSFER TO SAVINGS · TRN-X', sourceGroupId: 'g1',
+    });
+    const atm = rows.find((r) => r.comment?.includes('TRN-Y'));
+    // A cash outflow imports as an in-transit placeholder in a group of its
+    // own (it expires to spending); what matters is that it is a NEW row, not
+    // the stored transfer leg rewritten.
+    expect(atm).toBeDefined();
+    expect(atm!.id).not.toBe('chk-x');
+    expect(atm!.sourceGroupId).not.toBe('g1');
   });
 });

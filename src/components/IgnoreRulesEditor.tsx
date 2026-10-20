@@ -1,9 +1,10 @@
 import React, { useMemo, useState } from 'react';
 import type { SimplefinAccount, SimplefinTransaction } from '../../shared/types';
 import {
-  findIgnored, ignoreRuleProblem, IGNORE_PROBLEM_TEXT, sameIgnoreRule, withIgnoreRule, withoutIgnoreRule,
+  findIgnored, ignoreRuleProblem, IGNORE_PROBLEM_TEXT, IGNORE_UPDATE_COMPANION, sameIgnoreRule, withIgnoreRule, withoutIgnoreRule,
   type IgnoreRule,
 } from '../../shared/ignore-rules';
+import { companionUnderstandsIgnoreRules } from '../../shared/version';
 import { Button, ErrorBox, Input, Select } from './ui';
 
 /** The account select's value for a rule with no account. Never the default:
@@ -23,8 +24,13 @@ interface Props {
   accounts: Array<{ id: string; name: string }>;
   /** Saves the whole list. Rejects with the reason when nothing was saved. */
   onChange: (next: IgnoreRule[]) => Promise<void>;
-  /** The last `days` of the feed, for the preview. Absent: no preview. */
-  loadFeed?: (days: number) => Promise<SimplefinAccount[]>;
+  /** The last `days` of the feed, for the preview, with whatever errors
+   *  SimpleFin reported alongside it. Absent: no preview. */
+  loadFeed?: (days: number) => Promise<{ accounts: SimplefinAccount[]; errors: string[] }>;
+  /** The connected companion's version, null when none is connected. An older
+   *  companion's syncs keep importing the rows these rules ignore, so rules
+   *  can't be added until it is updated. */
+  companionVersion?: string | null;
   /** The stored list could not be read: shown read-only, since saving over it
    *  would drop the rules that were not understood. */
   unreadable?: boolean;
@@ -50,7 +56,7 @@ const txDay = (tx: SimplefinTransaction): string => {
  * at once, and an empty pattern matches everything; here that would hide every
  * transaction, so a blank rule is never written.
  */
-export function IgnoreRulesEditor({ rules, accounts, onChange, loadFeed, unreadable = false }: Props) {
+export function IgnoreRulesEditor({ rules, accounts, onChange, loadFeed, companionVersion = null, unreadable = false }: Props) {
   const [matchType, setMatchType] = useState<'contains' | 'regex'>('contains');
   const [pattern, setPattern] = useState('');
   const [account, setAccount] = useState('');
@@ -62,6 +68,7 @@ export function IgnoreRulesEditor({ rules, accounts, onChange, loadFeed, unreada
   const [feed, setFeed] = useState<SimplefinAccount[] | null>(null);
   const [feedLoading, setFeedLoading] = useState(false);
   const [feedError, setFeedError] = useState('');
+  const [feedWarnings, setFeedWarnings] = useState<string[]>([]);
 
   const accountName = (id: string | undefined) =>
     !id ? 'All synced accounts' : accounts.find((a) => a.id === id)?.name ?? id;
@@ -75,7 +82,8 @@ export function IgnoreRulesEditor({ rules, accounts, onChange, loadFeed, unreada
     ...(note.trim() ? { note: note.trim() } : {}),
   };
   const duplicate = !!draft && account !== '' && rules.some((r) => sameIgnoreRule(r, draft));
-  const canAdd = !!draft && account !== '' && !duplicate && !unreadable && !busy;
+  const companionBehind = !companionUnderstandsIgnoreRules(companionVersion);
+  const canAdd = !!draft && account !== '' && !duplicate && !unreadable && !companionBehind && !busy;
 
   const resetDraft = () => {
     setPattern('');
@@ -119,7 +127,9 @@ export function IgnoreRulesEditor({ rules, accounts, onChange, loadFeed, unreada
     setFeedLoading(true);
     setFeedError('');
     try {
-      setFeed(await loadFeed(PREVIEW_DAYS));
+      const read = await loadFeed(PREVIEW_DAYS);
+      setFeed(read.accounts);
+      setFeedWarnings(read.errors);
     } catch (e: any) {
       setFeedError(String(e?.message ?? e) || 'Could not reach SimpleFin');
     } finally {
@@ -158,6 +168,10 @@ export function IgnoreRulesEditor({ rules, accounts, onChange, loadFeed, unreada
           would drop the rules that weren&rsquo;t understood. The sync ignores nothing until this
           is fixed.
         </ErrorBox>
+      )}
+
+      {companionBehind && (
+        <div className="sfin-log-note" role="status" style={{ marginBottom: 8 }}>{IGNORE_UPDATE_COMPANION}</div>
       )}
 
       {rules.length === 0 && !unreadable && (
@@ -221,7 +235,7 @@ export function IgnoreRulesEditor({ rules, accounts, onChange, loadFeed, unreada
                 Rows already imported stay; delete them in Wealthfolio.
               </div>
               <div style={{ marginTop: 8, display: 'flex', gap: 8 }}>
-                <Button onClick={confirmAdd} disabled={busy}>Yes, ignore these</Button>
+                <Button onClick={confirmAdd} disabled={busy || companionBehind}>Yes, ignore these</Button>
                 <Button variant="ghost" onClick={() => setConfirming(false)} disabled={busy}>Cancel</Button>
               </div>
             </div>
@@ -237,6 +251,11 @@ export function IgnoreRulesEditor({ rules, accounts, onChange, loadFeed, unreada
             {feedLoading ? 'Reading SimpleFin…' : feed ? 'Read SimpleFin again' : `Preview last ${PREVIEW_DAYS} days`}
           </Button>
           {feedError && <ErrorBox>{feedError}</ErrorBox>}
+          {feed && feedWarnings.length > 0 && (
+            <div className="sfin-log-note" role="status" style={{ marginTop: 8 }}>
+              SimpleFin reported: {feedWarnings.join('; ')}. The counts below may be missing an institution.
+            </div>
+          )}
           {feed && (
             <div data-testid="ignore-preview" style={{ marginTop: 8 }}>
               {previewRules.length === 0 ? (

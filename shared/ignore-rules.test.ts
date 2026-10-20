@@ -25,6 +25,18 @@ describe('ignoreRuleProblem', () => {
     }
   });
 
+  it('refuses a regex that matches any single character, not only the empty string', () => {
+    for (const pattern of ['.', '\\S', '.+', '[\\s\\S]', '^.', '[^]', '\\w', '[a-z0-9]']) {
+      expect(ignoreRuleProblem({ pattern, matchType: 'regex' }), pattern).toBe('matches-everything');
+    }
+  });
+
+  it('accepts realistic narrow regexes', () => {
+    for (const pattern of ['SWEEP|CORE FUND', '^MONEY MARKET', '\\bSPAXX\\b', 'TRANSFER TO .* CORE']) {
+      expect(ignoreRuleProblem({ pattern, matchType: 'regex' }), pattern).toBeNull();
+    }
+  });
+
   it('refuses a regex that does not compile', () => {
     expect(ignoreRuleProblem({ pattern: '(unclosed', matchType: 'regex' })).toBe('bad-regex');
   });

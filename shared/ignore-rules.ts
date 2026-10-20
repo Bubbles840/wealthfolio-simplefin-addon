@@ -9,9 +9,12 @@
  * same decision made once for a whole kind of row. The sync adds every
  * transaction a rule matches to that same set, so a rule-ignored row takes
  * exactly the path a skipped one does: it is dropped before anything is
- * planned, the raw feed stays whole (transfer pairing still sees both sides),
- * and a copy already stored is left for the person to delete — removing money
- * from a ledger stays a step a person takes.
+ * planned, and a copy already stored is left for the person to delete —
+ * removing money from a ledger stays a step a person takes. Transfer pairing
+ * reads the filtered feed, so ignoring ONE leg of a real transfer leaves the
+ * other as an in-transit placeholder that expires to spending or income once
+ * the in-transit window passes. Rules should therefore target only rows that
+ * move money inside a single account.
  *
  * What this is for. A brokerage's cash-management account reports the movement
  * INSIDE the account as ordinary rows: "SWEEP FROM CORE FUND" +$1,000
@@ -23,14 +26,15 @@
  * row, which the balance-drift alert then reports — correctly.
  *
  * Safety. A rule that matches everything silently drops every transaction, so
- * an empty pattern (or a regular expression that matches the empty string) is
- * never a rule: the editor refuses it, and the sync discards one it finds in
+ * an empty pattern (or a regular expression that matches the empty string, or
+ * a letter and a digit alike) is never a rule: the editor refuses it, and the sync discards one it finds in
  * storage, so a hand-edited or corrupt list cannot hide an account.
  *
  * Both writers (companion and addon) read the same secret; only the addon's
  * UI writes it.
  */
 import { ruleApplies } from './mapper.js';
+import { IGNORE_RULES_SINCE } from './version.js';
 import type { SimplefinAccount, SimplefinTransaction } from './types.js';
 
 export const IGNORE_RULES_SECRET_KEY = 'ignore_rules';
@@ -52,13 +56,23 @@ export interface IgnoreRule {
   note?: string;
 }
 
+/** Descriptions a regex rule is tried against: a lowercase letter, a capital
+ *  and a digit. A narrow pattern such as `SWEEP|CORE FUND` matches none of
+ *  them, so a regex that matches ALL of them (`.`, `\S`, `\w`, `.+`,
+ *  `[\s\S]`) is a match-everything rule in disguise. No space or symbol is
+ *  tried: `\S` and `\w` each miss one, and would slip through. */
+export const MATCH_EVERYTHING_PROBES = ['a', 'Z', '0'] as const;
+
+/** Shown when a connected companion is older than `IGNORE_RULES_SINCE`. */
+export const IGNORE_UPDATE_COMPANION = `Update the companion to ${IGNORE_RULES_SINCE} or newer first — an older one keeps importing the rows these rules ignore. Rules can't be added until then.`;
+
 export type IgnoreRuleProblem = 'empty' | 'too-long' | 'bad-regex' | 'matches-everything';
 
 export const IGNORE_PROBLEM_TEXT: Record<IgnoreRuleProblem, string> = {
   empty: 'Enter some text to match. An empty rule would ignore every transaction.',
   'too-long': `Keep the pattern under ${IGNORE_PATTERN_MAX} characters.`,
   'bad-regex': "That isn't a valid regular expression.",
-  'matches-everything': 'That pattern matches an empty description, so it would ignore every transaction.',
+  'matches-everything': 'That pattern matches any text at all, so it would ignore every transaction.',
 };
 
 /** Why a rule must not be saved or obeyed, or null when it is fine. */
@@ -74,9 +88,9 @@ export function ignoreRuleProblem(rule: { pattern: string; matchType: string }):
       return 'bad-regex';
     }
     // `.*`, `a*`, `(x|)` — anything that matches nothing at all matches every
-    // description. A pattern is allowed to be broad; it is not allowed to be
-    // everything.
-    if (re.test('')) return 'matches-everything';
+    // description, and so does `.` or `\S`, which only need some character. A
+    // pattern is allowed to be broad; it is not allowed to be everything.
+    if (re.test('') || MATCH_EVERYTHING_PROBES.every((probe) => re.test(probe))) return 'matches-everything';
   }
   return null;
 }

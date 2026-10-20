@@ -213,6 +213,11 @@ export function requestLogIo(store: {
  *  - Setup's claim-and-first-fetch and Settings' "Refresh from SimpleFin"
  *    (purpose 'setup'): a person is waiting on them, so they may use the
  *    headroom up to the Setup ceiling of 24 and ignore the 5-minute gap.
+ *  - Settings' Ignore rules preview (purpose 'manual'): one download per click,
+ *    so it keeps a person's Sync limits — the 20 and the 5-minute gap — and
+ *    leaves the headroom to Setup and Refresh. Inside the gap nothing is
+ *    downloaded (there is no balance check to fall back to), so it says when
+ *    to try again.
  *  - the automatic account-name backfill on page load (purpose 'auto'): cosmetic
  *    and nobody asked for it, so it obeys the 16 and the hour like a scheduled
  *    run and its caller just skips when refused.
@@ -222,11 +227,16 @@ export function requestLogIo(store: {
  */
 export async function directCallLine(
   store: Parameters<typeof requestLogIo>[0],
-  purpose: 'setup' | 'auto',
+  purpose: 'setup' | 'auto' | 'manual',
   now = new Date(),
 ): Promise<string | null> {
   const io = requestLogIo(store);
   if (!io) return null;
   const gate = await reserveSimplefinRequest(io, purpose, now);
+  // `gateLine` words a manual gap as a balance check, which a bare download
+  // never ran.
+  if (gate.kind === 'checkOnly') {
+    return `SimpleFin was asked ${minutesAgo(gate.lastAt.getTime(), now)} min ago — try again at ${clockTime(new Date(gate.lastAt.getTime() + SIMPLEFIN_GAP_MS))}.`;
+  }
   return gateLine(gate, now);
 }
