@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'fs';
 import { join } from 'path';
-import { SIMPLEFIN_SYNC_VERSION } from './version.js';
+import { companionUnderstandsIgnoreRules, IGNORE_RULES_SINCE, SIMPLEFIN_SYNC_VERSION } from './version.js';
 
 describe('SIMPLEFIN_SYNC_VERSION', () => {
   /**
@@ -100,5 +100,16 @@ describe('hostTakesCardTransferOut', () => {
     expect(hostTakesCardTransferOut('3.9.1')).toBe(false);
     expect(hostTakesCardTransferOut('3.10.0-beta.1')).toBe(false);
     expect(hostTakesCardTransferOut(null)).toBe(false);
+  });
+});
+
+describe('the ignore rules gate', () => {
+  it('opens at the release whose companion obeys them, and with no companion at all', () => {
+    expect(companionUnderstandsIgnoreRules(IGNORE_RULES_SINCE)).toBe(true);
+    expect(companionUnderstandsIgnoreRules(` ${IGNORE_RULES_SINCE} `)).toBe(true);
+    expect(companionUnderstandsIgnoreRules('9.0.0')).toBe(true);
+    expect(companionUnderstandsIgnoreRules('1.65.0')).toBe(false);
+    expect(companionUnderstandsIgnoreRules('garbage')).toBe(false);
+    expect(companionUnderstandsIgnoreRules(null)).toBe(true);
   });
 });

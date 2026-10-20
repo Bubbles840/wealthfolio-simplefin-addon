@@ -335,6 +335,23 @@ describe('RestSyncStore', () => {
     expect(await new RestSyncStore(client).getSkippedTransactions()).toEqual([{ account: 'sfin-1', txId: 'TRN-1' }]);
   });
 
+  it('reads the ignore rules the addon shares, dropping any that would ignore everything', async () => {
+    const secrets = new Map<string, string>([
+      ['ignore_rules', JSON.stringify([
+        { pattern: 'SWEEP FROM CORE FUND', matchType: 'contains', account: 'sfin-1' },
+        { pattern: '', matchType: 'contains' },
+        { pattern: '.*', matchType: 'regex' },
+      ])],
+    ]);
+    const client = {
+      getAddonSecret: vi.fn(async (_addonId: string, key: string) => secrets.get(key) ?? null),
+      setAddonSecret: vi.fn(),
+    } as any;
+    expect(await new RestSyncStore(client).getIgnoreRules()).toEqual([
+      { pattern: 'SWEEP FROM CORE FUND', matchType: 'contains', account: 'sfin-1' },
+    ]);
+  });
+
   it('reads and writes the Venmo payments under venmo_ledger, absent as empty, unreadable as an error', async () => {
     const secrets = new Map<string, string>();
     const client = {

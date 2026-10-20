@@ -319,6 +319,46 @@ describe('SettingsTab', () => {
     ]));
   });
 
+  it('never stores an empty rule: "+ Add rule" saves nothing until the new row has a pattern', async () => {
+    // It used to save { pattern: '', activityType: 'DEPOSIT' } at once, which
+    // typed every transaction a deposit.
+    const props = makeProps();
+    props.store.getMappingRules = vi.fn(async () => [{ pattern: 'ATM', matchType: 'contains', activityType: 'WITHDRAWAL' }]);
+    render(<SyncPage {...props} />);
+    await switchTab(/settings/i);
+    await openSection(/^Transaction rules/i);
+
+    fireEvent.click(screen.getByText('+ Add rule'));
+    await waitFor(() => expect(props.store.setMappingRules).toHaveBeenCalled());
+    expect(props.store.setMappingRules).toHaveBeenLastCalledWith([{ pattern: 'ATM', matchType: 'contains', activityType: 'WITHDRAWAL' }]);
+    expect(screen.getByText(/empty rule is not saved/)).toBeInTheDocument();
+
+    // The stored list is now what was saved, so the next save is not "changed elsewhere".
+    props.store.getMappingRules = vi.fn(async () => [{ pattern: 'ATM', matchType: 'contains', activityType: 'WITHDRAWAL' }]);
+    const inputs = screen.getAllByPlaceholderText('pattern');
+    fireEvent.change(inputs[inputs.length - 1], { target: { value: 'PAYROLL' } });
+    await waitFor(() => expect(props.store.setMappingRules).toHaveBeenLastCalledWith([
+      { pattern: 'ATM', matchType: 'contains', activityType: 'WITHDRAWAL' },
+      { pattern: 'PAYROLL', matchType: 'contains', activityType: 'DEPOSIT' },
+    ]));
+  });
+
+  it('drops an empty rule already stored the next time the rules are saved', async () => {
+    const props = makeProps();
+    const stored = [
+      { pattern: '', matchType: 'contains', activityType: 'DEPOSIT' },
+      { pattern: 'ATM', matchType: 'contains', activityType: 'WITHDRAWAL' },
+    ];
+    props.store.getMappingRules = vi.fn(async () => stored as any);
+    render(<SyncPage {...props} />);
+    await switchTab(/settings/i);
+    await openSection(/^Transaction rules/i);
+    fireEvent.change(screen.getByDisplayValue('ATM'), { target: { value: 'ATM WITHDRAWAL' } });
+    await waitFor(() => expect(props.store.setMappingRules).toHaveBeenCalledWith([
+      { pattern: 'ATM WITHDRAWAL', matchType: 'contains', activityType: 'WITHDRAWAL' },
+    ]));
+  });
+
   it('PB-K: refuses to save when the rules changed elsewhere since they were loaded (the companion added a payback rule)', async () => {
     const props = makeProps();
     const loaded = [{ pattern: 'PAYROLL', matchType: 'contains', activityType: 'DEPOSIT' }];
@@ -402,7 +442,7 @@ describe('SettingsTab', () => {
     // account mapping — since it undersells a destructive action otherwise.
     expect(card!.textContent).toContain(
       'Clears every SimpleFin Sync setting — the connection, account mapping, sync '
-      + 'schedule, transaction rules, the change log, and any Telegram or Amazon setup. '
+      + 'schedule, transaction and ignore rules, the change log, and any Telegram or Amazon setup. '
       + 'Transactions already imported into Wealthfolio stay.',
     );
   });
@@ -463,6 +503,120 @@ describe('SettingsTab', () => {
   // ── Accounts card ────────────────────────────────────────────────────────
   // Mapping an account linked AFTER setup used to require Reset, which clears
   // every other setting. These cover the path that replaced it.
+  describe('Ignore rules card', () => {
+    const withIgnoreRules = (stored: { kind: string; list?: any[] }) => {
+      const props = makeProps();
+      props.store.readIgnoreRules = vi.fn(async () => stored);
+      props.store.setIgnoreRules = vi.fn(async () => {});
+      return props;
+    };
+
+    it('is absent on a store that cannot keep ignore rules', async () => {
+      render(<SyncPage {...makeProps()} />);
+      await switchTab(/settings/i);
+      await screen.findByRole('button', { name: /^Transaction rules/i });
+      expect(screen.queryByRole('button', { name: /^Ignore rules/i })).toBeNull();
+    });
+
+    it('summarises the stored rules, and offers only the mapped accounts by their SimpleFin names', async () => {
+      const props = withIgnoreRules({ kind: 'ok', list: [{ pattern: 'SWEEP FROM CORE', matchType: 'contains', account: 'sfin-1' }] });
+      render(<SyncPage {...props} />);
+      await switchTab(/settings/i);
+      expect(await screen.findByText('Ignoring 1 pattern')).toBeInTheDocument();
+      await openSection(/^Ignore rules/i);
+      expect(await screen.findByTestId('ignore-rule')).toHaveTextContent('Growth');
+      const select = screen.getByLabelText('Account') as HTMLSelectElement;
+      await waitFor(() => expect(Array.from(select.options).map((o) => o.textContent)).toEqual([
+        'Choose an account…', 'All synced accounts', 'Growth', 'Spend',
+      ]));
+    });
+
+    it('saves a confirmed rule through the store', async () => {
+      const props = withIgnoreRules({ kind: 'absent' });
+      render(<SyncPage {...props} />);
+      await switchTab(/settings/i);
+      await openSection(/^Ignore rules/i);
+      fireEvent.change(await screen.findByLabelText('Description pattern'), { target: { value: 'SWEEP TO CORE FUND' } });
+      fireEvent.change(screen.getByLabelText('Account'), { target: { value: 'sfin-2' } });
+      fireEvent.click(screen.getByRole('button', { name: 'Add rule…' }));
+      fireEvent.click(screen.getByRole('button', { name: 'Yes, ignore these' }));
+      await waitFor(() => expect(props.store.setIgnoreRules).toHaveBeenCalledWith([
+        { pattern: 'SWEEP TO CORE FUND', matchType: 'contains', account: 'sfin-2' },
+      ]));
+      expect(await screen.findByText('Ignoring 1 pattern')).toBeInTheDocument();
+    });
+
+    it('turns read-only over a stored list it cannot read', async () => {
+      const props = withIgnoreRules({ kind: 'corrupt' });
+      render(<SyncPage {...props} />);
+      await switchTab(/settings/i);
+      expect(await screen.findByText("Can't be read")).toBeInTheDocument();
+      await openSection(/^Ignore rules/i);
+      expect(screen.queryByLabelText('Description pattern')).toBeNull();
+    });
+
+    it('reads the preview from SimpleFin only when asked', async () => {
+      const { fetchAccounts } = await import('../utils/simplefin');
+      const props = withIgnoreRules({ kind: 'absent' });
+      render(<SyncPage {...props} />);
+      await switchTab(/settings/i);
+      await openSection(/^Ignore rules/i);
+      vi.mocked(fetchAccounts).mockClear();
+      try {
+        expect(fetchAccounts).not.toHaveBeenCalled();
+        fireEvent.click(await screen.findByRole('button', { name: 'Preview last 30 days' }));
+        await screen.findByTestId('ignore-preview');
+        expect(fetchAccounts).toHaveBeenCalledTimes(1);
+      } finally {
+        // The Accounts card's tests count this mock's calls from zero.
+        vi.mocked(fetchAccounts).mockClear();
+      }
+    });
+    it('holds the preview to a manual call: refused at 20 with the one line, and nothing is downloaded', async () => {
+      const { fetchAccounts } = await import('../utils/simplefin');
+      const props = withIgnoreRules({ kind: 'absent' });
+      // 20 downloads in the last day: Setup's headroom would still allow one more.
+      let raw: string | null = JSON.stringify(Array.from({ length: 20 }, (_, i) => new Date(Date.now() - (60 + i) * 60_000).toISOString()));
+      props.store.getSimplefinRequests = vi.fn(async () => raw);
+      props.store.setSimplefinRequests = vi.fn(async (v: string) => { raw = v; });
+      render(<SyncPage {...props} />);
+      await switchTab(/settings/i);
+      await openSection(/^Ignore rules/i);
+      vi.mocked(fetchAccounts).mockClear();
+      fireEvent.click(await screen.findByRole('button', { name: 'Preview last 30 days' }));
+      expect(await screen.findByText(/SimpleFin's daily limit is used up — next sync at/)).toBeInTheDocument();
+      expect(fetchAccounts).not.toHaveBeenCalled();
+    });
+
+    it('shows the errors SimpleFin sent with the feed', async () => {
+      const { fetchAccounts } = await import('../utils/simplefin');
+      const props = withIgnoreRules({ kind: 'absent' });
+      render(<SyncPage {...props} />);
+      await switchTab(/settings/i);
+      await openSection(/^Ignore rules/i);
+      vi.mocked(fetchAccounts).mockClear();
+      vi.mocked(fetchAccounts).mockResolvedValueOnce({ errors: ['Connection to Fidelity may need attention'], accounts: [] });
+      try {
+        fireEvent.click(await screen.findByRole('button', { name: 'Preview last 30 days' }));
+        expect(await screen.findByText(/SimpleFin reported: Connection to Fidelity may need attention/)).toBeInTheDocument();
+      } finally {
+        vi.mocked(fetchAccounts).mockClear();
+      }
+    });
+
+    it('asks for a companion update before rules can be added, when the connected one is older', async () => {
+      const props = withIgnoreRules({ kind: 'absent' });
+      props.store.getCompanionVersion = vi.fn(async () => '1.65.0');
+      render(<SyncPage {...props} />);
+      await switchTab(/settings/i);
+      await openSection(/^Ignore rules/i);
+      expect(await screen.findByText(/Update the companion to 1\.66\.0 or newer first/)).toBeInTheDocument();
+      fireEvent.change(screen.getByLabelText('Description pattern'), { target: { value: 'SWEEP TO CORE FUND' } });
+      fireEvent.change(screen.getByLabelText('Account'), { target: { value: 'sfin-2' } });
+      expect(screen.getByRole('button', { name: 'Add rule…' })).toBeDisabled();
+    });
+  });
+
   describe('Accounts card', () => {
     it('does not touch the bridge until the card is opened', async () => {
       const { fetchAccounts } = await import('../utils/simplefin');

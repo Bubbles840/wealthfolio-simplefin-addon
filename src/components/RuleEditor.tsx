@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import type { MappingRule, ActivityType } from '../../shared/types';
-import { mapTransactionWithSource } from '../../shared/mapper';
+import { mapTransactionWithSource, mappingRuleProblem, MAPPING_RULE_PROBLEM_TEXT } from '../../shared/mapper';
 import { Button, Input, Select } from './ui';
 
 const ACTIVITY_TYPES: ActivityType[] = [
@@ -106,6 +106,14 @@ export function RuleEditor({ rules, onChange, accountNames = {} }: Props) {
           )}
           <Button variant="ghost" onClick={() => removeRule(i)} aria-label="Remove rule">✕</Button>
         </div>
+        {(() => {
+          const problem = mappingRuleProblem(rule);
+          return problem && (
+            <div className="sfin-log-note" role="status" style={{ marginTop: 2 }}>
+              {MAPPING_RULE_PROBLEM_TEXT[problem]}
+            </div>
+          );
+        })()}
         {hasLimits(rule) && (
           <div className="sfin-subtle" style={{ fontSize: 12, marginTop: 2 }}>
             {[

@@ -5,6 +5,7 @@ import type { VenmoLedger } from './venmo-ledger.js';
 import type { HoldingsSnapshot } from './holdings.js';
 import type { SkippedTransaction } from './skipped-transactions.js';
 import type { TransferNames } from './transfer-names.js';
+import type { IgnoreRule } from './ignore-rules.js';
 import type { SyncOverrides } from './sync-overrides.js';
 import type {
   ActivityWrite,
@@ -30,6 +31,8 @@ export interface FakeHostSeed {
   accountSet?: SimplefinAccountSet;
   mapping?: AccountMapping;
   accountTypes?: Record<string, string>;
+  /** Wealthfolio account currencies by id; absent keys report none. */
+  accountCurrencies?: Record<string, string>;
   /** Wealthfolio account display names, keyed by Wealthfolio account id. Absent
    *  entries make `listAccounts` report no name, which is what a host that
    *  cannot supply one looks like. */
@@ -103,6 +106,8 @@ export interface FakeHostSeed {
   skippedTransactions?: SkippedTransaction[];
   /** The learned transfer names (absent: the store has no `getTransferNames`). */
   transferNames?: TransferNames;
+  /** The user's ignore rules (see shared/ignore-rules.ts). */
+  ignoreRules?: IgnoreRule[];
   /** What Undo told the sync not to do (shared/sync-overrides.ts). Absent
    *  leaves `getSyncOverrides` off the store, the shape of an older host. */
   syncOverrides?: SyncOverrides;
@@ -311,6 +316,7 @@ export function createFakeHost(seed: FakeHostSeed = {}): FakeHost {
         // Key absent rather than `undefined` when unseeded, so an unnamed
         // account looks exactly like one the real host reports no name for.
         ...(accountNames[id] !== undefined ? { name: accountNames[id] } : {}),
+        ...(seed.accountCurrencies?.[id] !== undefined ? { currency: seed.accountCurrencies[id] } : {}),
       }));
     },
 
@@ -586,6 +592,9 @@ export function createFakeHost(seed: FakeHostSeed = {}): FakeHost {
           async setSimplefinRequests(raw: string) { seed.requestLog!.raw = raw; },
         }
       : {}),
+    async getIgnoreRules() {
+      return seed.ignoreRules ?? [];
+    },
     ...(seed.syncOverrides
       ? { async getSyncOverrides() { return seed.syncOverrides!; } }
       : {}),

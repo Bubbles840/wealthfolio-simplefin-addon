@@ -33,6 +33,35 @@ export interface MappedType {
   genericTransferWording?: true;
 }
 
+export type MappingRuleProblem = 'empty' | 'matches-everything';
+
+export const MAPPING_RULE_PROBLEM_TEXT: Record<MappingRuleProblem, string> = {
+  empty: 'Enter a pattern. An empty rule is not saved: it would match every transaction.',
+  'matches-everything': 'This pattern matches an empty description, so it would match every transaction. It is not saved.',
+};
+
+/**
+ * Why a transaction rule must not be obeyed or saved, or null when it is fine.
+ *
+ * A rule matches by containment, and every description contains the empty
+ * string: "+ Add rule" used to save `{ pattern: '', activityType: 'DEPOSIT' }`
+ * at once, and that one blank row typed every transaction a deposit, money out
+ * included, until a card account refused the whole sync. A regex that matches
+ * the empty string (`.*`, `a*`) does the same. A bad regex is not listed: it
+ * already matches nothing, and the editor says so.
+ */
+export function mappingRuleProblem(rule: { pattern: string; matchType: string }): MappingRuleProblem | null {
+  if (rule.pattern.trim() === '') return 'empty';
+  if (rule.matchType === 'regex') {
+    try {
+      if (new RegExp(rule.pattern, 'i').test('')) return 'matches-everything';
+    } catch {
+      return null;
+    }
+  }
+  return null;
+}
+
 /**
  * Whether one transaction rule decides this transaction. A payback rule
  * ("Make every … deposit a payback", 1.62 W10) carries two limits no older
@@ -41,6 +70,8 @@ export interface MappedType {
  * direction-blind) — and `accountId`, the one Wealthfolio account it reads.
  */
 export function ruleApplies(rule: MappingRule, description: string, amount: number, wfAccountId?: string, txDay?: string): boolean {
+  // A stored rule that would match everything is never obeyed (`mappingRuleProblem`).
+  if (mappingRuleProblem(rule) !== null) return false;
   if (rule.onlyMoneyIn && !(amount > 0)) return false;
   if (rule.accountId && rule.accountId !== wfAccountId) return false;
   // A rule with `since` reads only transactions dated on or after it; one whose
