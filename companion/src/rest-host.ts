@@ -10,6 +10,7 @@ import type { UnlinkLeg, UnlinkResult } from '../../shared/link-pair.js';
 import { SIMPLEFIN_REQUESTS_SECRET_KEY } from '../../shared/simplefin-budget.js';
 import { TRANSFER_NAMES_SECRET_KEY, parseTransferNames, type TransferNames } from '../../shared/transfer-names.js';
 import { SKIPPED_TRANSACTIONS_SECRET_KEY, parseSkippedTransactions, type SkippedTransaction } from '../../shared/skipped-transactions.js';
+import { IGNORE_RULES_SECRET_KEY, parseIgnoreRules, type IgnoreRule } from '../../shared/ignore-rules.js';
 import { loadSyncOverrides, syncOverridesIgnoredLog, syncOverridesOrEmpty, type LoadedSyncOverrides, type SyncOverrides } from '../../shared/sync-overrides.js';
 import { hostTakesCardTransferOut, WEALTHFOLIO_VERSION_SECRET_KEY } from '../../shared/version.js';
 import type { WealthfolioClient } from './wealthfolio.js';
@@ -401,6 +402,12 @@ export class RestSyncStore implements SyncStore {
    *  companion tool, and honoured here (see shared/skipped-transactions.ts). */
   async getSkippedTransactions(): Promise<SkippedTransaction[]> {
     return parseSkippedTransactions(await this.client.getAddonSecret(this.addonId, SKIPPED_TRANSACTIONS_SECRET_KEY));
+  }
+
+  /** The add-on's ignore rules (shared/ignore-rules.ts). Without this a
+   *  companion sync would import every row the add-on's sync leaves out. */
+  async getIgnoreRules(): Promise<IgnoreRule[]> {
+    return parseIgnoreRules(await this.client.getAddonSecret(this.addonId, IGNORE_RULES_SECRET_KEY));
   }
 
   /** The same document the add-on reads (shared/sync-overrides.ts); corrupt,

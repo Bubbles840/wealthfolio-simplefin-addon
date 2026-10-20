@@ -1,3 +1,4 @@
+import { findIgnored, normalizeIgnoreRules } from './ignore-rules.js';
 import { bankFirstTransferOut, genericTransferNeedsCorroboration } from './bank-first-payment.js';
 import { fillFeedCurrencies } from './feed-currency.js';
 import { learnedNameKeys, learnedTransferType } from './transfer-names.js';
@@ -448,6 +449,10 @@ export interface SyncResult {
    *  `lastAt` (checkOnly only): when the newest request was sent, epoch ms, so a
    *  Deep scan can say when it may download (F3b). */
   download?: { kind: 'checkOnly' | 'skipped'; line: string; lastAt?: number };
+  /** Bank transactions this run left out because one of the user's ignore rules
+   *  (shared/ignore-rules.ts) matched them. Absent on a run that returned before
+   *  reading the feed, and 0 when no rule matched anything. */
+  ignoredByRules?: number;
   stuckTransferAlerts: Array<{ outTxId: string; description: string; amountCents: number; currency: string }>;
   /** Every feed transaction this run CONFIRMED as created, for the companion's
    *  import notice. Driven off the create echo, so a rejected create is not
@@ -2339,6 +2344,23 @@ async function runSyncPass(
     ((await store.getSkippedTransactions?.().catch(() => [])) ?? [])
       .map((s) => accountTxKey(s.account, s.txId)),
   );
+  /** The same decision made once for a whole kind of row (shared/ignore-rules.ts):
+   *  every transaction a rule matches joins the set above, so it takes exactly the
+   *  path a skipped one does — dropped before anything is planned, the raw feed
+   *  left whole, a stored copy left for the person to delete. A failed read, or a
+   *  list with no usable rule, ignores nothing. Only mapped accounts: a rule never
+   *  reaches an account nothing is synced from. */
+  const ignoreRules = normalizeIgnoreRules((await store.getIgnoreRules?.().catch(() => [])) ?? []);
+  let ignoredByRules = 0;
+  for (const hit of findIgnored(ignoreRules, accountSet.accounts, (id) => !!mapping[id])) {
+    const key = accountTxKey(hit.account.id, hit.tx.id);
+    if (skippedTxKeys.has(key)) continue;
+    skippedTxKeys.add(key);
+    ignoredByRules++;
+  }
+  if (ignoredByRules > 0) {
+    console.log(`[simplefin-sync] ${ignoredByRules} transaction(s) left out by your ignore rules`);
+  }
   /** What Undo told the sync not to do again (shared/sync-overrides.ts). A
    *  failed or corrupt read is empty: the sync then behaves as it always did. */
   // Read ONCE: two reads can disagree (the first failing, the second working),
@@ -4740,5 +4762,6 @@ async function runSyncPass(
     largeTransactionAlerts, balanceDriftAlerts, prunedDuplicates, unmappedAccounts,
     refusedCreates,
     holdingsSnapshots,
+    ignoredByRules,
   };
 }
