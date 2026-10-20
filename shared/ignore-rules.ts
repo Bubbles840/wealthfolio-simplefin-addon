@@ -12,9 +12,10 @@
  * planned, and a copy already stored is left for the person to delete —
  * removing money from a ledger stays a step a person takes. Transfer pairing
  * reads the filtered feed, so ignoring ONE leg of a real transfer leaves the
- * other as an in-transit placeholder that expires to spending or income once
- * the in-transit window passes. Rules should therefore target only rows that
- * move money inside a single account.
+ * other without its partner: it pairs with some other row of the same amount
+ * if one is near, and otherwise waits in transit and expires to spending or
+ * income. Rules should therefore target only rows that move money inside a
+ * single account.
  *
  * What this is for. A brokerage's cash-management account reports the movement
  * INSIDE the account as ordinary rows: "SWEEP FROM CORE FUND" +$1,000
@@ -27,8 +28,9 @@
  *
  * Safety. A rule that matches everything silently drops every transaction, so
  * an empty pattern (or a regular expression that matches the empty string, or
- * a letter and a digit alike) is never a rule: the editor refuses it, and the sync discards one it finds in
- * storage, so a hand-edited or corrupt list cannot hide an account.
+ * a letter and a digit alike) is never a rule: the editor refuses it, and the
+ * sync discards one it finds in storage, so a hand-edited or corrupt list
+ * cannot hide an account.
  *
  * Both writers (companion and addon) read the same secret; only the addon's
  * UI writes it.

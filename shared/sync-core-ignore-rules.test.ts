@@ -200,9 +200,11 @@ describe('ignore rules', () => {
       activityType: 'TRANSFER_OUT', comment: 'ONLINE TRANSFER TO SAVINGS · TRN-X', sourceGroupId: 'g1',
     });
     const atm = rows.find((r) => r.comment?.includes('TRN-Y'));
-    // A cash outflow imports as an in-transit placeholder in a group of its
-    // own (it expires to spending); what matters is that it is a NEW row, not
-    // the stored transfer leg rewritten.
+    // What matters here is that it is a NEW row, not the stored transfer leg
+    // rewritten. It is not a plain withdrawal: with Checking's leg ignored, the
+    // Savings leg has no partner in the feed and pairs with this same-amount
+    // row instead. That is what ignoring one side of a real transfer does, and
+    // why ignore rules are only for rows that move money inside one account.
     expect(atm).toBeDefined();
     expect(atm!.id).not.toBe('chk-x');
     expect(atm!.sourceGroupId).not.toBe('g1');
