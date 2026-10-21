@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { AddonContext } from '@wealthfolio/addon-sdk';
 import { runSync } from '../utils/sync';
 import { Button, CollapsibleCard, ErrorBox, Why } from '../components/ui';
@@ -31,7 +31,7 @@ import { undoFromApp } from '../utils/change-undo';
 import type { LinkPair } from '../../shared/audit-link';
 import { linkFromApp, notTransferFromApp } from '../utils/audit-fix';
 import type { HeldTransfer } from '../../shared/held-transfers';
-import type { IgnoreRule } from '../../shared/ignore-rules';
+import { ruleAccountOptions, type IgnoreRule } from '../../shared/ignore-rules';
 
 /** Ids for this tab's collapsible cards. Doubles as the persisted key set (the
  *  page owns the open-card map), so these strings must not change — a rename
@@ -358,10 +358,12 @@ export function SettingsTab({
     await store.setIgnoreRules(next);
     setIgnoreRules(next);
   }, [store]);
-  /** The mapped SimpleFin accounts, the only ones a rule reaches. */
-  const ignoreRuleAccounts = Object.keys(accountMapping)
-    .filter((id) => !!accountMapping[id])
-    .map((id) => ({ id, name: sfinNames[id] ?? id }));
+  /** The mapped accounts, the only ones a rule reaches: one per Wealthfolio
+   *  account, so a connection added again doesn't list one account twice. */
+  const ignoreRuleAccounts = useMemo(
+    () => ruleAccountOptions(accountMapping, sfinNames, new Set(Object.keys(balances)), wfNames),
+    [accountMapping, sfinNames, balances, wfNames],
+  );
   /** The preview's feed: one SimpleFin download, made only when the person asks.
    *  Counted as a manual call (the 20 and the 5-minute gap): the button can be
    *  clicked again and again, and the headroom past 20 is Setup's and Refresh's. */

@@ -40,6 +40,15 @@ describe('IgnoreRulesEditor', () => {
     expect(screen.getByTestId('ignore-rule')).toHaveTextContent('contains “SWEEP FROM CORE FUND” · Cash Account · core sweeps');
   });
 
+  it('shows a rule saved on an older id of an account under that account, and knows it is the same rule', () => {
+    const relinked = [{ id: 'sfin-cash', name: 'Cash Account', aliases: ['sfin-cash-old'] }, { id: 'sfin-chk', name: 'Checking' }];
+    render(<IgnoreRulesEditor rules={[{ ...sweep, account: 'sfin-cash-old' }]} accounts={relinked} onChange={vi.fn()} />);
+    expect(screen.getByTestId('ignore-rule')).toHaveTextContent('contains “SWEEP FROM CORE FUND” · Cash Account');
+    expect(screen.getAllByRole('option', { name: 'Cash Account' })).toHaveLength(1);
+    fill('SWEEP FROM CORE FUND', 'sfin-cash');
+    expect(screen.getByText('You already have this rule.')).toBeInTheDocument();
+  });
+
   it('never saves a blank rule: Add stays disabled with no pattern, and with no account chosen', () => {
     const onChange = vi.fn(async () => {});
     render(<IgnoreRulesEditor rules={[]} accounts={accounts} onChange={onChange} />);

@@ -1,4 +1,4 @@
-import { findIgnored, normalizeIgnoreRules } from './ignore-rules.js';
+import { findIgnored, normalizeIgnoreRules, sameMappedAccount } from './ignore-rules.js';
 import { bankFirstTransferOut, genericTransferNeedsCorroboration } from './bank-first-payment.js';
 import { fillFeedCurrencies } from './feed-currency.js';
 import { activeRelinks, emptyRelinkDecisions, openRelinkQuestions, planRelinkAdoption, retiredIds } from './relink.js';
@@ -2462,7 +2462,7 @@ async function runSyncPass(
   let ignoredByRules = 0;
   /** See `SyncResult.relinkAdopted`. */
   let relinkAdopted = 0;
-  for (const hit of findIgnored(ignoreRules, accountSet.accounts, (id) => !!mapping[id])) {
+  for (const hit of findIgnored(ignoreRules, accountSet.accounts, (id) => !!mapping[id], sameMappedAccount(mapping))) {
     const key = accountTxKey(hit.account.id, hit.tx.id);
     if (skippedTxKeys.has(key)) continue;
     skippedTxKeys.add(key);

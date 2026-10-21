@@ -53,6 +53,18 @@ describe('ignore rules', () => {
     ]);
   });
 
+  it('a rule saved on an account keeps working after the connection is added again', async () => {
+    // The bank account came back as 'sfin-cash-new', mapped to the same
+    // Wealthfolio account; the rules were saved on the old id.
+    const seed = brokerageCash({ ignoreRules: sweeps('sfin-cash'), mapping: { 'sfin-cash': 'wf-cash', 'sfin-cash-new': 'wf-cash' } });
+    seed.accountSet!.accounts[0].id = 'sfin-cash-new';
+    const { host, store, activities } = createFakeHost(seed);
+    const result = await runSyncCore(host, store, { force: true });
+
+    expect(result.ignoredByRules).toBe(3);
+    expect(activities.get('wf-cash') ?? []).toHaveLength(2);
+  });
+
   it('imports everything when there are no rules', async () => {
     const { host, store, activities } = createFakeHost(brokerageCash());
     const result = await runSyncCore(host, store, { force: true });

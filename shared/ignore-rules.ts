@@ -182,14 +182,69 @@ export function ignoreRuleMatches(rule: IgnoreRule, description: string | undefi
   );
 }
 
+/** Whether a rule saved on SimpleFin account `ruleAccount` reaches account `sfAccountId`. */
+export type SameRuleAccount = (ruleAccount: string, sfAccountId: string) => boolean;
+
+/**
+ * Two SimpleFin ids mapped to the same Wealthfolio account are one account to a
+ * rule. A connection removed and added again comes back under new account ids,
+ * mapped to the same Wealthfolio accounts as before: a rule saved on the old id
+ * keeps reaching the account through the new one, and nothing stored has to be
+ * rewritten for it.
+ */
+export function sameMappedAccount(mapping: Readonly<Record<string, string>>): SameRuleAccount {
+  return (a, b) => a === b || (!!mapping[a] && mapping[a] === mapping[b]);
+}
+
+/** One account a rule can be limited to, as the editor offers it. */
+export interface RuleAccountOption {
+  /** The SimpleFin id a new rule is saved on: the one in the last download. */
+  id: string;
+  name: string;
+  /** Older ids mapped to the same Wealthfolio account (a re-linked connection):
+   *  a rule saved on one of them shows, and applies, here. */
+  aliases: string[];
+}
+
+/**
+ * The accounts a rule can be limited to: one per Wealthfolio account, not one per
+ * SimpleFin id. After a connection is added again, the old and the new id are
+ * both mapped and both carry the bank's name, which listed one account twice
+ * under the same name. The id in the last download (`inDownload`) is the one
+ * offered; the others become its aliases. Two different accounts that still
+ * share a name are told apart by their Wealthfolio account names.
+ */
+export function ruleAccountOptions(
+  mapping: Readonly<Record<string, string>>,
+  names: Readonly<Record<string, string>>,
+  inDownload: ReadonlySet<string>,
+  wfNames: Readonly<Record<string, string>> = {},
+): RuleAccountOption[] {
+  const byWf = new Map<string, string[]>();
+  for (const [id, wf] of Object.entries(mapping)) {
+    if (wf) byWf.set(wf, [...(byWf.get(wf) ?? []), id]);
+  }
+  const options: Array<RuleAccountOption & { wf: string }> = [];
+  for (const [wf, ids] of byWf) {
+    const sorted = [...ids].sort();
+    const present = sorted.filter((id) => inDownload.has(id));
+    const id = present.length === 1 ? present[0] : sorted[0];
+    options.push({ id, name: names[id] ?? names[sorted.find((x) => names[x]) ?? ''] ?? id, aliases: sorted.filter((x) => x !== id), wf });
+  }
+  const count = new Map<string, number>();
+  for (const o of options) count.set(o.name, (count.get(o.name) ?? 0) + 1);
+  return options.map(({ wf, ...o }) => ((count.get(o.name) ?? 0) > 1 && wfNames[wf] ? { ...o, name: `${o.name} · ${wfNames[wf]}` } : o));
+}
+
 /** The first rule that ignores a transaction in this account, or null. */
 export function ignoreRuleFor(
   rules: readonly IgnoreRule[],
   sfAccountId: string,
   description: string | undefined,
+  sameAccount: SameRuleAccount = (a, b) => a === b,
 ): IgnoreRule | null {
   for (const rule of rules) {
-    if (rule.account && rule.account !== sfAccountId) continue;
+    if (rule.account && !sameAccount(rule.account, sfAccountId)) continue;
     if (ignoreRuleMatches(rule, description)) return rule;
   }
   return null;
@@ -209,13 +264,14 @@ export function findIgnored(
   rules: readonly IgnoreRule[],
   accounts: readonly SimplefinAccount[],
   isMapped: (sfAccountId: string) => boolean = () => true,
+  sameAccount?: SameRuleAccount,
 ): IgnoredHit[] {
   if (rules.length === 0) return [];
   const hits: IgnoredHit[] = [];
   for (const account of accounts) {
     if (!isMapped(account.id)) continue;
     for (const tx of account.transactions ?? []) {
-      const rule = ignoreRuleFor(rules, account.id, tx.description);
+      const rule = ignoreRuleFor(rules, account.id, tx.description, sameAccount);
       if (rule) hits.push({ account, tx, rule });
     }
   }

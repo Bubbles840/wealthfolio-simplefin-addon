@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
   ignoreRuleProblem, normalizeIgnoreRules, parseIgnoreRules, parseIgnoreRulesStrict,
   ignoreRuleMatches, ignoreRuleFor, findIgnored, withIgnoreRule, withoutIgnoreRule,
+  sameMappedAccount, ruleAccountOptions,
   IGNORE_PATTERN_MAX, type IgnoreRule,
 } from './ignore-rules.js';
 import type { SimplefinAccount } from './types.js';
@@ -145,5 +146,45 @@ describe('editing', () => {
   it('removes a rule by position', () => {
     const list = [rule({ pattern: 'a' }), rule({ pattern: 'b' }), rule({ pattern: 'c' })];
     expect(withoutIgnoreRule(list, 1).map((r) => r.pattern)).toEqual(['a', 'c']);
+  });
+});
+
+describe('a re-linked connection', () => {
+  // The connection was added again: the same bank account came back as
+  // 'sfin-new', mapped to the same Wealthfolio account as 'sfin-old'.
+  const mapping = { 'sfin-old': 'wf-cash', 'sfin-new': 'wf-cash', 'sfin-chk': 'wf-chk' };
+  const sweeps = (id: string): SimplefinAccount => ({
+    id, name: 'Cash Account', currency: 'USD', balance: '0', 'balance-date': 1,
+    transactions: [{ id: `${id}-1`, posted: 1, amount: '-5.00', description: 'SWEEP FROM CORE' }],
+  });
+
+  it('counts two ids mapped to one Wealthfolio account as one account', () => {
+    const same = sameMappedAccount(mapping);
+    expect(same('sfin-old', 'sfin-new')).toBe(true);
+    expect(same('sfin-old', 'sfin-chk')).toBe(false);
+    expect(same('sfin-x', 'sfin-y')).toBe(false);
+    expect(same('sfin-x', 'sfin-x')).toBe(true);
+  });
+
+  it('a rule saved on the old id keeps reaching the account through the new one', () => {
+    const r = rule({ account: 'sfin-old' });
+    expect(findIgnored([r], [sweeps('sfin-new')], () => true, sameMappedAccount(mapping))).toHaveLength(1);
+    expect(findIgnored([r], [sweeps('sfin-chk')], () => true, sameMappedAccount(mapping))).toEqual([]);
+    expect(ignoreRuleFor([r], 'sfin-new', 'SWEEP FROM CORE')).toBeNull();
+  });
+
+  it('offers one account per Wealthfolio account, under the id in the last download', () => {
+    const names = { 'sfin-old': 'Cash Account', 'sfin-new': 'Cash Account', 'sfin-chk': 'Checking' };
+    expect(ruleAccountOptions(mapping, names, new Set(['sfin-new', 'sfin-chk']))).toEqual([
+      { id: 'sfin-new', name: 'Cash Account', aliases: ['sfin-old'] },
+      { id: 'sfin-chk', name: 'Checking', aliases: [] },
+    ]);
+  });
+
+  it('tells two different accounts with the same name apart by their Wealthfolio names', () => {
+    const options = ruleAccountOptions(
+      { a: 'wf-1', b: 'wf-2' }, { a: 'Brokerage', b: 'Brokerage' }, new Set(['a', 'b']), { 'wf-1': 'Taxable', 'wf-2': 'Roth' },
+    );
+    expect(options.map((o) => o.name)).toEqual(['Brokerage · Taxable', 'Brokerage · Roth']);
   });
 });
