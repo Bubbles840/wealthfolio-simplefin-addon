@@ -8,6 +8,7 @@
  * Must not be imported by sync-core.ts: it imports sync-core.ts.
  */
 import { bankDayInstant } from './bank-day.js';
+import { detectRelinks } from './relink.js';
 import { accountNameWords, expiryHoldAccount } from './sync-core.js';
 import { formatDollars } from './telegram.js';
 import { accountTxKey } from './transfers.js';
@@ -94,7 +95,11 @@ export function judgeHeldTransfer(
 
   // Mirrors the sync: only an account that was in the last download has life
   // and name words; any other mapped account has neither, so it holds every leg.
-  const mappedIds = Object.keys(feeds.mapping);
+  // An id a re-linked connection replaced is left out, as the sync leaves it
+  // out: it reports nothing again, so nothing waits on it.
+  const inDownload = new Set(Object.keys(feeds.mapping).filter((id) => isObj(feeds.balances[id])));
+  const replaced = new Set(detectRelinks(feeds.mapping, inDownload).flatMap((r) => r.oldIds));
+  const mappedIds = Object.keys(feeds.mapping).filter((id) => !replaced.has(id));
   const alive = new Map<string, number>();
   const nameWords = new Map<string, readonly string[]>();
   for (const id of mappedIds) {

@@ -1,6 +1,7 @@
 import { findIgnored, normalizeIgnoreRules } from './ignore-rules.js';
 import { bankFirstTransferOut, genericTransferNeedsCorroboration } from './bank-first-payment.js';
 import { fillFeedCurrencies } from './feed-currency.js';
+import { detectRelinks, planRelinkAdoption } from './relink.js';
 import { learnedNameKeys, learnedTransferType } from './transfer-names.js';
 import { mapTransactionWithSource, type MappedType } from './mapper.js';
 import { REIMBURSEMENT_SUBTYPE } from './cash-flow-bucket.js';
@@ -2438,6 +2439,19 @@ async function runSyncPass(
     ));
   }
 
+  // A connection removed and added again (shared/relink.ts): its accounts come
+  // back under new ids, mapped to the same Wealthfolio accounts as the old ones.
+  // The old ids stay in the mapping and no longer report anything.
+  const relinks = detectRelinks(mapping, new Set(accountSet.accounts.map((a) => a.id)));
+  const relinkOf = new Map(relinks.map((r) => [r.newId, r]));
+  /** Old ids a re-link replaced: not a feed that is late, so nothing waits on them. */
+  const replacedIds = new Set(relinks.flatMap((r) => r.oldIds));
+  /** Every transaction id any account reported on this run. */
+  const liveTxIds = new Set(accountSet.accounts.flatMap((a) => (a.transactions ?? []).map((tx) => tx.id)));
+  for (const r of relinks) {
+    console.log(`[simplefin-sync] re-linked connection: account ${r.newId} replaces ${r.oldIds.join(', ')} (Wealthfolio ${r.wfAccountId})`);
+  }
+
   // Which Venmo payment each bank row is, decided for the whole run at once
   // (ruling P3-K): one payment to one row, in any feed order, across accounts.
   // A posted row competes, whatever its type or override (a transfer or a
@@ -2725,7 +2739,9 @@ async function runSyncPass(
     }
     feedAliveEpoch.set(sfAccount.id, alive);
   }
-  const mappedSfinIds = Object.keys(mapping);
+  // An id a re-link replaced reports nothing ever again: left in, it held every
+  // leg on its account for good, as a feed that never caught up.
+  const mappedSfinIds = Object.keys(mapping).filter((id) => !replacedIds.has(id));
   const nowSec = Math.floor(Date.now() / 1000);
   for (const prepared of preparedByAccount.values()) {
     for (const p of prepared) {
@@ -3044,6 +3060,68 @@ async function runSyncPass(
       existing = await fetchExistingRows(host, wfAccountId);
     } catch {
       // read unavailable — proceed as if no rows exist
+    }
+
+    // ── A re-linked connection (shared/relink.ts) ────────────────────────────
+    // The old connection's rows are here under ids nothing reports any more.
+    // One that is a transaction of this download is read under its new id, so
+    // the plan updates it in place instead of importing it again; nothing is
+    // written to it for that (a rewritten note on a linked leg is copied onto
+    // its partner). A copy already imported under the new id is the old
+    // duplicate this fixes: heal deletes it, as the duplicate prune below does.
+    const relink = relinkOf.get(sfAccount.id);
+    if (relink) {
+      const relinkPlan = planRelinkAdoption(
+        existing.map((r) => ({ ...r, description: descriptionFromComment(r.comment), bookkeeping: isInternalMarkerComment(r.comment) })),
+        preparedAll.map(({ tx }, i) => ({ ...feed[i], description: tx.description ?? '' })),
+        liveTxIds,
+      );
+      const removeIds = new Set<string>();
+      if (heal && unlinkPrepass.certain && relinkPlan.duplicates.length > 0) {
+        const doomed = relinkPlan.duplicates.map((d) => d.remove.wfId);
+        const del = await host.saveMany({ deleteIds: doomed });
+        if ((del.errors ?? []).length > 0) {
+          for (const err of del.errors ?? []) {
+            errors.push(`Account ${wfAccountId} re-link duplicate delete error (${err.action}): ${err.message}`);
+          }
+        } else {
+          for (const d of relinkPlan.duplicates) {
+            removeIds.add(d.remove.wfId);
+            relinkPlan.adopt.set(d.keep.wfId, d.txId);
+            const row = existing.find((r) => r.wfId === d.remove.wfId)!;
+            const entry = {
+              sfinAccountId: sfAccount.id,
+              accountName: wfNames.get(wfAccountId) || sfAccount.name,
+              txId: row.txId,
+              description: descriptionFromComment(row.comment),
+              date: row.date,
+              amountCents: row.absCents,
+              currency: sfAccount.currency,
+              wfId: row.wfId,
+            };
+            prunedDuplicates.push(entry);
+            console.warn(
+              `[simplefin-sync] ${DUPLICATE_PRUNE_LOG_TAG}: deleted activity ${row.wfId} — a second copy, after a re-linked connection, of the transaction activity ${d.keep.wfId} holds in account ${sfAccount.id}`,
+              entry,
+            );
+            logChange?.(() => duplicateRemovedChange({
+              account: accountRef,
+              txKey: accountTxKey(sfAccount.id, row.txId),
+              activityId: row.wfId,
+              description: entry.description,
+              amountCents: signedCentsOf(row.txId, row.type, entry.amountCents),
+              date: row.date,
+              payload: { ...recreatePayload(row, sfAccount.currency) },
+            }));
+          }
+        }
+      }
+      if (relinkPlan.leftAlone > 0) {
+        console.info(`[simplefin-sync] re-linked connection: ${relinkPlan.leftAlone} transaction(s) in account ${sfAccount.id} have more than one stored candidate, or two linked copies — left as they are`);
+      }
+      existing = existing
+        .filter((r) => !removeIds.has(r.wfId))
+        .map((r) => (relinkPlan.adopt.has(r.wfId) ? { ...r, txId: relinkPlan.adopt.get(r.wfId)! } : r));
     }
 
     // ── Pairs the unlink pre-pass holds (see planUnlinkPrepass) ─────────────
@@ -4140,8 +4218,12 @@ async function runSyncPass(
     // ledgers, so ask Wealthfolio itself whether a correction already exists
     // before creating one — "at most one starting-balance entry per account,
     // ever" holds even if local state is lost or the companion did the work.
+    // A re-linked account's baseline was set under its old id: the ledger already
+    // holds the opening balance, and a second one would count it twice.
+    const baselineSet = balanceInitialized.includes(sfAccount.id)
+      || (relink?.oldIds ?? []).some((id) => balanceInitialized.includes(id));
     let alreadyCorrected = false;
-    if (canReadBalance && !balanceInitialized.includes(sfAccount.id)) {
+    if (canReadBalance && !baselineSet) {
       try {
         alreadyCorrected = await hasExistingStartingBalance(host, wfAccountId, sfAccount.id);
       } catch {
@@ -4149,7 +4231,7 @@ async function runSyncPass(
         // the other syncer already corrected and balances are readable
       }
     }
-    if (canReadBalance && !alreadyCorrected && !balanceInitialized.includes(sfAccount.id)) {
+    if (canReadBalance && !alreadyCorrected && !baselineSet) {
       const targetBalance = parseFloat(sfAccount.balance);
       // Pending rows are provisional and excluded from the delta — only rows we
       // are actually creating (not reconciling in place) and that have posted
@@ -4199,9 +4281,9 @@ async function runSyncPass(
 
     // Mark done only when the balance was readable for this account, so a
     // skipped correction retries on a later run
-    if (canReadBalance) {
+    if (canReadBalance || (baselineSet && !balanceInitialized.includes(sfAccount.id))) {
       await store.addBalanceInitialized(sfAccount.id);
-    } else if (wfBalances !== null && !balanceInitialized.includes(sfAccount.id)) {
+    } else if (wfBalances !== null && !baselineSet) {
       // No valuation row yet (brand-new account) — queue for the same-run
       // second pass below instead of waiting a whole sync cycle
       pendingCorrections.push({
