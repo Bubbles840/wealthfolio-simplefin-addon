@@ -103,7 +103,7 @@ function parseMicros(value: string | number | null | undefined): bigint | null {
 }
 
 /** A non-negative decimal string as an integer and its count of decimals. */
-function parseScaled(value: string | number | null | undefined): { n: bigint; scale: number } | null {
+function parseDecimal(value: string | number | null | undefined): { n: bigint; scale: number } | null {
   if (value === null || value === undefined) return null;
   const match = /^\+?(\d+)(?:\.(\d*))?$/.exec(String(value).trim());
   if (!match) return null;
@@ -127,8 +127,8 @@ function averageCost(
   purchasePrice: string | null | undefined,
   shares: string,
 ): string | undefined {
-  const total = parseScaled(costBasis);
-  const count = parseScaled(shares);
+  const total = parseDecimal(costBasis);
+  const count = parseDecimal(shares);
   if (total && total.n > 0n && count && count.n > 0n) {
     // total / count, rounded half up to AVG_COST_DECIMALS.
     const num = total.n * 10n ** BigInt(count.scale + AVG_COST_DECIMALS) * 2n;
@@ -138,7 +138,7 @@ function averageCost(
     const fraction = (q % unit).toString().padStart(AVG_COST_DECIMALS, '0').replace(/0+$/, '');
     return fraction ? `${q / unit}.${fraction}` : `${q / unit}`;
   }
-  const price = parseScaled(purchasePrice);
+  const price = parseDecimal(purchasePrice);
   return price && price.n > 0n ? String(purchasePrice).trim() : undefined;
 }
 
