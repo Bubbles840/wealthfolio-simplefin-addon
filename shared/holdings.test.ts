@@ -78,6 +78,27 @@ describe('toHoldingsSnapshot', () => {
     expect(snapshot?.positions[0].avgCost).toBeUndefined();
   });
 
+  it('divides a total cost_basis by the shares, even when purchase_price repeats the total', () => {
+    const snapshot = toHoldingsSnapshot(account({ holdings: [
+      // purchase_price per share, as the protocol says.
+      { symbol: 'AAA', shares: '4', cost_basis: '1000.00', purchase_price: '250.00' },
+      // A provider that sends the total in purchase_price too.
+      { symbol: 'BBB', shares: '8', cost_basis: '1000.00', purchase_price: '1000.00' },
+      // Fractional shares, rounded half up to 8 decimals.
+      { symbol: 'CCC', shares: '3.5', cost_basis: '100' },
+    ] }));
+    expect(snapshot?.positions.map((p) => p.avgCost)).toEqual(['250', '125', '28.57142857']);
+  });
+
+  it('falls back to purchase_price without a total, and reads zero as unknown', () => {
+    const snapshot = toHoldingsSnapshot(account({ holdings: [
+      { symbol: 'AAA', shares: '2', cost_basis: '0.00', purchase_price: '101.25' },
+      { symbol: 'BBB', shares: '2', cost_basis: '0.00', purchase_price: '0.00' },
+      { symbol: 'CCC', shares: '2', purchase_price: 'n/a' },
+    ] }));
+    expect(snapshot?.positions.map((p) => p.avgCost)).toEqual(['101.25', undefined, undefined]);
+  });
+
   it('dates the snapshot from the balance date, not from today', () => {
     const snapshot = toHoldingsSnapshot(
       account({ 'balance-date': 1735732800, holdings: [{ symbol: 'VTI', shares: '1' }] }),

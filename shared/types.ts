@@ -51,8 +51,10 @@ export interface SimplefinHolding {
   /** Share count. `null` is a real answer from the Bridge, not just absence. */
   shares?: string | null;
   currency?: string | null;
+  /** Total cost of the position. Divided by `shares`, it is the `avgCost`. */
   cost_basis?: string | null;
-  /** Per-share cost. Becomes a position's `avgCost` when present. */
+  /** Per-share cost by the protocol, but some providers send the total here.
+   *  The `avgCost` only when there is no `cost_basis`. */
   purchase_price?: string | null;
   market_value?: string | null;
   description?: string | null;
