@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Lunch Flow setup tokens (#25).** Lunch Flow runs a SimpleFIN server of
+  its own, the one it feeds Actual Budget from. A setup token from a Lunch
+  Flow Actual Budget destination now connects like a SimpleFin Bridge one;
+  setup used to refuse it with "SimpleFin claim URL must be hosted at
+  simplefin.org". The add-on may now reach `lunchflow.app` and
+  `*.lunchflow.app`. A new install approves them with the other hosts. An
+  add-on updated in place leaves them unticked, as Wealthfolio does with any
+  host an update adds, and setup then says where to tick them (Settings →
+  Add-ons → SimpleFin Sync → View permissions → Network hosts) instead of
+  showing Wealthfolio's bare "host is not approved". Nothing changes for
+  SimpleFin Bridge users, and the in-app Update still works.
+
 ## [1.66.0] - 2026-10-20
 
 Update the add-on and the companion together: a companion older than 1.66.0

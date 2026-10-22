@@ -1,19 +1,10 @@
 import type { SimplefinAccountSet } from '../../shared/types';
 import { normalizeAccountSet } from '../../shared/simplefin-payload.js';
+import { requireSimplefinProviderHost } from '../../shared/simplefin-hosts.js';
 
 function requireHttps(url: string): void {
   if (!url.startsWith('https://')) {
     throw new Error('SimpleFin access URL must use HTTPS — refusing HTTP URL');
-  }
-}
-
-// All known SimpleFin bridges run under simplefin.org. Rejecting other domains
-// prevents a malicious setup token from redirecting the claim (and the
-// resulting credentials) to an attacker-controlled server.
-function requireSimpleFinDomain(url: string): void {
-  const { hostname } = new URL(url);
-  if (hostname !== 'simplefin.org' && !hostname.endsWith('.simplefin.org')) {
-    throw new Error(`SimpleFin URL must be hosted at simplefin.org — got ${hostname}`);
   }
 }
 
@@ -27,13 +18,13 @@ export async function claimTokenNode(setupToken: string): Promise<string> {
   const normalized = setupToken.trim().replace(/-/g, '+').replace(/_/g, '/');
   const claimUrl = Buffer.from(normalized, 'base64').toString('utf8');
   requireHttps(claimUrl);
-  requireSimpleFinDomain(claimUrl);
+  requireSimplefinProviderHost(claimUrl, 'SimpleFin claim URL');
 
   const res = await fetch(claimUrl, { method: 'POST' });
   if (!res.ok) throw new Error(`SimpleFin claim failed: ${res.status}`);
   const accessUrl = (await res.text()).trim();
   requireHttps(accessUrl);
-  requireSimpleFinDomain(accessUrl);
+  requireSimplefinProviderHost(accessUrl, 'SimpleFin access URL');
   return accessUrl;
 }
 

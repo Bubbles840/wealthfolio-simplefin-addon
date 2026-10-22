@@ -54,6 +54,11 @@ const makeProps = () => ({
 });
 
 describe('SetupPage', () => {
+  it('says a setup token can come from SimpleFin Bridge or Lunch Flow (#25)', () => {
+    render(<SetupPage {...makeProps()} />);
+    expect(screen.getByText(/SimpleFin Bridge.*Lunch Flow/)).toBeInTheDocument();
+  });
+
   it('renders Step 1 of 2 with token input', () => {
     render(<SetupPage {...makeProps()} />);
     expect(screen.getByText('Step 1 of 2')).toBeInTheDocument();

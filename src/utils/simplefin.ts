@@ -1,6 +1,7 @@
 import type { NetworkAPI } from '@wealthfolio/addon-sdk';
 import type { SimplefinAccountSet } from '../../shared/types';
 import { normalizeAccountSet } from '../../shared/simplefin-payload';
+import { addonHostEntryFor, requireSimplefinProviderHost } from '../../shared/simplefin-hosts';
 
 /**
  * What the user is told when the request to SimpleFin never completed.
@@ -60,16 +61,18 @@ function requireHttps(url: string, label: string): void {
   }
 }
 
-// All known SimpleFin bridges run under simplefin.org. Rejecting other domains
-// prevents a malicious setup token from redirecting account fetches (and the
-// embedded Basic-auth credentials) to an attacker-controlled server.
-function requireSimpleFinDomain(url: string, label: string): void {
-  const { hostname } = new URL(url);
-  if (hostname !== 'simplefin.org' && !hostname.endsWith('.simplefin.org')) {
-    throw new Error(
-      `${label} must be hosted at simplefin.org — got ${hostname}`,
-    );
-  }
+/**
+ * Wealthfolio's refusal of a host this add-on hasn't been approved for, turned
+ * into where to approve it; null for any other failure. An update that adds a
+ * host to the manifest leaves it unticked until the person ticks it, so a
+ * Lunch Flow token pasted after updating lands here (#25). The request never
+ * left Wealthfolio.
+ */
+export function hostNotApprovedMessage(err: unknown): string | null {
+  const match = /host '([^']+)' is not approved/.exec(String((err as Error)?.message ?? err));
+  if (!match) return null;
+  return `Wealthfolio hasn't approved this add-on to connect to ${match[1]}. `
+    + `Open Settings → Add-ons → SimpleFin Sync → View permissions, tick ${addonHostEntryFor(match[1])} under Network hosts, and try again.`;
 }
 
 export async function claimToken(setupToken: string, network: NetworkAPI): Promise<string> {
@@ -89,9 +92,16 @@ export async function claimToken(setupToken: string, network: NetworkAPI): Promi
     );
   }
   requireHttps(claimUrl, 'SimpleFin claim URL');
-  requireSimpleFinDomain(claimUrl, 'SimpleFin claim URL');
+  requireSimplefinProviderHost(claimUrl, 'SimpleFin claim URL');
 
-  const res = await network.request({ url: claimUrl, method: 'POST' });
+  let res: Awaited<ReturnType<NetworkAPI['request']>>;
+  try {
+    res = await network.request({ url: claimUrl, method: 'POST' });
+  } catch (err) {
+    const approval = hostNotApprovedMessage(err);
+    if (approval) throw new Error(`${approval} The setup token wasn't used, so paste the same token again.`);
+    throw err;
+  }
   if (res.status === 403) {
     // The one failure everyone hits once: a setup token can be claimed
     // exactly ONCE, and a second attempt (a retry, a reinstall, the token
@@ -107,7 +117,7 @@ export async function claimToken(setupToken: string, network: NetworkAPI): Promi
   }
   const accessUrl = res.body.trim();
   requireHttps(accessUrl, 'SimpleFin access URL');
-  requireSimpleFinDomain(accessUrl, 'SimpleFin access URL');
+  requireSimplefinProviderHost(accessUrl, 'SimpleFin access URL');
   return accessUrl;
 }
 
@@ -118,7 +128,7 @@ export async function fetchAccounts(
   authSecretKey?: string,
 ): Promise<SimplefinAccountSet> {
   requireHttps(accessUrl, 'SimpleFin access URL');
-  requireSimpleFinDomain(accessUrl, 'SimpleFin access URL');
+  requireSimplefinProviderHost(accessUrl, 'SimpleFin access URL');
 
   // Strip credentials from URL — Wealthfolio blocks URL-embedded credentials
   // and direct Authorization headers. Instead we reference a stored secret via
@@ -153,7 +163,7 @@ export async function fetchAccounts(
     res = await network.request(req);
   } catch (err) {
     throw new SimplefinRequestError(
-      SIMPLEFIN_UNREACHABLE_MESSAGE,
+      hostNotApprovedMessage(err) ?? SIMPLEFIN_UNREACHABLE_MESSAGE,
       'network',
       String((err as Error)?.message ?? err),
     );

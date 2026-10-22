@@ -102,7 +102,7 @@ export function SetupPage({ ctx, store, onComplete }: Props) {
             <div className="sfin-step">Step 1 of 2</div>
             <h3>Connect SimpleFin</h3>
             <p className="sfin-subtle">
-              Paste your SimpleFin setup token below. Get it from your bank's SimpleFin Bridge page.
+              Paste your SimpleFin setup token below. Get it from SimpleFin Bridge, or from Lunch Flow by adding an Actual Budget destination there, which gives a SimpleFIN setup token.
             </p>
             <Input
               value={token}

@@ -12,11 +12,15 @@
     "allowedHosts": [
       "bridge.simplefin.org",
       "beta-bridge.simplefin.org",
+      "lunchflow.app",
+      "*.lunchflow.app",
       "api.telegram.org"
     ],
     "approvedHosts": [
       "bridge.simplefin.org",
       "beta-bridge.simplefin.org",
+      "lunchflow.app",
+      "*.lunchflow.app",
       "api.telegram.org"
     ]
   },

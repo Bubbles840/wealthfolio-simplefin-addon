@@ -28,6 +28,14 @@ You need Wealthfolio **3.8 or newer** (it works with 3.10) and a SimpleFin accou
 **setup token**. The token is exchanged once for a long-lived access URL, kept
 in Wealthfolio's encrypted secret storage; the token itself is not kept.
 
+**Using Lunch Flow instead of SimpleFin Bridge?** [Lunch Flow](https://www.lunchflow.app)
+runs a SimpleFIN server too: add an **Actual Budget** destination there, and
+paste the setup token it gives you in step 2. An add-on installed before it
+supported Lunch Flow updates with the Lunch Flow hosts unticked, as Wealthfolio
+does with any host an update adds: tick `lunchflow.app` and `*.lunchflow.app`
+under **Settings → Add-ons → SimpleFin Sync → View permissions → Network
+hosts** first (setup tells you so if you forget).
+
 ## What you get
 
 The addon has three tabs: **Home**, **Reports** and **Settings**.
@@ -149,7 +157,7 @@ The addon has three tabs: **Home**, **Reports** and **Settings**.
     transfers are Transfer Out, which Wealthfolio's Spending page leaves out on
     its own, with the Docker companion running (the add-on learns the version
     from it); the companion also rewrites the existing ones once.
-- A SimpleFin account and a one-time **setup token**
+- A SimpleFin account (or a Lunch Flow one) and a one-time **setup token**
 - Optional: Docker, for the background companion (background sync, Reports,
   the Telegram bot and Amazon categorization)
 
