@@ -7,7 +7,7 @@ import { REIMBURSEMENT_SUBTYPE } from './cash-flow-bucket.js';
 import { accountTxKey, detectTransferPairs, TRANSFER_MATCH_WINDOW_SECONDS } from './transfers.js';
 import type { TransferCandidate } from './transfers.js';
 import { planReconciliation, IN_TRANSIT_COMMENT_PREFIX } from './reconcile.js';
-import { toHoldingsSnapshot } from './holdings.js';
+import { accountTag, feedPrices, toHoldingsSnapshot } from './holdings.js';
 import type { FeedTx, ExistingRow } from './reconcile.js';
 /** Re-exported from reconcile.ts (which defines it, so `changed()` can recognise
  *  the marker without importing sync-core and creating a cycle). This module owns
@@ -4494,9 +4494,15 @@ async function runSyncPass(
       const snapshot = toHoldingsSnapshot(sfAccount);
       if (!snapshot) continue;
       try {
-        const outcome = await host.syncHoldings(wfAccountId, snapshot);
+        const outcome = await host.syncHoldings(wfAccountId, snapshot, feedPrices(sfAccount), { tag: accountTag(wfAccountId) });
         holdingsSnapshots.imported += outcome.imported;
         holdingsSnapshots.skipped += outcome.skipped;
+        for (const symbol of outcome.pricedFromFeed ?? []) {
+          (holdingsSnapshots.pricedFromFeed ??= []).push(symbol);
+        }
+        if (outcome.pricedFromFeed?.length) {
+          console.log(`[simplefin-sync] priced ${outcome.pricedFromFeed.join(', ')} (${sfAccount.name}) from SimpleFin's market value`);
+        }
         for (const symbol of outcome.unresolvedSymbols) {
           // Deduped across accounts: the same unresolvable ticker in two
           // brokerages is one problem to report, not two.

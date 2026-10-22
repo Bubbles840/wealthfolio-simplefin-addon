@@ -2,7 +2,7 @@ import { postedLedgerTotal } from './ledger-total.js';
 import type { AccountMapping, MappingRule, SimplefinAccountSet } from './types.js';
 import type { AmazonLedger } from './amazon-ledger.js';
 import type { VenmoLedger } from './venmo-ledger.js';
-import type { HoldingsSnapshot } from './holdings.js';
+import type { FeedPrice, HoldingsSnapshot } from './holdings.js';
 import type { SkippedTransaction } from './skipped-transactions.js';
 import type { TransferNames } from './transfer-names.js';
 import type { IgnoreRule } from './ignore-rules.js';
@@ -120,7 +120,7 @@ export interface FakeHostSeed {
 export interface FakeHost {
   host: SyncHost;
   /** Every holdings snapshot handed to the host, in call order. */
-  holdings: Array<{ wfAccountId: string; snapshot: HoldingsSnapshot }>;
+  holdings: Array<{ wfAccountId: string; snapshot: HoldingsSnapshot; prices?: FeedPrice[]; scope?: { tag: string } }>;
   store: SyncStore;
   /** Live activities per Wealthfolio account id. Mutated by saveMany/linkPair. */
   activities: Map<string, HostActivity[]>;
@@ -185,7 +185,7 @@ export function createFakeHost(seed: FakeHostSeed = {}): FakeHost {
   const driftAlertThreshold = seed.driftAlertThreshold ?? null;
 
   const activities = cloneActivities(seed.existing);
-  const holdings: Array<{ wfAccountId: string; snapshot: HoldingsSnapshot }> = [];
+  const holdings: Array<{ wfAccountId: string; snapshot: HoldingsSnapshot; prices?: FeedPrice[]; scope?: { tag: string } }> = [];
   const saved: SaveManyRequest[] = [];
   const links: Array<[LinkLeg, LinkLeg]> = [];
   const imported: ImportRow[][] = [];
@@ -368,8 +368,8 @@ export function createFakeHost(seed: FakeHostSeed = {}): FakeHost {
     ...(seed.noHoldingsSupport
       ? {}
       : {
-          async syncHoldings(wfAccountId: string, snapshot: HoldingsSnapshot) {
-            holdings.push({ wfAccountId, snapshot });
+          async syncHoldings(wfAccountId: string, snapshot: HoldingsSnapshot, prices?: FeedPrice[], scope?: { tag: string }) {
+            holdings.push({ wfAccountId, snapshot, ...(prices ? { prices } : {}), ...(scope ? { scope } : {}) });
             if (seed.holdingsThrows) throw new Error(seed.holdingsThrows);
             return seed.holdingsOutcome ?? { imported: 1, skipped: 0, unresolvedSymbols: [] };
           },

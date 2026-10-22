@@ -89,9 +89,10 @@
     {
       "category": "portfolio",
       "functions": [
-        "getLatestValuations"
+        "getLatestValuations",
+        "getHoldings"
       ],
-      "purpose": "Read current account balances to size one-time starting-balance corrections"
+      "purpose": "Read current account balances to size one-time starting-balance corrections, and read which holdings an investment account has priced, so only a holding with no price is looked at"
     },
     {
       "category": "secrets",
@@ -134,6 +135,22 @@
         }
       ],
       "purpose": "Import holdings snapshots for investment accounts, so a brokerage syncs its positions and not only its cash."
+    },
+    {
+      "category": "assets",
+      "functions": [
+        "getProfile",
+        "updateQuoteMode"
+      ],
+      "purpose": "Read whether a holding is priced by the market or by hand, and switch one Wealthfolio has no price for (a basket of stocks reported as one holding) to manual pricing"
+    },
+    {
+      "category": "quotes",
+      "functions": [
+        "getHistory",
+        "update"
+      ],
+      "purpose": "Check whether a holding has any market price, and write the day's price for one that has none, from the value your bank reports"
     }
   ]
 }
