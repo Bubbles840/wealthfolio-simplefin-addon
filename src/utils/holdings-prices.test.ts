@@ -206,6 +206,9 @@ describe('syncHoldingsWithFeedPrices', () => {
 
     expect(r).toMatchObject({ imported: 1, pricedFromFeed: ['TARGET DATE FUND 2060 (CCCC3333)'] });
     expect([...wf.assets.keys()]).toEqual(['TARGET DATE FUND 2060 (CCCC3333)']);
+    // Its bare name is never sent to the import check (a provider search).
+    const checked = vi.mocked(wf.io.checkImport).mock.calls.flatMap((c) => c[1][0].positions.map((p) => p.symbol));
+    expect(checked).not.toContain('TARGET DATE FUND 2060');
     expect(wf.value('wf-plan', DAY, 'TARGET DATE')).toEqual({ symbol: 'TARGET DATE FUND 2060 (CCCC3333)', value: 10000 });
   });
 

@@ -204,11 +204,14 @@ export async function syncHoldingsWithFeedPrices(
     }
   }
 
-  // 3.
+  // 3. A holding filed under its description is checked under its per-account
+  // symbol only: its bare name is never a ticker, and checking it would send
+  // Wealthfolio to its price provider on every sync.
+  const byDescription = (p: { symbol: string }) => !!priced.get(symbolKey(p.symbol))?.fromDescription && moving.has(symbolKey(p.symbol));
   const check = await io.checkImport(wfAccountId, [{
     ...snapshot,
     positions: [
-      ...snapshot.positions,
+      ...snapshot.positions.filter((p) => !byDescription(p)),
       ...snapshot.positions.filter((p) => moving.has(symbolKey(p.symbol))).map((p) => ({ ...p, symbol: scoped(p.symbol) })),
     ],
   }]);
