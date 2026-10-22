@@ -200,6 +200,40 @@ describe('Link on the Checks card', () => {
     expect(onFixed).toHaveBeenCalledTimes(1);
   });
 
+  it('a card on screen hears a link it starts, even before its after-render effects ran', async () => {
+    // The app mounts the card from an async read, a non-urgent render, whose
+    // passive effects run in a later task. A click handled as soon as the
+    // button appears, with a link that settles in microtasks, finished before
+    // a useEffect subscription existed: no card heard it, so the page never
+    // read the snapshot again (the CI-only failure of audit-fix-app's Link test).
+    const prev = (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT;
+    (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = false;
+    const { createRoot } = await import('react-dom/client');
+    const container = document.body.appendChild(document.createElement('div'));
+    const root = createRoot(container);
+    try {
+      const onFixed = vi.fn();
+      const link = vi.fn(async () => linked([PAIRS[0]]));
+      const button = new Promise<HTMLButtonElement>((resolve) => {
+        const find = () => [...container.querySelectorAll('button')].find((b) => b.textContent === 'Link');
+        const observer = new MutationObserver(() => {
+          const b = find();
+          if (b) { observer.disconnect(); resolve(b); }
+        });
+        observer.observe(container, { childList: true, subtree: true });
+      });
+      root.render(<ChecksCard read={read} companionVersion="1.61.0" now={NOW} link={link} onFixed={onFixed} />);
+      (await button).click();
+      await new Promise((r) => setTimeout(r, 20));
+      expect(link).toHaveBeenCalledTimes(1);
+      expect(onFixed).toHaveBeenCalledTimes(1);
+    } finally {
+      root.unmount();
+      container.remove();
+      (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = prev;
+    }
+  });
+
   it('changes nothing once the card is gone', async () => {
     let finish!: (r: LinkRun) => void;
     const onFixed = vi.fn();
