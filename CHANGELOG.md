@@ -7,9 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-The add-on asks for more permissions (assets, quotes, and reading an
-account's holdings), so in-app Update refuses it: use **Install from File**
-over the installed add-on.
+Update both halves. The add-on asks for more permissions (assets, quotes,
+your loans, and reading an account's holdings), so in-app Update refuses it:
+use **Install from File** over the installed add-on, then pull the companion
+image. Loans are offered in the account mapping only once the companion is on
+this release.
+
+### Added
+- **A loan account can keep a Wealthfolio loan on the servicer's balance.**
+  Pick the loan under **Loans** in the account mapping, and each sync records
+  the servicer's balance on it as that day's confirmed balance, the same one
+  Confirm balance saves, in the loan's own currency. Its transactions are not
+  imported (the payments already come in from the account that paid them). A
+  balance is written only when it differs from the latest recorded one, never
+  over one you recorded yourself that day, never before the loan began, and
+  never onto a loan that is closed or confirmed at zero. A feed showing
+  nothing owed, a feed in another currency, and one loan linked from two
+  accounts are reported instead of written. Turning a mapped account into a
+  loan asks first, since its imports stop.
 
 ### Fixed
 - **A holding Wealthfolio can't price shows its real value.** A position that
