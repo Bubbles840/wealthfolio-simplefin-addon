@@ -155,8 +155,9 @@ export function AccountMapper({ ctx, simplefinAccounts, initialMapping, initialL
                 </optgroup>
               )}
               {/* The row's own link is always an option, so the select shows it
-                  when the list above is hidden (older companion) or unread. */}
-              {loanLinks[sfin.id] && !gone(sfin.id) && !(loansOffered && loans?.some((l) => l.id === loanLinks[sfin.id])) && (
+                  when the list above is hidden (older companion), unread, or
+                  leaves it out (two rows linked it before one link per loan). */}
+              {loanLinks[sfin.id] && !gone(sfin.id) && !(loansOffered && loansFor(sfin.id).some((l) => l.id === loanLinks[sfin.id])) && (
                 <option value={LOAN_PREFIX + loanLinks[sfin.id]}>
                   {loans?.find((l) => l.id === loanLinks[sfin.id])?.name ?? 'Linked loan'}
                 </option>

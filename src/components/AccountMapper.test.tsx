@@ -168,6 +168,17 @@ describe('AccountMapper', () => {
     expect((first as HTMLSelectElement).value).toBe('loan:LIAB-1');
   });
 
+  it('still shows a link two rows share (saved before one link per loan)', async () => {
+    const other = { ...servicer, id: 'ACT-loan-2', name: 'Servicer (relinked)' };
+    render(<AccountMapper ctx={loanCtx()} simplefinAccounts={[servicer, other]} initialMapping={{}}
+      initialLoanLinks={{ 'ACT-loan': 'LIAB-1', 'ACT-loan-2': 'LIAB-1' }} onSave={vi.fn()} />);
+    await screen.findAllByRole('option', { name: 'Home Loan' });
+    for (const select of screen.getAllByRole('combobox') as HTMLSelectElement[]) {
+      expect(select.value).toBe('loan:LIAB-1');
+      expect(select.selectedOptions[0].textContent).toBe('Home Loan');
+    }
+  });
+
   it('shows an existing link, not "Select account", when loans are not offered or not read', async () => {
     const old = render(<AccountMapper ctx={loanCtx()} simplefinAccounts={[servicer]} initialMapping={{}}
       initialLoanLinks={{ 'ACT-loan': 'LIAB-1' }} companionVersion="1.67.1" onSave={vi.fn()} />);
