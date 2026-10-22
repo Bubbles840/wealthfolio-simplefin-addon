@@ -56,7 +56,7 @@ describe('SecretsStore — the change log', () => {
   it('records something you did under the add-on’s own key for this month', async () => {
     const { ctx, data } = makeCtx();
     await new SecretsStore(ctx).recordChange(accountCreatedChange({ sfinId: 'ACT-1', wfId: 'wf-a', name: 'Citi Card', accountType: 'CREDIT_CARD' }));
-    const b = bucket(data, 'change_log:addon:2026-10');
+    const b = bucket(data, 'change_log.addon.2026-10');
     expect(b.entries).toEqual([expect.objectContaining({
       writer: 'addon', actor: 'you', kind: 'account-created', at: NOW.toISOString(), summary: 'Created a Wealthfolio account',
     })]);
@@ -74,8 +74,8 @@ describe('SecretsStore — the change log', () => {
       date: '2026-10-11', pending: false, activityType: 'WITHDRAWAL',
     }), writer, new Date(iso));
     const { ctx } = makeCtx({
-      'change_log:addon:2026-10': JSON.stringify({ v: 1, writer: 'addon', month: '2026-10', entries: [mk('addon', '2026-10-12T10:00:00Z', 1)], gaps: [] }),
-      'change_log:companion:2026-10': JSON.stringify({ v: 1, writer: 'companion', month: '2026-10', entries: [mk('companion', '2026-10-12T11:00:00Z', 2)], gaps: [] }),
+      'change_log.addon.2026-10': JSON.stringify({ v: 1, writer: 'addon', month: '2026-10', entries: [mk('addon', '2026-10-12T10:00:00Z', 1)], gaps: [] }),
+      'change_log.companion.2026-10': JSON.stringify({ v: 1, writer: 'companion', month: '2026-10', entries: [mk('companion', '2026-10-12T11:00:00Z', 2)], gaps: [] }),
     });
     const read = await new SecretsStore(ctx).getChangeLog();
     expect(read!.entries.map((e) => e.subject.description)).toEqual(['ROW 2', 'ROW 1']);
@@ -89,17 +89,17 @@ describe('SecretsStore — the change log', () => {
 
   it('Reset deletes both writers’ buckets and fallbacks for this month and the four before it', async () => {
     const { ctx, data } = makeCtx({
-      'change_log:addon:2026-10': '{}',
-      'change_log:companion:2026-10.2': '{}',
-      'change_log:companion:2026-06': '{}',
-      'change_log:addon:2026-05': '{}',
+      'change_log.addon.2026-10': '{}',
+      'change_log.companion.2026-10.2': '{}',
+      'change_log.companion.2026-06': '{}',
+      'change_log.addon.2026-05': '{}',
     });
     await new SecretsStore(ctx).clearAll();
-    expect(data['change_log:addon:2026-10']).toBeUndefined();
-    expect(data['change_log:companion:2026-10.2']).toBeUndefined();
-    expect(data['change_log:companion:2026-06']).toBeUndefined();
+    expect(data['change_log.addon.2026-10']).toBeUndefined();
+    expect(data['change_log.companion.2026-10.2']).toBeUndefined();
+    expect(data['change_log.companion.2026-06']).toBeUndefined();
     // Five months back is past what any writer keeps; it was cleared long ago.
-    expect(data['change_log:addon:2026-05']).toBe('{}');
+    expect(data['change_log.addon.2026-05']).toBe('{}');
   });
 });
 
@@ -130,7 +130,7 @@ describe('the add-on records its own writes', () => {
     } as any);
     const result = await runSync(ctx, new SecretsStore(ctx), { force: true });
     expect(result.imported).toBe(1);
-    const entries = bucket(data, 'change_log:addon:2026-10').entries;
+    const entries = bucket(data, 'change_log.addon.2026-10').entries;
     expect(entries).toEqual([expect.objectContaining({
       kind: 'import', writer: 'addon', actor: 'auto', summary: 'Imported KROGER #123',
       run: `a${NOW.getTime().toString(36)}`,
@@ -140,7 +140,7 @@ describe('the add-on records its own writes', () => {
   it('Add adjustment records a balance correction by you, with the row read back', async () => {
     const { ctx, data } = makeCtx({ account_balances: JSON.stringify({ 'sfin-1': { balance: 10, currency: 'USD', date: 1, drift: 2.15 } }) });
     await applyBalanceAdjustment(ctx, new SecretsStore(ctx), { sfinAccountId: 'sfin-1', wfAccountId: 'wf-a', currency: 'USD', amount: 2.15 });
-    expect(bucket(data, 'change_log:addon:2026-10').entries).toEqual([expect.objectContaining({
+    expect(bucket(data, 'change_log.addon.2026-10').entries).toEqual([expect.objectContaining({
       kind: 'balance-correction', actor: 'you', summary: 'Added a balance correction',
       account: { sfinId: 'sfin-1', wfId: 'wf-a', name: 'Everyday Checking' },
       subject: { activityIds: ['imp-1'], amountCents: 215, date: '2026-10-12' },
@@ -152,7 +152,7 @@ describe('the add-on records its own writes', () => {
     const store = new SecretsStore(ctx);
     await applyBalanceAdjustment(ctx, store, { sfinAccountId: 'sfin-1', wfAccountId: 'wf-a', currency: 'USD', amount: 2.15 });
     await applyBalanceAdjustment(ctx, store, { sfinAccountId: 'sfin-1', wfAccountId: 'wf-a', currency: 'USD', amount: 5 });
-    const ids = bucket(data, 'change_log:addon:2026-10').entries.map((e) => e.subject.activityIds);
+    const ids = bucket(data, 'change_log.addon.2026-10').entries.map((e) => e.subject.activityIds);
     expect(ids).toEqual([['imp-1'], ['imp-2']]);
   });
 
@@ -160,7 +160,7 @@ describe('the add-on records its own writes', () => {
     const { ctx, data, rows } = makeCtx();
     rows.push({ id: 'sb-1', accountId: 'wf-a', activityType: 'DEPOSIT', date: '2026-06-19', amount: '11355.12', comment: 'Starting balance · sfin-1' });
     await applyBaselineCorrection(ctx, new SecretsStore(ctx), { sfinAccountId: 'sfin-1', wfAccountId: 'wf-a', currency: 'USD', suggestedAmount: 10055.12 });
-    expect(bucket(data, 'change_log:addon:2026-10').entries).toEqual([expect.objectContaining({
+    expect(bucket(data, 'change_log.addon.2026-10').entries).toEqual([expect.objectContaining({
       kind: 'starting-balance-moved', actor: 'you',
       summary: 'Changed the starting balance (was $11,355.12)',
       before: { activityId: 'sb-1', amountCents: 1135512, date: '2026-06-19', activityType: 'DEPOSIT' },

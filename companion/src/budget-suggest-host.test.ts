@@ -305,7 +305,7 @@ describe('companionBudgetReaders', () => {
     await r.set('cat-gro', 42500);
     expect(client.setDefaultBudgetTarget).toHaveBeenCalledWith('cat-gro', 42500);
     await r.record([budgetSetChange({ targetId: 't', categoryId: 'c', categoryName: 'G', amountCents: 500 })], NOW);
-    const bucket = JSON.parse(data.get('change_log:companion:2026-10')!);
+    const bucket = JSON.parse(data.get('change_log.companion.2026-10')!);
     expect(bucket.entries).toEqual([expect.objectContaining({ kind: 'budget-set', writer: 'companion' })]);
   });
 });

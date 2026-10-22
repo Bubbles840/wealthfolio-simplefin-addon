@@ -6,6 +6,7 @@ import {
   parseChangeBucket, shiftMonth, utf8Bytes, type ChangeBucket, type ChangeLogIo,
 } from './change-log.js';
 import { accountTxKey } from './transfers.js';
+import { requireWealthfolioSecretKey } from './__fixtures__/wealthfolio-secret-key.js';
 
 const NOW = new Date('2026-10-12T14:05:00Z');
 const CHECKING = { sfinId: 'ACT-1f2e', wfId: 'wf-checking', name: 'Checking' };
@@ -15,9 +16,9 @@ const memory = (entries: Record<string, string> = {}) => {
   const data = new Map(Object.entries(entries));
   const io: ChangeLogIo & { data: Map<string, string> } = {
     data,
-    get: vi.fn(async (k: string) => data.get(k) ?? null),
-    set: vi.fn(async (k: string, v: string) => { data.set(k, v); }),
-    clear: vi.fn(async (k: string) => { data.set(k, ''); }),
+    get: vi.fn(async (k: string) => { requireWealthfolioSecretKey(k); return data.get(k) ?? null; }),
+    set: vi.fn(async (k: string, v: string) => { requireWealthfolioSecretKey(k); data.set(k, v); }),
+    clear: vi.fn(async (k: string) => { requireWealthfolioSecretKey(k); data.set(k, ''); }),
   };
   return io;
 };
@@ -32,8 +33,8 @@ const stored = (io: { data: Map<string, string> }, key: string): ChangeBucket =>
 
 describe('keys and months', () => {
   it('keys a bucket by writer and UTC month, with a .2 fallback', () => {
-    expect(changeLogKey('companion', '2026-10')).toBe('change_log:companion:2026-10');
-    expect(changeLogKey('addon', '2026-10', true)).toBe('change_log:addon:2026-10.2');
+    expect(changeLogKey('companion', '2026-10')).toBe('change_log.companion.2026-10');
+    expect(changeLogKey('addon', '2026-10', true)).toBe('change_log.addon.2026-10.2');
     expect(changeMonth('2026-10-31T23:30:00-05:00')).toBe('2026-11');
   });
 
@@ -46,9 +47,13 @@ describe('keys and months', () => {
   it('names every key Reset clears: both writers, both keys, this month and four back', () => {
     const keys = changeLogResetKeys(NOW);
     expect(keys).toHaveLength(20);
-    expect(keys).toContain('change_log:addon:2026-10');
-    expect(keys).toContain('change_log:companion:2026-06.2');
-    expect(keys).not.toContain('change_log:addon:2026-05');
+    expect(keys).toContain('change_log.addon.2026-10');
+    expect(keys).toContain('change_log.companion.2026-06.2');
+    expect(keys).not.toContain('change_log.addon.2026-05');
+  });
+
+  it('only makes keys Wealthfolio accepts: a colon was refused with a 400, so nothing was ever saved', () => {
+    for (const key of changeLogResetKeys(NOW)) expect(() => requireWealthfolioSecretKey(key), key).not.toThrow();
   });
 });
 
@@ -109,29 +114,29 @@ describe('appendChanges', () => {
   it('appends to this writer’s bucket for the entry’s month', async () => {
     const io = memory();
     await appendChanges(io.get, io.set, 'companion', [imported(1), imported(2)], NOW);
-    const b = stored(io, 'change_log:companion:2026-10');
+    const b = stored(io, 'change_log.companion.2026-10');
     expect(b).toMatchObject({ v: 1, writer: 'companion', month: '2026-10', gaps: [] });
     expect(b.entries.map((e) => e.subject.activityIds![0])).toEqual(['act-1', 'act-2']);
     await appendChanges(io.get, io.set, 'companion', [imported(3)], NOW);
-    expect(stored(io, 'change_log:companion:2026-10').entries).toHaveLength(3);
+    expect(stored(io, 'change_log.companion.2026-10').entries).toHaveLength(3);
   });
 
   it('puts a late entry from last month into last month’s bucket', async () => {
     const io = memory();
     await appendChanges(io.get, io.set, 'addon', [imported(1, new Date('2026-09-30T23:59:59Z'), 'addon'), imported(2, NOW, 'addon')], NOW);
-    expect(stored(io, 'change_log:addon:2026-09').entries).toHaveLength(1);
-    expect(stored(io, 'change_log:addon:2026-10').entries).toHaveLength(1);
+    expect(stored(io, 'change_log.addon.2026-09').entries).toHaveLength(1);
+    expect(stored(io, 'change_log.addon.2026-10').entries).toHaveLength(1);
   });
 
   it('never overwrites a corrupt bucket: it writes the .2 fallback instead', async () => {
-    const io = memory({ 'change_log:companion:2026-10': '{"v":1,"writer":"companion"' });
+    const io = memory({ 'change_log.companion.2026-10': '{"v":1,"writer":"companion"' });
     await appendChanges(io.get, io.set, 'companion', [imported(1)], NOW);
-    expect(io.data.get('change_log:companion:2026-10')).toBe('{"v":1,"writer":"companion"');
-    expect(stored(io, 'change_log:companion:2026-10.2').entries).toHaveLength(1);
+    expect(io.data.get('change_log.companion.2026-10')).toBe('{"v":1,"writer":"companion"');
+    expect(stored(io, 'change_log.companion.2026-10.2').entries).toHaveLength(1);
   });
 
   it('pauses when the fallback is corrupt too, writing nothing', async () => {
-    const io = memory({ 'change_log:companion:2026-10': 'x', 'change_log:companion:2026-10.2': 'y' });
+    const io = memory({ 'change_log.companion.2026-10': 'x', 'change_log.companion.2026-10.2': 'y' });
     await expect(appendChanges(io.get, io.set, 'companion', [imported(1)], NOW)).rejects.toBeInstanceOf(ChangeLogPausedError);
     expect(io.set).not.toHaveBeenCalled();
   });
@@ -140,7 +145,7 @@ describe('appendChanges', () => {
     const io = memory();
     const many = Array.from({ length: 700 }, (_, i) => imported(i));
     await appendChanges(io.get, io.set, 'companion', many, NOW);
-    const raw = io.data.get('change_log:companion:2026-10')!;
+    const raw = io.data.get('change_log.companion.2026-10')!;
     expect(utf8Bytes(raw)).toBeLessThanOrEqual(CHANGE_LOG_CAP_BYTES);
     const b = JSON.parse(raw) as ChangeBucket;
     expect(b.trimmed).toBeGreaterThan(0);
@@ -150,28 +155,28 @@ describe('appendChanges', () => {
 
 describe('createChangeLogWriter', () => {
   it('clears its own bucket from four months back on its first append of a month, once', async () => {
-    const io = memory({ 'change_log:companion:2026-06': '{"old":true}' });
+    const io = memory({ 'change_log.companion.2026-06': '{"old":true}' });
     const w = createChangeLogWriter({ writer: 'companion', now: () => NOW });
     await w.append(io, [imported(1)]);
     await w.append(io, [imported(2)]);
     expect(io.clear).toHaveBeenCalledTimes(18);
-    expect(io.clear).toHaveBeenCalledWith('change_log:companion:2026-06');
-    expect(io.clear).toHaveBeenCalledWith('change_log:companion:2026-06.2');
-    expect(io.data.get('change_log:companion:2026-06')).toBe('');
+    expect(io.clear).toHaveBeenCalledWith('change_log.companion.2026-06');
+    expect(io.clear).toHaveBeenCalledWith('change_log.companion.2026-06.2');
+    expect(io.data.get('change_log.companion.2026-06')).toBe('');
   });
 
   it('also clears the months a writer skipped: -4 through -12, and nothing newer', async () => {
     const io = memory({
-      'change_log:addon:2025-10': '{"old":true}', 'change_log:addon:2025-12.2': '{"old":true}',
-      'change_log:addon:2026-07': '{"old":true}', 'change_log:addon:2026-06': '{"old":true}',
+      'change_log.addon.2025-10': '{"old":true}', 'change_log.addon.2025-12.2': '{"old":true}',
+      'change_log.addon.2026-07': '{"old":true}', 'change_log.addon.2026-06': '{"old":true}',
     });
     const w = createChangeLogWriter({ writer: 'addon', now: () => NOW });
     await w.append(io, [imported(1)]);
-    for (const k of ['2025-10', '2026-06']) expect(io.data.get(`change_log:addon:${k}`)).toBe('');
-    expect(io.data.get('change_log:addon:2025-12.2')).toBe('');
-    expect(io.data.get('change_log:addon:2026-07')).toBe('{"old":true}');
-    expect(io.clear).not.toHaveBeenCalledWith('change_log:addon:2025-09');
-    expect(io.clear).not.toHaveBeenCalledWith('change_log:companion:2026-06');
+    for (const k of ['2025-10', '2026-06']) expect(io.data.get(`change_log.addon.${k}`)).toBe('');
+    expect(io.data.get('change_log.addon.2025-12.2')).toBe('');
+    expect(io.data.get('change_log.addon.2026-07')).toBe('{"old":true}');
+    expect(io.clear).not.toHaveBeenCalledWith('change_log.addon.2025-09');
+    expect(io.clear).not.toHaveBeenCalledWith('change_log.companion.2026-06');
   });
 
   it('never rejects, remembers a failed append, and writes it as a gap next time', async () => {
@@ -186,7 +191,7 @@ describe('createChangeLogWriter', () => {
     expect(w.pendingGaps()).toEqual([{ at: NOW.toISOString(), count: 3, reason: GAP_REASON_WRITE }]);
     fail = false;
     await w.append(io, [imported(4)]);
-    const b = stored(io, 'change_log:companion:2026-10');
+    const b = stored(io, 'change_log.companion.2026-10');
     expect(b.gaps).toEqual([{ at: NOW.toISOString(), count: 3, reason: GAP_REASON_WRITE }]);
     expect(b.entries).toHaveLength(1);
     expect(w.pendingGaps()).toEqual([]);
@@ -204,13 +209,13 @@ describe('createChangeLogWriter', () => {
     expect(w.pendingGaps()).toEqual([{ at: NOW.toISOString(), count: 1, reason: GAP_REASON_WRITE }]);
     fail = false;
     await expect(w.appendStrict(io, [imported(2)])).resolves.toEqual({ saved: true });
-    expect(stored(io, 'change_log:companion:2026-10').entries).toHaveLength(1);
+    expect(stored(io, 'change_log.companion.2026-10').entries).toHaveLength(1);
     // Nothing to write is nothing lost.
     await expect(w.appendStrict(io, [])).resolves.toEqual({ saved: true });
   });
 
   it('counts a paused month as an unreadable gap', async () => {
-    const io = memory({ 'change_log:addon:2026-10': 'x', 'change_log:addon:2026-10.2': 'y' });
+    const io = memory({ 'change_log.addon.2026-10': 'x', 'change_log.addon.2026-10.2': 'y' });
     const w = createChangeLogWriter({ writer: 'addon', now: () => NOW });
     await w.append(io, [imported(1, NOW, 'addon')]);
     expect(w.pendingGaps()).toEqual([{ at: NOW.toISOString(), count: 1, reason: GAP_REASON_UNREADABLE }]);
@@ -223,7 +228,7 @@ describe('createChangeLogWriter', () => {
     io.get = vi.fn(async (k: string) => { await new Promise((r) => setTimeout(r, 5)); return realGet(k); });
     const w = createChangeLogWriter({ writer: 'companion', now: () => NOW });
     await Promise.all([w.append(io, [imported(1)]), w.append(io, [imported(2)])]);
-    expect(stored(io, 'change_log:companion:2026-10').entries.map((e) => e.subject.activityIds![0])).toEqual(['act-1', 'act-2']);
+    expect(stored(io, 'change_log.companion.2026-10').entries.map((e) => e.subject.activityIds![0])).toEqual(['act-1', 'act-2']);
   });
 
   it('two writers in the same minute write two keys and lose nothing', async () => {
@@ -231,7 +236,7 @@ describe('createChangeLogWriter', () => {
     const addon = createChangeLogWriter({ writer: 'addon', now: () => NOW });
     const companion = createChangeLogWriter({ writer: 'companion', now: () => NOW });
     await Promise.all([addon.append(io, [imported(1, NOW, 'addon')]), companion.append(io, [imported(2)])]);
-    expect(stored(io, 'change_log:addon:2026-10').entries).toHaveLength(1);
-    expect(stored(io, 'change_log:companion:2026-10').entries).toHaveLength(1);
+    expect(stored(io, 'change_log.addon.2026-10').entries).toHaveLength(1);
+    expect(stored(io, 'change_log.companion.2026-10').entries).toHaveLength(1);
   });
 });

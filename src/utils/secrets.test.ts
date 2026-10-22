@@ -5,6 +5,7 @@ import type { UiState } from './secrets';
 import { UNCATEGORIZED_STATUS_SECRET_KEY, AMAZON_MAIL_STATUS_SECRET_KEY, AMAZON_MAIL_SAMPLES_SECRET_KEY } from '../../shared/status-keys';
 import { AMAZON_LABELS_SECRET_KEY } from '../../shared/amazon-config';
 import { hideKey, SubscriptionPrefsUnreadableError } from '../../shared/subscription-prefs';
+import { requireWealthfolioSecretKey } from '../../shared/__fixtures__/wealthfolio-secret-key';
 
 /** Builds a ctx plus its backing secrets map. `makeCtx` (below) wraps this and
  *  discards the map, for the ~40 call sites that only need the ctx; tests that
@@ -15,9 +16,10 @@ const makeCtxWithData = () => {
   const ctx = {
     api: {
       secrets: {
-        get: vi.fn(async (k: string) => data[k] ?? null),
-        set: vi.fn(async (k: string, v: string) => { data[k] = v; }),
-        delete: vi.fn(async (k: string) => { delete data[k]; }),
+        // Each refuses a key the real host refuses, as Wealthfolio does.
+        get: vi.fn(async (k: string) => { requireWealthfolioSecretKey(k); return data[k] ?? null; }),
+        set: vi.fn(async (k: string, v: string) => { requireWealthfolioSecretKey(k); data[k] = v; }),
+        delete: vi.fn(async (k: string) => { requireWealthfolioSecretKey(k); delete data[k]; }),
       },
     },
   } as any;

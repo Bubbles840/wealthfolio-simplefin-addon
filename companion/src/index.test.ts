@@ -385,7 +385,7 @@ describe('runCompanionSync', () => {
 
       const sink = vi.mocked(runSyncCore).mock.calls[0][2]!.changeLog!;
       expect(sink).toMatchObject({ writer: 'companion', run: `c${at.getTime().toString(36)}` });
-      const bucket = JSON.parse(secrets.get('change_log:companion:2026-10')!);
+      const bucket = JSON.parse(secrets.get('change_log.companion.2026-10')!);
       expect(bucket.entries).toEqual([expect.objectContaining({
         kind: 'category-filed', run: sink.run, summary: 'Filed AMAZON MKTPL*2K4 under Personal Care',
         subject: expect.objectContaining({ txKeys: ['ACT-9c8d\u0000TRN-1'] }),
@@ -2756,7 +2756,7 @@ describe('buildTelegramCommandHandler', () => {
       before: null, after: { categoryId: 'cat-din', categoryName: 'Dining' },
     }), 'companion', new Date(2026, 9, 12, 7, 30, 0));
     const withLog = () => clientFor([[
-      'change_log:companion:2026-10',
+      'change_log.companion.2026-10',
       JSON.stringify({ v: 1, writer: 'companion', month: '2026-10', entries: [venmo()], gaps: [] }),
     ]]);
 
@@ -3059,7 +3059,7 @@ describe('buildTelegramCommandHandler', () => {
         description: 'VENMO CASHOUT', amountCents: 1400, date: '2026-10-09', subtypeBefore: null, categoryId: 'cat-fun', categoryName: 'Entertainment',
       }), 'companion', new Date(2026, 9, 12, 7, 30, 0));
       const { client, secrets } = clientFor([[
-        'change_log:companion:2026-10',
+        'change_log.companion.2026-10',
         JSON.stringify({ v: 1, writer: 'companion', month: '2026-10', entries: [filed], gaps: [] }),
       ]]);
       client.saveMany = vi.fn(async () => ({ created: [], updated: [], errors: [] }));
@@ -3093,7 +3093,7 @@ describe('buildTelegramCommandHandler', () => {
         before: null, after: { categoryId: 'cat-din', categoryName: 'Dining' },
       }), 'companion', new Date(2026, 9, 12, 7, 0, 0));
       const { client } = clientFor([[
-        'change_log:companion:2026-10',
+        'change_log.companion.2026-10',
         JSON.stringify({ v: 1, writer: 'companion', month: '2026-10', entries: [removal, filed], gaps: [] }),
       ]]);
       client.saveMany = vi.fn(async () => ({ created: [], updated: [], errors: [] }));
@@ -3243,7 +3243,7 @@ describe('buildTelegramCommandHandler', () => {
       expect(client.setDefaultBudgetTarget).toHaveBeenCalledWith('cat-gro', 42000);
       expect((ui.edit.mock.calls[0] as unknown as [string])[0]).toBe('Setting 1 budget…');
       expect((ui.edit.mock.calls.at(-1) as unknown as [string])[0]).toBe('*Budgets*\n✓ Groceries: $420 a month\n\nUndo any of these from /changes.');
-      const bucket = JSON.parse(secrets.get('change_log:companion:2026-10')!);
+      const bucket = JSON.parse(secrets.get('change_log.companion.2026-10')!);
       expect(bucket.entries).toEqual([expect.objectContaining({
         kind: 'budget-set', actor: 'you', summary: 'Set a $420.00 monthly budget for Groceries', after: expect.objectContaining({ targetId: 'bt-cat-gro' }),
       })]);
@@ -5089,7 +5089,7 @@ describe('the /categorize wiring', () => {
     await cb(dataFor(lastOf(ui.edit)[1], 'Make this a rule'));
     await cb(dataFor(lastOf(ui.edit)[1], 'Create rule'));
     const logged = () => [...secrets.entries()]
-      .filter(([k, v]) => /^change_log:companion:\d{4}-\d{2}$/.test(k) && v)
+      .filter(([k, v]) => /^change_log\.companion\.\d{4}-\d{2}$/.test(k) && v)
       .flatMap(([, v]) => JSON.parse(v).entries);
     await vi.waitFor(() => expect(logged()).toHaveLength(2));
     expect(logged().map((e: any) => [e.kind, e.actor, e.writer, e.summary])).toEqual([
@@ -5451,7 +5451,7 @@ describe('the /categorize wiring', () => {
       expect(p.client.assignActivityCategory).toHaveBeenCalledWith('act-7', 'spending_categories', 'cat-fun');
       expect(lastOf(p.ui.edit)[0]).toBe('Filed as a payback under Entertainment — it takes $14 off your Entertainment spending.\nUndo it from /changes.');
       expect(JSON.parse(p.secrets.get('sync_overrides')!).tx['sfin-1\u0000TRN-act-7']).toMatchObject({ asReimbursement: true });
-      const logged = [...p.secrets.entries()].filter(([k, v]) => /^change_log:companion:\d{4}-\d{2}$/.test(k) && v)
+      const logged = [...p.secrets.entries()].filter(([k, v]) => /^change_log\.companion\.\d{4}-\d{2}$/.test(k) && v)
         .flatMap(([, v]) => JSON.parse(v).entries);
       expect(logged.map((e: any) => [e.kind, e.summary])).toEqual([['payback-filed', 'Filed VENMO CASHOUT as a payback under Entertainment']]);
     });
