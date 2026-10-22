@@ -48,11 +48,13 @@ describe('claimToken', () => {
     // A bare "403" was all a reused token ever produced.
     const network = { request: vi.fn(async () => ({ status: 403, body: '' })) } as any;
     await expect(claimToken(btoa('https://bridge.simplefin.org/claim/x'), network)).rejects.toThrow(/already used/);
+    await expect(claimToken(btoa('https://bridge.simplefin.org/claim/x'), network)).rejects.toThrow(/in SimpleFin Bridge or Lunch Flow/);
   });
 
   it('says plainly when the pasted text is not a setup token at all', async () => {
     const network = { request: vi.fn() } as any;
     await expect(claimToken('https://user:pass@bridge.simplefin.org/simplefin', network)).rejects.toThrow(/does not look like a SimpleFin setup token/);
+    await expect(claimToken('https://user:pass@bridge.simplefin.org/simplefin', network)).rejects.toThrow(/from SimpleFin Bridge or Lunch Flow/);
     expect(network.request).not.toHaveBeenCalled();
   });
 
@@ -74,6 +76,38 @@ describe('claimToken', () => {
     const network = makeNetwork(() => okResponse('https://user:pass@bridge.simplefin.org/simplefin'));
     const result = await claimToken(token, network);
     expect(result).toBe('https://user:pass@bridge.simplefin.org/simplefin');
+  });
+
+  it('claims a Lunch Flow setup token (#25)', async () => {
+    const rawUrl = 'https://www.lunchflow.app/simplefin/claim/abc123';
+    const accessUrl = 'https://user:pass@www.lunchflow.app/simplefin';
+    const network = makeNetwork(() => okResponse(accessUrl));
+    expect(await claimToken(btoa(rawUrl), network)).toBe(accessUrl);
+    expect(network.request).toHaveBeenCalledWith({ url: rawUrl, method: 'POST' });
+  });
+
+  it('says where to approve a host Wealthfolio has not approved, and that the token is unused', async () => {
+    // Wealthfolio leaves a host added by an update unticked until the person ticks it.
+    const network = makeNetwork(() => Promise.reject(new Error("Addon network host 'www.lunchflow.app' is not approved")));
+    const claim = claimToken(btoa('https://www.lunchflow.app/simplefin/claim/x'), network);
+    // The button is an eye icon (its "View permissions" label is screen-reader
+    // text), shown on hover; ticking a host does nothing until Save.
+    await expect(claim).rejects.toThrow(/Settings → Add-ons, hover over the SimpleFin Sync card and click its eye icon \(View permissions\)/);
+    await expect(claim).rejects.toThrow(/tick lunchflow\.app and \*\.lunchflow\.app under Network hosts, click Save/);
+    await expect(claim).rejects.toThrow(/paste the same token again/);
+  });
+
+  it('says plainly when the refused host is not one the add-on may reach at all', async () => {
+    const network = makeNetwork(() => Promise.reject(new Error("Addon network host 'other.simplefin.org' is not approved")));
+    const err = await claimToken(btoa('https://other.simplefin.org/claim/x'), network).catch((e) => e);
+    expect(err.message).toMatch(/can't reach other\.simplefin\.org/);
+    expect(err.message).toMatch(/github\.com\/Bubbles840\/wealthfolio-simplefin-addon\/issues/);
+    expect(err.message).not.toMatch(/tick/);
+  });
+
+  it('passes any other request failure through unchanged', async () => {
+    const network = makeNetwork(() => Promise.reject(new Error('error sending request')));
+    await expect(claimToken(btoa('https://bridge.simplefin.org/claim/x'), network)).rejects.toThrow('error sending request');
   });
 });
 
@@ -123,6 +157,22 @@ describe('fetchAccounts', () => {
     await expect(
       fetchAccounts('https://user:pass@evil.com/simplefin', new Date(), makeNetwork()),
     ).rejects.toThrow('simplefin.org');
+  });
+
+  it('fetches from a Lunch Flow access URL (#25)', async () => {
+    const network = makeNetwork(() => okResponse(JSON.stringify({ errors: [], accounts: [] })));
+    await fetchAccounts('https://user:pass@www.lunchflow.app/simplefin', new Date(), network);
+    const [calledReq] = (network.request as ReturnType<typeof vi.fn>).mock.calls[0];
+    expect(new URL(calledReq.url).hostname).toBe('www.lunchflow.app');
+  });
+
+  it('says where to approve the host when Wealthfolio refuses it, not that SimpleFin is unreachable', async () => {
+    const network = makeNetwork(() => Promise.reject(new Error("Addon network host 'www.lunchflow.app' is not approved")));
+    const err = await fetchAccounts('https://u:p@www.lunchflow.app/simplefin', new Date(), network).catch((e) => e);
+    expect(err).toBeInstanceOf(SimplefinRequestError);
+    expect(err.message).toMatch(/tick lunchflow\.app and \*\.lunchflow\.app under Network hosts/);
+    expect(err.message).not.toBe(SIMPLEFIN_UNREACHABLE_MESSAGE);
+    expect(err.detail).toContain('is not approved');
   });
 
   it('throws on non-ok response', async () => {

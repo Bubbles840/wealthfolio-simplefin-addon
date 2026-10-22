@@ -17,6 +17,7 @@ enforces that list — the addon cannot reach anything else.
 | Service | Required? | What is sent | What comes back |
 |---|---|---|---|
 | **SimpleFIN Bridge** (`bridge.simplefin.org`, `beta-bridge.simplefin.org`) | Yes | Your SimpleFIN access credentials, as HTTP Basic auth | Account balances and transactions for the accounts you linked at SimpleFIN |
+| **Lunch Flow** (`lunchflow.app`, `*.lunchflow.app`) | No — only if your setup token came from Lunch Flow instead of SimpleFIN Bridge | Your Lunch Flow SimpleFIN access credentials, as HTTP Basic auth | Account balances and transactions for the accounts you shared with that Lunch Flow destination |
 | **Telegram Bot API** (`api.telegram.org`) | No — only if you configure it | The content of the notifications you enabled: transaction descriptions, amounts, account names, category names, and spending/budget totals | Commands you send your bot |
 
 Your **bank credentials are never seen by this addon**. SimpleFIN's model is
@@ -68,6 +69,7 @@ This addon's use of those services is governed by their own terms, not this
 document:
 
 - SimpleFIN — <https://www.simplefin.org/>
+- Lunch Flow — <https://www.lunchflow.app/>
 - Telegram — <https://telegram.org/privacy>
 - Your mail provider — whichever you configured
 

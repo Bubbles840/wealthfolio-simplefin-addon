@@ -54,6 +54,11 @@ const makeProps = () => ({
 });
 
 describe('SetupPage', () => {
+  it('says a setup token can come from SimpleFin Bridge or Lunch Flow (#25)', () => {
+    render(<SetupPage {...makeProps()} />);
+    expect(screen.getByText(/SimpleFin Bridge.*Lunch Flow/)).toBeInTheDocument();
+  });
+
   it('renders Step 1 of 2 with token input', () => {
     render(<SetupPage {...makeProps()} />);
     expect(screen.getByText('Step 1 of 2')).toBeInTheDocument();
@@ -69,6 +74,40 @@ describe('SetupPage', () => {
     fireEvent.click(screen.getByRole('button', { name: /connect/i }));
     await waitFor(() => expect(screen.getByText(/step 2/i)).toBeInTheDocument());
     expect(props.store.setAccessUrl).toHaveBeenCalled();
+  });
+
+  it('retries a failed first download with the access URL it claimed, not by claiming the spent token again', async () => {
+    // A setup token can be claimed once. Claiming it again after a failed
+    // download (SimpleFin unreachable, a host not yet approved) only got a 403.
+    const { claimToken } = await import('../utils/simplefin');
+    vi.mocked(claimToken).mockClear();
+    vi.mocked(fetchAccounts).mockClear();
+    vi.mocked(fetchAccounts).mockRejectedValueOnce(new Error("Couldn't reach SimpleFin"));
+    const props = makeProps();
+    render(<SetupPage {...props} />);
+    fireEvent.change(screen.getByPlaceholderText(/setup token/i), { target: { value: 'dGVzdA==' } });
+    fireEvent.click(screen.getByRole('button', { name: /connect/i }));
+    expect(await screen.findByText("Couldn't reach SimpleFin")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: /connect/i }));
+    expect(await screen.findByText('Step 2 of 2')).toBeInTheDocument();
+    expect(claimToken).toHaveBeenCalledTimes(1);
+    expect(fetchAccounts).toHaveBeenCalledTimes(2);
+    expect(vi.mocked(fetchAccounts).mock.calls[1][0]).toBe('https://user:pass@bridge.simplefin.org/simplefin');
+  });
+
+  it('claims a different token afresh after a failed download', async () => {
+    const { claimToken } = await import('../utils/simplefin');
+    vi.mocked(claimToken).mockClear();
+    vi.mocked(fetchAccounts).mockClear();
+    vi.mocked(fetchAccounts).mockRejectedValueOnce(new Error("Couldn't reach SimpleFin"));
+    render(<SetupPage {...makeProps()} />);
+    fireEvent.change(screen.getByPlaceholderText(/setup token/i), { target: { value: 'dGVzdA==' } });
+    fireEvent.click(screen.getByRole('button', { name: /connect/i }));
+    expect(await screen.findByText("Couldn't reach SimpleFin")).toBeInTheDocument();
+    fireEvent.change(screen.getByPlaceholderText(/setup token/i), { target: { value: 'b3RoZXI=' } });
+    fireEvent.click(screen.getByRole('button', { name: /connect/i }));
+    expect(await screen.findByText('Step 2 of 2')).toBeInTheDocument();
+    expect(claimToken).toHaveBeenCalledTimes(2);
   });
 
   it('finishes after the mapping, with auto-sync on every 6 hours', async () => {

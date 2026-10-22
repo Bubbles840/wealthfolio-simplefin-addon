@@ -7,6 +7,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Lunch Flow setup tokens (#25).** Lunch Flow runs a SimpleFIN server of
+  its own, the one it feeds Actual Budget from. A setup token from a Lunch
+  Flow Actual Budget destination now connects like a SimpleFin Bridge one;
+  setup used to refuse it with "SimpleFin claim URL must be hosted at
+  simplefin.org". The add-on may now reach `lunchflow.app` and
+  `*.lunchflow.app`. A new install approves them with the other hosts. An
+  add-on updated in place leaves them unticked unless they're ticked in the
+  update's permission dialog, as Wealthfolio does with any host an update
+  adds. Setup then says where to tick them (Settings → Add-ons, the eye icon
+  on the SimpleFin Sync card, Network hosts, Save) instead of showing
+  Wealthfolio's bare "host is not approved". Nothing changes for SimpleFin
+  Bridge users, and the in-app Update still works.
+
+### Fixed
+- **Setup no longer spends the token on a retry.** When the first download
+  failed after the token was claimed (SimpleFin unreachable, a host not yet
+  approved), Connect claimed the same one-time token again and got "this
+  setup token was already used". It now retries with the access URL the
+  token already gave; only a different token is claimed.
+- **A fresh companion learns transfer names and files bookkeeping (#28,
+  @mandishshah).** Wealthfolio answers a secret that was never stored with
+  `null`, and the companion read that as the text "null", so both read as
+  corrupt on every sync until something else wrote them.
+- **Holdings cost is the cost basis divided by the shares (#29,
+  @mandishshah).** Some providers send a position's total cost as its
+  per-share `purchase_price`, which showed every holding at a near-100% loss,
+  and a `0.00` meaning unknown was written as a zero cost, which showed the
+  whole value as gain. Snapshots already written keep their cost; the next
+  sync's snapshot has the right one.
+
 ## [1.66.0] - 2026-10-20
 
 Update the add-on and the companion together: a companion older than 1.66.0
