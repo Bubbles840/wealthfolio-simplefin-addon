@@ -46,7 +46,7 @@ function fakeClient(installed: string | null = '1.62.0') {
     unassignActivityCategory: vi.fn(async (id: string) => { filed.delete(id); }),
     getActivityAssignments: vi.fn(async (id: string) => (filed.has(id) ? [{ taxonomyId: 'spending_categories', categoryId: filed.get(id)! }] : [])),
   };
-  const logged = (): ChangeLogItem[] => [...data].filter(([k, v]) => k.startsWith('change_log:companion:') && v)
+  const logged = (): ChangeLogItem[] => [...data].filter(([k, v]) => k.startsWith('change_log.companion.') && v)
     .flatMap(([, v]) => (JSON.parse(v) as ChangeBucket).entries);
   const overrides = () => {
     const p = parseSyncOverrides(data.get(SYNC_OVERRIDES_SECRET_KEY));
@@ -84,7 +84,7 @@ describe('a payback on the companion', () => {
     const f = fakeClient();
     const log = vi.fn();
     f.client.setAddonSecret.mockImplementation(async (_a: string, k: string, v: string) => {
-      if (k.startsWith('change_log:')) throw new Error('500 from Wealthfolio');
+      if (k.startsWith('change_log.')) throw new Error('500 from Wealthfolio');
       f.data.set(k, v);
     });
     const out = await filePayback(RESTAURANTS, companionPaybackIo(f.client, log), NOW);
@@ -97,7 +97,7 @@ describe('a payback on the companion', () => {
   it('says the setting can only be taken off in the app when its record is rejected too (PB-I)', async () => {
     const f = fakeClient();
     f.client.setAddonSecret.mockImplementation(async (_a: string, k: string, v: string) => {
-      if (k.startsWith('change_log:')) throw new Error('500 from Wealthfolio');
+      if (k.startsWith('change_log.')) throw new Error('500 from Wealthfolio');
       f.data.set(k, v);
     });
     // The update fails, and so does the read that would say whether it landed.
@@ -187,7 +187,7 @@ describe('"Make every … deposit a payback" on the companion (W10)', () => {
   it('logs both rules through the strict append: when the change log cannot be written, the reply promises no Undo', async () => {
     const f = fakeClient();
     f.client.setAddonSecret.mockImplementation(async (_a: string, k: string, v: string) => {
-      if (k.startsWith('change_log:')) throw new Error('500 from Wealthfolio');
+      if (k.startsWith('change_log.')) throw new Error('500 from Wealthfolio');
       f.data.set(k, v);
     });
     const client = Object.assign(f.client, {

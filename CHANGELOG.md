@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **The change log saves, for the first time on a real server.** Since
+  1.60.0 each month's log was stored under a key like
+  `change_log:companion:2026-10`, and Wealthfolio refuses any add-on setting
+  whose name contains a colon. So every entry was dropped (the companion logs
+  "Change log: … not saved"), and the change log card, a transaction's
+  history, and every Undo built on them (in the app and in Telegram) had
+  nothing to show. The keys are now `change_log.companion.2026-10`. Nothing
+  was ever stored under the old ones, so the log simply starts filling from
+  this release. The tests now refuse any key Wealthfolio would refuse.
+- **Reset finishes.** Reset also deletes the change log's keys, and
+  Wealthfolio refused the colon ones, so Reset stopped auto-sync and cleared
+  everything else but never went back to setup.
+
 ## [1.67.0] - 2026-10-22
 
 Update the add-on in the app as usual: there are no new permissions. Pull the

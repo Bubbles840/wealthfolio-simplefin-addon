@@ -2,10 +2,12 @@
  * shared/change-log.ts
  *
  * Where change entries live: add-on settings, one bucket per writer per month
- * (`change_log:<writer>:<YYYY-MM>`), so the two writers — the add-on and the
- * companion — never write the same key. Secrets have no compare-and-swap and
- * no list operation; one key per writer is what makes a read-append-write safe
- * without either.
+ * (`change_log.<writer>.<YYYY-MM>`), so the two writers — the add-on and the
+ * companion — never write the same key. Dots, not colons: Wealthfolio refuses
+ * any add-on secret key outside ASCII letters, digits, '.', '_' and '-' with a
+ * 400, so the `change_log:…` keys of 1.60–1.67.0 never saved anything.
+ * Secrets have no compare-and-swap and no list operation; one key per writer is
+ * what makes a read-append-write safe without either.
  *
  * - A CORRUPT bucket is never overwritten. The writer appends to the fallback
  *   `<key>.2` instead; readers read both. If the fallback is corrupt too,
@@ -77,7 +79,7 @@ export function shiftMonth(month: string, n: number): string {
 }
 
 export function changeLogKey(writer: ChangeWriter, month: string, fallback = false): string {
-  return `${CHANGE_LOG_KEY_PREFIX}:${writer}:${month}${fallback ? CHANGE_LOG_FALLBACK_SUFFIX : ''}`;
+  return `${CHANGE_LOG_KEY_PREFIX}.${writer}.${month}${fallback ? CHANGE_LOG_FALLBACK_SUFFIX : ''}`;
 }
 
 /** Every key Reset must clear: both writers, both keys, this month and the

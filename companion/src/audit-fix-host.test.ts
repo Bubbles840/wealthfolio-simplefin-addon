@@ -39,7 +39,7 @@ function fakeClient(rows: Row[], secrets: Record<string, string> = {}) {
     }),
   };
   /** The companion's bucket of the change log, whatever month the clock says. */
-  const logged = () => [...data].filter(([k, v]) => k.startsWith('change_log:companion:') && v).flatMap(([, v]) => (JSON.parse(v) as ChangeBucket).entries);
+  const logged = () => [...data].filter(([k, v]) => k.startsWith('change_log.companion.') && v).flatMap(([, v]) => (JSON.parse(v) as ChangeBucket).entries);
   return { client: client as unknown as FixClient & typeof client, data, rows, saved, logged };
 }
 
@@ -77,7 +77,7 @@ describe('Link on the companion', () => {
   it('logs that the change log was not written when its write is rejected (PB-I)', async () => {
     const f = fakeClient([{ ...OUT }, { ...INTO }]);
     f.client.setAddonSecret.mockImplementation(async (_a: string, k: string, v: string) => {
-      if (k.startsWith('change_log:')) throw new Error('500 from Wealthfolio');
+      if (k.startsWith('change_log.')) throw new Error('500 from Wealthfolio');
       f.data.set(k, v);
     });
     const log = vi.fn();
@@ -111,7 +111,7 @@ describe('Remove for good on the companion', () => {
   it('says there is no Undo when the change log write is rejected (PB-I)', async () => {
     const f = fakeClient([{ ...DUP }], mapping);
     f.client.setAddonSecret.mockImplementation(async (_a: string, k: string, v: string) => {
-      if (k.startsWith('change_log:')) throw new Error('500 from Wealthfolio');
+      if (k.startsWith('change_log.')) throw new Error('500 from Wealthfolio');
       f.data.set(k, v);
     });
     expect(await removeForGood('dup-1', FP, companionRemoveIo(f.client, vi.fn()), NOW)).toEqual({ ok: true, message: REMOVE_NO_UNDO });

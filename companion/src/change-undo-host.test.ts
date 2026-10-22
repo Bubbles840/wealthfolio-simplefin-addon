@@ -52,7 +52,7 @@ describe('companionUndoIo', () => {
     const io = companionUndoIo(c, '/nope.db', createFakeHost().host);
     expect(await runChangeUndo(filing, [filing], 'undo', io, 'plain', NOW)).toEqual({ ok: true, message: 'Undone — no category.', needsSync: false });
     expect(c.unassignActivityCategory).toHaveBeenCalledWith('act-5', 'spending_categories');
-    const bucket = JSON.parse(c.data.get('change_log:companion:2026-10')!);
+    const bucket = JSON.parse(c.data.get('change_log.companion.2026-10')!);
     expect(bucket.entries).toEqual([expect.objectContaining({ writer: 'companion', actor: 'you', reverses: { id: filing.id, op: 'undo' } })]);
     // The merged read shows the original as undone (the original itself lives
     // in whichever bucket wrote it; here it is not stored, so only the undo shows).
@@ -117,7 +117,7 @@ describe('companionUndoIo', () => {
       const io = companionUndoIo(c, '/nope.db', createFakeHost().host);
       expect(await runChangeUndo(rule, [rule], 'undo', io, 'plain', NOW)).toMatchObject({ ok: true });
       expect(fetchMock).toHaveBeenCalledTimes(1);
-      expect(JSON.parse(c.data.get('change_log:companion:2026-10')!).entries).toEqual([expect.objectContaining({ reverses: { id: rule.id, op: 'undo' } })]);
+      expect(JSON.parse(c.data.get('change_log.companion.2026-10')!).entries).toEqual([expect.objectContaining({ reverses: { id: rule.id, op: 'undo' } })]);
     } finally {
       vi.unstubAllGlobals();
     }

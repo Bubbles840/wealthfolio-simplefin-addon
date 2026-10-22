@@ -56,7 +56,7 @@ describe('undoFromApp', () => {
     expect(await undoFromApp(ctx, store, e, [e], 'undo')).toMatchObject({ ok: true, needsSync: false });
     expect(rows).toEqual([]);
     expect(JSON.parse(data.skipped_transactions)).toEqual([expect.objectContaining({ account: 'sfin-1', txId: 'tx-1' })]);
-    const bucket = JSON.parse(data['change_log:addon:2026-10']) as ChangeBucket;
+    const bucket = JSON.parse(data['change_log.addon.2026-10']) as ChangeBucket;
     expect(bucket.entries).toEqual([expect.objectContaining({ writer: 'addon', actor: 'you', reverses: { id: e.id, op: 'undo' } })]);
   });
 
