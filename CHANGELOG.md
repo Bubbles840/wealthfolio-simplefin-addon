@@ -20,16 +20,18 @@ over the installed add-on.
   for each account (tagged with the start of the Wealthfolio account's id, so
   renaming or reconnecting the account keeps it): two accounts can
   hold different baskets under one symbol, and Wealthfolio keeps one asset,
-  and one price a day, per symbol. A holding moves to its own asset only after
+  and one price a day, per symbol. A ticker moves to its own asset only after
   its shared asset has gone several days with no market price, and moves back
-  as soon as the shared asset gets one, so a newly bought ticker waiting for
-  its first quote is never caught. A ticker the market prices stays shared and
-  is never touched, and neither is an asset you set to manual pricing
-  yourself.
+  from the next day's snapshot once the shared asset gets one, so a newly
+  bought ticker waiting for its first quote is never caught. A ticker the
+  market prices stays shared and is never touched, and neither is an asset you
+  set to manual pricing yourself, or a symbol the bank sends in two
+  currencies.
 - **A holding SimpleFin sends without a symbol is synced.** Some retirement
   plans send funds with a description but no symbol; they were dropped, which
   left such an account with no holdings at all. They are now filed under their
-  description, so an account that never had a holdings snapshot starts getting
+  description, on an asset of their own from the first sync and priced as
+  above, so an account that never had a holdings snapshot starts getting
   one. Two holdings filed under one name (two funds whose descriptions agree up
   to the cut, or one ticker sent as two lots) are one position, their shares
   added, instead of one of them being lost.

@@ -49,11 +49,16 @@ import type { HoldingsSyncOutcome } from '../../shared/sync-host';
 /** How long a MARKET asset must have had no quote before it is priced from the feed. */
 export const UNPRICED_FOR_MS = 3 * 24 * 60 * 60 * 1000;
 
-/** An account's holding, as much of it as this reads. */
+/** An account's holding, as much of it as this reads. Wealthfolio names the
+ *  mode `pricingMode` here (`Instrument.pricing_mode`) and `symbol` is the
+ *  asset's display code, which drops a known exchange suffix ("SHOP.TO" shows
+ *  as "SHOP"): a holding is looked up by its asset id wherever one is known. */
 export interface HeldAsset {
-  instrument?: { id: string; symbol: string; quoteMode?: string | null } | null;
+  instrument?: { id: string; symbol: string; pricingMode?: string | null } | null;
   price?: number | null;
 }
+
+const modeOf = (h: HeldAsset | undefined) => h?.instrument?.pricingMode ?? undefined;
 
 /** The host calls this needs, as the SDK names them. */
 export interface PricingApi {
@@ -171,8 +176,13 @@ export async function syncHoldingsWithFeedPrices(
   log: (line: string) => void = (line) => console.warn(line),
   now = new Date(),
 ): Promise<HoldingsSyncOutcome> {
+  // A symbol the feed sends in two currencies is left where it is: both lines
+  // would land on one per-account asset, which has one price a day.
+  const currencies = new Map<string, Set<string>>();
+  for (const p of prices) currencies.set(symbolKey(p.symbol), (currencies.get(symbolKey(p.symbol)) ?? new Set()).add(p.currency));
   const priced = new Map(
-    prices.filter((p) => Number(p.price) > 0).map((p): [string, FeedPrice] => [symbolKey(p.symbol), p]),
+    prices.filter((p) => Number(p.price) > 0 && currencies.get(symbolKey(p.symbol))!.size === 1)
+      .map((p): [string, FeedPrice] => [symbolKey(p.symbol), p]),
   );
   const scoped = (symbol: string) => scopedSymbol(symbol, tag!);
 
@@ -180,6 +190,7 @@ export async function syncHoldingsWithFeedPrices(
   // would be written back onto the shared one, so the account waits a sync.
   const moving = new Set<string>();
   let held = new Map<string, HeldAsset>();
+  let heldById = new Map<string, HeldAsset>();
   if (tag && priced.size > 0) {
     let holdings: HeldAsset[];
     try {
@@ -191,6 +202,7 @@ export async function syncHoldingsWithFeedPrices(
       (holdings ?? []).filter((h) => h.instrument?.id && h.instrument.symbol)
         .map((h): [string, HeldAsset] => [symbolKey(h.instrument!.symbol), h]),
     );
+    heldById = new Map([...held.values()].map((h): [string, HeldAsset] => [h.instrument!.id, h]));
     for (const p of snapshot.positions) {
       const key = symbolKey(p.symbol);
       const feed = priced.get(key);
@@ -199,7 +211,7 @@ export async function syncHoldingsWithFeedPrices(
       else if (held.has(symbolKey(scoped(p.symbol)))) moving.add(key); // may move back in step 3
       else if (held.has(key)) {
         const h = held.get(key)!;
-        if (await sharedIsUnpriced(pricing, h.instrument!.id, now, { quoteMode: h.instrument!.quoteMode, price: h.price })) moving.add(key);
+        if (await sharedIsUnpriced(pricing, h.instrument!.id, now, { quoteMode: modeOf(h), price: h.price })) moving.add(key);
       }
     }
   }
@@ -223,14 +235,16 @@ export async function syncHoldingsWithFeedPrices(
   );
   // A holding the account does not hold yet, under either symbol, whose shared
   // asset already exists (another account's, or from before): judged from that
-  // asset, so it does not spend a sync valued at $0 first.
+  // asset, so it does not spend a sync valued at $0 first. A holding whose
+  // symbol showed differently (an exchange suffix) is found here by its id.
   if (tag) {
     for (const p of snapshot.positions) {
       const key = symbolKey(p.symbol);
       const sharedId = ids.get(key);
       if (!priced.has(key) || moving.has(key) || !sharedId) continue;
       if (held.has(key) || held.has(symbolKey(scoped(p.symbol)))) continue;
-      if (await sharedIsUnpriced(pricing, sharedId, now)) moving.add(key);
+      const h = heldById.get(sharedId);
+      if (await sharedIsUnpriced(pricing, sharedId, now, h && { quoteMode: modeOf(h), price: h.price })) moving.add(key);
     }
   }
   for (const key of [...moving]) {
@@ -301,8 +315,7 @@ export async function syncHoldingsWithFeedPrices(
     const assetId = scopedIds.get(symbolKey(symbol));
     if (!assetId || assetId === ids.get(key)) continue;
     try {
-      const mode = held.get(symbolKey(symbol))?.instrument?.quoteMode
-        ?? (await pricing.getProfile(assetId))?.quoteMode;
+      const mode = modeOf(heldById.get(assetId)) ?? (await pricing.getProfile(assetId))?.quoteMode;
       if (String(mode ?? '').toUpperCase() !== 'MANUAL') {
         await pricing.updateQuoteMode(assetId, 'MANUAL');
       }

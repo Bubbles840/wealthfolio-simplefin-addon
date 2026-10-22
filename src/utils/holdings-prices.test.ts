@@ -29,10 +29,12 @@ describe('manualQuote', () => {
  * a snapshot is one row per account and date; importing a snapshot onto a
  * MANUAL asset writes the day's price from the position's average cost; and an
  * account's holdings are its latest snapshot's positions, each with its
- * asset's mode and latest price.
+ * asset's mode (`instrument.pricingMode`) and latest price. A holding's
+ * `instrument.symbol` is the asset's display code, which drops a known
+ * exchange suffix ("SHOP.TO" shows as "SHOP").
  */
 function wealthfolio() {
-  type Asset = { id: string; quoteMode: string; createdAt: string };
+  type Asset = { id: string; quoteMode: string; createdAt: string; displayCode?: string };
   const assets = new Map<string, Asset>();
   const quotes = new Map<string, { close: number; dataSource: string }>(); // `${assetId}|${day}|${source}`
   const snapshots = new Map<string, HoldingsSnapshot>(); // `${account}|${date}`
@@ -70,7 +72,7 @@ function wealthfolio() {
       if (dates.length === 0) return [];
       return snapshots.get(dates[dates.length - 1])!.positions.map((p) => {
         const asset = assets.get(key(p.symbol))!;
-        return { instrument: { id: asset.id, symbol: p.symbol, quoteMode: asset.quoteMode }, price: latest(asset.id) };
+        return { instrument: { id: asset.id, symbol: asset.displayCode ?? p.symbol, pricingMode: asset.quoteMode }, price: latest(asset.id) };
       });
     }),
     getProfile: vi.fn(async (id: string) => ({ quoteMode: byId(id).quoteMode, createdAt: byId(id).createdAt })),
@@ -91,8 +93,8 @@ function wealthfolio() {
     return { symbol: p.symbol, value: Math.round(Number(p.quantity) * (day?.close ?? 0) * 100) / 100 };
   };
   /** An asset already on file, made `createdAt` ago. */
-  const seedAsset = (symbol: string, quoteMode: string, createdAt: string) => {
-    assets.set(key(symbol), { id: `asset-${assets.size + 1}`, quoteMode, createdAt });
+  const seedAsset = (symbol: string, quoteMode: string, createdAt: string, displayCode?: string) => {
+    assets.set(key(symbol), { id: `asset-${assets.size + 1}`, quoteMode, createdAt, ...(displayCode ? { displayCode } : {}) });
     return assets.get(key(symbol))!;
   };
   const marketQuote = (id: string, day: string, close: number) => quotes.set(`${id}|${day}|YAHOO`, { close, dataSource: 'YAHOO' });
@@ -162,6 +164,8 @@ describe('syncHoldingsWithFeedPrices', () => {
 
     expect(r).toEqual({ imported: 0, skipped: 1, unresolvedSymbols: [] });
     expect(wf.pricing.updateQuote).not.toHaveBeenCalled();
+    // The holdings read already says so.
+    expect(wf.pricing.getProfile).not.toHaveBeenCalled();
   });
 
   it('costs a ticker the market prices nothing but the account\'s one holdings read', async () => {
@@ -177,6 +181,47 @@ describe('syncHoldingsWithFeedPrices', () => {
     expect(wf.pricing.getHistory).not.toHaveBeenCalled();
     // And no per-account symbol was sent to the import check (a provider search).
     expect(vi.mocked(wf.io.checkImport).mock.calls[0][1][0].positions.map((p) => p.symbol)).toEqual(['VTI']);
+  });
+
+  it('costs a ticker shown without its exchange suffix nothing more either', async () => {
+    // Wealthfolio shows SHOP.TO as SHOP, so the holding is found by its asset, not its symbol.
+    const wf = wealthfolio();
+    const shop = wf.seedAsset('SHOP.TO', 'MARKET', OLD, 'SHOP');
+    wf.marketQuote(shop.id, '2026-10-18', 151.2);
+    wf.snapshots.set(`wf-a|${DAY}`, snap('SHOP.TO', '3'));
+    const r = await syncHoldingsWithFeedPrices(wf.io, wf.pricing, 'wf-a', snap('SHOP.TO', '3'), priceOf('SHOP.TO', '152'), 'AAAA1111', undefined, NOW);
+
+    expect(r).toEqual({ imported: 0, skipped: 1, unresolvedSymbols: [] });
+    expect(wf.pricing.getProfile).not.toHaveBeenCalled();
+    expect(wf.pricing.getHistory).not.toHaveBeenCalled();
+  });
+
+  it('reads no profile for a holding already on its own asset', async () => {
+    const wf = withBasket();
+    await syncHoldingsWithFeedPrices(wf.io, wf.pricing, 'wf-a', snap('MODEL BASKET', '400.5'), priceOf('MODEL BASKET', '124.84394507'), 'AAAA1111', undefined, NOW);
+    wf.pricing.getProfile.mockClear();
+
+    const next = '2026-10-20';
+    const r = await syncHoldingsWithFeedPrices(wf.io, wf.pricing, 'wf-a', snap('MODEL BASKET', '400.5', next), priceOf('MODEL BASKET', '125'), 'AAAA1111', undefined, NOW);
+    expect(r).toMatchObject({ imported: 1, pricedFromFeed: ['MODEL BASKET (AAAA1111)'] });
+    expect(wf.pricing.getProfile).not.toHaveBeenCalled();
+  });
+
+  it('leaves a symbol the feed sends in two currencies where it is', async () => {
+    // Both lines would land on one per-account asset with one price: one line's value lost.
+    const wf = wealthfolio();
+    wf.seedAsset('BASKET', 'MARKET', OLD);
+    const twoCurrencies: HoldingsSnapshot = {
+      date: DAY,
+      positions: [{ symbol: 'BASKET', quantity: '10', currency: 'USD' }, { symbol: 'BASKET', quantity: '4', currency: 'CAD' }],
+      cashBalances: { USD: '0' },
+    };
+    const prices: FeedPrice[] = [{ symbol: 'BASKET', price: '100', currency: 'USD' }, { symbol: 'BASKET', price: '300', currency: 'CAD' }];
+    const r = await syncHoldingsWithFeedPrices(wf.io, wf.pricing, 'wf-a', twoCurrencies, prices, 'AAAA1111', undefined, NOW);
+
+    expect(r.pricedFromFeed).toBeUndefined();
+    expect(wf.pricing.updateQuote).not.toHaveBeenCalled();
+    expect(vi.mocked(wf.io.importSnapshots).mock.calls[0][1][0].positions.map((p) => p.symbol)).toEqual(['BASKET', 'BASKET']);
   });
 
   it('moves a holding new to the account at once when its shared asset has long gone unpriced', async () => {
