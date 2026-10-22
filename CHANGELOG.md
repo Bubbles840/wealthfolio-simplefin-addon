@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.67.1] - 2026-10-22
+
+Update both halves: each writes its own change log, and Reset is in the
+add-on. Update the add-on in the app as usual (no new permissions), and pull
+the companion image.
+
 ### Fixed
 - **The change log saves, for the first time on a real server.** Since
   1.60.0 each month's log was stored under a key like
