@@ -191,6 +191,10 @@ export async function syncHoldingsWithFeedPrices(
   const moving = new Set<string>();
   let held = new Map<string, HeldAsset>();
   let heldById = new Map<string, HeldAsset>();
+  /** The asset each holding on its shared asset was judged by before the check:
+   *  a shown code can be another listing's (SHOP.TO shows as SHOP), so the
+   *  check's id decides whether the judgement stands. */
+  const judgedBy = new Map<string, string>();
   if (tag && priced.size > 0) {
     let holdings: HeldAsset[];
     try {
@@ -198,11 +202,9 @@ export async function syncHoldingsWithFeedPrices(
     } catch (e: any) {
       throw new Error(`could not read the account's holdings: ${e?.message ?? e}`);
     }
-    held = new Map(
-      (holdings ?? []).filter((h) => h.instrument?.id && h.instrument.symbol)
-        .map((h): [string, HeldAsset] => [symbolKey(h.instrument!.symbol), h]),
-    );
-    heldById = new Map([...held.values()].map((h): [string, HeldAsset] => [h.instrument!.id, h]));
+    const usable = (holdings ?? []).filter((h) => h.instrument?.id && h.instrument.symbol);
+    held = new Map(usable.map((h): [string, HeldAsset] => [symbolKey(h.instrument!.symbol), h]));
+    heldById = new Map(usable.map((h): [string, HeldAsset] => [h.instrument!.id, h]));
     for (const p of snapshot.positions) {
       const key = symbolKey(p.symbol);
       const feed = priced.get(key);
@@ -211,6 +213,7 @@ export async function syncHoldingsWithFeedPrices(
       else if (held.has(symbolKey(scoped(p.symbol)))) moving.add(key); // may move back in step 3
       else if (held.has(key)) {
         const h = held.get(key)!;
+        judgedBy.set(key, h.instrument!.id);
         if (await sharedIsUnpriced(pricing, h.instrument!.id, now, { quoteMode: modeOf(h), price: h.price })) moving.add(key);
       }
     }
@@ -236,13 +239,17 @@ export async function syncHoldingsWithFeedPrices(
   // A holding the account does not hold yet, under either symbol, whose shared
   // asset already exists (another account's, or from before): judged from that
   // asset, so it does not spend a sync valued at $0 first. A holding whose
-  // symbol showed differently (an exchange suffix) is found here by its id.
+  // symbol showed differently (an exchange suffix), or that was judged by
+  // another listing's asset above, is found here by its id.
   if (tag) {
     for (const p of snapshot.positions) {
       const key = symbolKey(p.symbol);
       const sharedId = ids.get(key);
-      if (!priced.has(key) || moving.has(key) || !sharedId) continue;
-      if (held.has(key) || held.has(symbolKey(scoped(p.symbol)))) continue;
+      if (!priced.has(key) || !sharedId) continue;
+      if (judgedBy.has(key)) {
+        if (judgedBy.get(key) === sharedId) continue;
+        moving.delete(key);
+      } else if (moving.has(key) || held.has(symbolKey(scoped(p.symbol)))) continue;
       const h = heldById.get(sharedId);
       if (await sharedIsUnpriced(pricing, sharedId, now, h && { quoteMode: modeOf(h), price: h.price })) moving.add(key);
     }

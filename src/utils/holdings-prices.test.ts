@@ -196,6 +196,25 @@ describe('syncHoldingsWithFeedPrices', () => {
     expect(wf.pricing.getHistory).not.toHaveBeenCalled();
   });
 
+  it('judges each of two listings shown under one code by its own asset', async () => {
+    // SHOP.TO shows as SHOP: a lookup by the shown code alone can judge SHOP by SHOP.TO's asset.
+    const wf = wealthfolio();
+    const shop = wf.seedAsset('SHOP', 'MARKET', OLD);
+    wf.marketQuote(shop.id, '2026-10-18', 105);
+    wf.seedAsset('SHOP.TO', 'MARKET', OLD, 'SHOP');
+    const both: HoldingsSnapshot = {
+      date: DAY,
+      positions: [{ symbol: 'SHOP', quantity: '2', currency: 'USD' }, { symbol: 'SHOP.TO', quantity: '3', currency: 'USD' }],
+      cashBalances: { USD: '0' },
+    };
+    wf.snapshots.set(`wf-a|${DAY}`, both);
+    const prices: FeedPrice[] = [{ symbol: 'SHOP', price: '106', currency: 'USD' }, { symbol: 'SHOP.TO', price: '140', currency: 'USD' }];
+    const r = await syncHoldingsWithFeedPrices(wf.io, wf.pricing, 'wf-a', both, prices, 'AAAA1111', undefined, NOW);
+
+    expect(r.pricedFromFeed).toEqual(['SHOP.TO (AAAA1111)']);
+    expect(vi.mocked(wf.io.importSnapshots).mock.calls[0][1][0].positions.map((p) => p.symbol)).toEqual(['SHOP', 'SHOP.TO (AAAA1111)']);
+  });
+
   it('reads no profile for a holding already on its own asset', async () => {
     const wf = withBasket();
     await syncHoldingsWithFeedPrices(wf.io, wf.pricing, 'wf-a', snap('MODEL BASKET', '400.5'), priceOf('MODEL BASKET', '124.84394507'), 'AAAA1111', undefined, NOW);
