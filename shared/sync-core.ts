@@ -4537,9 +4537,21 @@ async function runSyncPass(
   // write is per loan and never fatal.
   let loanBalancesRecorded = 0;
   if (loansById && host.confirmLoanBalance) {
+    // One loan, one feed: two accounts linked to it (SimpleFin shows a duplicate
+    // after a bank is re-linked) would each overwrite the other every sync, so
+    // neither is recorded until the person keeps one link.
+    const feedsOfLoan = new Map<string, string[]>();
+    for (const sfAccount of accountSet.accounts) {
+      const assetId = loanLinks[sfAccount.id];
+      if (assetId && loansById.has(assetId)) feedsOfLoan.set(assetId, [...(feedsOfLoan.get(assetId) ?? []), sfAccount.name]);
+    }
+    for (const [assetId, names] of feedsOfLoan) {
+      if (names.length < 2) continue;
+      errors.push(`Loan balance not recorded: ${loansById.get(assetId)!.name} is linked from ${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}; keep one link`);
+    }
     for (const sfAccount of accountSet.accounts) {
       const loan = loansById.get(loanLinks[sfAccount.id] ?? '');
-      if (!loan) continue;
+      if (!loan || feedsOfLoan.get(loan.id)!.length > 1) continue;
       try {
         const entry = loanBalanceOf(sfAccount);
         if (!entry) continue;

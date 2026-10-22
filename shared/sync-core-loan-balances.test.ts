@@ -89,6 +89,23 @@ describe('loan balances', () => {
     expect(loanQuotes.get('LIAB-1')).toEqual([zero]);
   });
 
+  it('records nothing for a loan linked from two accounts, and says so once per sync', async () => {
+    const twin = loanAccount({ id: 'sfin-loan-2', name: 'Home Loan (relinked)', balance: '-249000.00' });
+    const base = seed();
+    const { host, store, loanQuotes } = createFakeHost({
+      ...base,
+      accountSet: { errors: [], accounts: [...base.accountSet!.accounts, twin] },
+      loanLinks: { 'sfin-loan': 'LIAB-1', 'sfin-loan-2': 'LIAB-1' },
+    });
+    for (let run = 0; run < 2; run++) {
+      const result = await runSyncCore(host, store, { force: true });
+      expect(result.loanBalancesRecorded).toBe(0);
+      expect(result.errors).toEqual(['Loan balance not recorded: Mortgage is linked from Home Loan and Home Loan (relinked); keep one link']);
+      expect(result.unmappedAccounts).toEqual([]);
+    }
+    expect(loanQuotes.size).toBe(0);
+  });
+
   it('reports a feed showing nothing owed, and writes nothing', async () => {
     const { host, store, loanQuotes } = createFakeHost(seed({}, { balance: '0.00' }));
     const result = await runSyncCore(host, store, { force: true });
