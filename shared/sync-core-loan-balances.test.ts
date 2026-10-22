@@ -80,6 +80,15 @@ describe('loan balances', () => {
     expect(result.errors).toEqual([]);
   });
 
+  it('does not reopen a loan whose latest confirmation is a zero, whatever its notes', async () => {
+    const zero = { date: '2027-04-13', close: 0, dataSource: 'MANUAL', notes: 'loan_event|type=balance_correction' };
+    const { host, store, loanQuotes } = createFakeHost(seed({ loanQuotes: new Map([['LIAB-1', [zero]]]) }));
+    const result = await runSyncCore(host, store, { force: true });
+
+    expect(result.loanBalancesRecorded).toBe(0);
+    expect(loanQuotes.get('LIAB-1')).toEqual([zero]);
+  });
+
   it('reports a feed showing nothing owed, and writes nothing', async () => {
     const { host, store, loanQuotes } = createFakeHost(seed({}, { balance: '0.00' }));
     const result = await runSyncCore(host, store, { force: true });

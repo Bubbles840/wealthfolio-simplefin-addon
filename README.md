@@ -73,7 +73,7 @@ The addon has three tabs: **Home**, **Reports** and **Settings**.
     balance, so the loan follows the servicer instead of an estimate. Its
     transactions are not imported (the payments already come in from the
     account that paid them). A balance is written only when it differs from
-    the loan's latest recorded one, never onto a loan you closed, and never
+    the loan's latest recorded one, never onto a loan you closed (or confirmed at zero), and never
     over one you confirmed yourself that day. A day's balance you edit but
     leave the "SimpleFin" note on counts as the sync's, so the next sync can
     replace it; the feed's balance wins from the next day either way. Whatever

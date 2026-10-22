@@ -133,10 +133,11 @@ export type LoanBalanceDecision =
   | 'unchanged'
   /** The day has a balance the person recorded: theirs stands. */
   | 'theirs'
-  /** The loan was closed on or before the date: never reopened from the feed. */
+  /** The loan was closed, or confirmed at zero, on or before the date: never
+   *  reopened from the feed. */
   | 'closed'
-  /** The feed shows nothing owed on an open loan: reported, so the person can
-   *  close it; never written (it would close the loan on the feed's word). */
+  /** The feed shows nothing owed (to the cent) on an open loan: reported, so the
+   *  person can close it; never written (it would close the loan on the feed's word). */
   | 'zero'
   /** The feed's currency is set and is not the loan's: reported, not written. */
   | 'currency'
@@ -167,6 +168,11 @@ const sameAmount = (a: string | number, b: string) => {
   return ca !== null && toCents(ca) === toCents(b);
 };
 
+const isZero = (value: string | number) => {
+  const c = canonical(value);
+  return c !== null && toCents(c) === '0';
+};
+
 const hasProvenance = (notes: string | null | undefined, provenance: string) =>
   !!notes && notes.startsWith(provenance) && (notes.length === provenance.length || notes[provenance.length] === '|');
 
@@ -176,6 +182,11 @@ const hasProvenance = (notes: string | null | undefined, provenance: string) =>
  * so the feed is written only when it says something new (`unchanged`), never
  * over the person's own word for the day (`theirs`), and never onto a closed
  * loan (`closed`) — Wealthfolio reads a balance after a close as reopening it.
+ *
+ * Closed is the loan's latest manual quote being a confirmed zero ("A confirmed
+ * zero balance closes the loan", docs/architecture/loans.md): what Close writes,
+ * and also what a person's own zero confirmation or Wealthfolio 3.9 left, with
+ * or without the `loan_closed` note.
  */
 export function decideLoanBalance(
   loan: LinkedLoan,
@@ -187,8 +198,8 @@ export function decideLoanBalance(
     .filter((q) => q.dataSource === 'MANUAL' && String(q.date).slice(0, 10) <= entry.date)
     .sort((a, b) => (String(a.date).slice(0, 10) < String(b.date).slice(0, 10) ? 1 : -1));
   const latest = upTo[0];
-  if (latest && hasProvenance(latest.notes, LOAN_CLOSED_NOTES)) return 'closed';
-  if (entry.balance === '0') return 'zero';
+  if (latest && (hasProvenance(latest.notes, LOAN_CLOSED_NOTES) || isZero(latest.close))) return 'closed';
+  if (toCents(entry.balance) === '0') return 'zero';
   if (loan.originationDate && entry.date < loan.originationDate) return 'early';
   const sameDay = upTo.filter((q) => String(q.date).slice(0, 10) === entry.date);
   if (sameDay.some((q) => q.notes !== LOAN_BALANCE_NOTES)) return 'theirs';

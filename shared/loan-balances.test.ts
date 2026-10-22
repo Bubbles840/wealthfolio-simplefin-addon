@@ -91,8 +91,25 @@ describe('decideLoanBalance', () => {
     expect(decideLoanBalance(LOAN, [{ ...closed, date: '2026-03-11' }], entry('1000'))).toBe('write');
   });
 
+  it('reads a confirmed zero as a closed loan, whatever its notes', () => {
+    const zero = (notes?: string | null): LoanQuote => ({ date: '2026-03-09', close: 0, dataSource: 'MANUAL', notes });
+    for (const notes of ['loan_event|type=balance_correction', null, undefined, '']) {
+      expect(decideLoanBalance(LOAN, [zero(notes)], entry('1000'))).toBe('closed');
+    }
+    // Zero in cents is zero; a later balance the person recorded reopens it.
+    expect(decideLoanBalance(LOAN, [{ ...zero(null), close: '0.004' }], entry('1000'))).toBe('closed');
+    expect(decideLoanBalance(LOAN, [zero(null), ours('900', '2026-03-10')], entry('1000'))).toBe('write');
+    // Only the person's manual quotes count.
+    expect(decideLoanBalance(LOAN, [{ ...zero(null), dataSource: 'YAHOO' }], entry('1000'))).toBe('write');
+  });
+
   it('reports a feed showing nothing owed on an open loan, and never writes it', () => {
     expect(decideLoanBalance(LOAN, [ours('1000', '2026-03-01')], entry('0'))).toBe('zero');
+  });
+
+  it('counts the feed\'s zero in cents, so a sub-cent balance is not written as a close', () => {
+    expect(decideLoanBalance(LOAN, [ours('1000', '2026-03-01')], entry('0.004'))).toBe('zero');
+    expect(decideLoanBalance(LOAN, [ours('1000', '2026-03-01')], entry('0.005'))).toBe('write');
   });
 
   it('keeps a balance the person recorded that day', () => {
