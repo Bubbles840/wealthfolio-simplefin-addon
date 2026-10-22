@@ -253,6 +253,7 @@ export class AddonSyncHost implements SyncHost {
       snapshot,
       prices,
       scope?.tag,
+      this.log,
     );
   }
 
@@ -261,6 +262,7 @@ export class AddonSyncHost implements SyncHost {
   private pricingApi(): PricingApi {
     const api = this.ctx.api as any;
     return {
+      getHoldings: (wfAccountId) => api.portfolio.getHoldings(wfAccountId),
       getProfile: (assetId) => api.assets.getProfile(assetId),
       updateQuoteMode: (assetId, mode) => api.assets.updateQuoteMode(assetId, mode),
       getHistory: (assetId) => api.quotes.getHistory(assetId),

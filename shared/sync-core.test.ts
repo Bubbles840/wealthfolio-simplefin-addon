@@ -3646,8 +3646,8 @@ describe('holdings snapshots for investment accounts', () => {
         },
         // The feed gives VTI no market value, so there is no price to offer.
         prices: [],
-        // No "(…)" at the end of "Robinhood": the SimpleFin id's last four.
-        scope: { tag: 'IN-B' },
+        // From the Wealthfolio account id, never the account's name.
+        scope: { tag: 'WFB' },
       },
     ]);
     expect(result.holdingsSnapshots).toEqual({ imported: 1, skipped: 0, unresolvedSymbols: [] });
@@ -3665,7 +3665,8 @@ describe('holdings snapshots for investment accounts', () => {
     const { host, store, holdings } = createFakeHost(seed);
     const result = await runSyncCore(host, store, { force: true });
     expect(holdings[0].prices).toEqual([{ symbol: 'MODEL BASKET', price: '124.84394507', currency: 'USD' }]);
-    expect(holdings[0].scope).toEqual({ tag: 'ABCD' });
+    // The name's "(ABCD)" is not used: the tag is the Wealthfolio account id's.
+    expect(holdings[0].scope).toEqual({ tag: 'WFB' });
     expect(result.holdingsSnapshots.pricedFromFeed).toEqual(['MODEL BASKET']);
   });
 

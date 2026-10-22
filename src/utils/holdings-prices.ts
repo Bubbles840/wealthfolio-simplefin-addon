@@ -10,41 +10,57 @@
  * stocks reported as one holding was valued at $0 while the bank reported its
  * market value).
  *
- * Which holdings need one (`needsFeedPrice`):
- *  - MANUAL quote mode: Wealthfolio prices these only from quotes someone
- *    writes, and the bank's figure is the best one there is.
- *  - MARKET quote mode with NO quote at all. Only an asset that existed before
- *    this sync is judged (an id from the pre-import check), so a ticker just
- *    created has had a market sync to get its first quote before its silence
- *    counts.
- *  - MARKET with quotes: never touched. A real ticker's provider price wins.
- *
  * Such a holding is priced on its own PER-ACCOUNT asset (shared/holdings.ts
  * `accountTag`), never on the shared one: Wealthfolio keeps one asset per
  * symbol across accounts, and two accounts' baskets under one name are two
- * different things. Pricing the shared asset let the last account written
- * value every account's shares.
+ * different things.
+ *
+ * Which holdings get one, decided again on every sync:
+ *  - A holding filed under its description (no symbol from the bank): always.
+ *    It is never a ticker.
+ *  - A holding already on its per-account asset: stays there until the shared
+ *    asset has a market quote, then moves back.
+ *  - A holding on the shared asset, or new to the account while its shared
+ *    asset already exists: moves only when the shared asset is priced by the
+ *    market (MARKET), has no market quote at all, and is older than
+ *    `UNPRICED_FOR_MS`. A ticker bought yesterday has had no chance to get its
+ *    first quote yet (a rate limit, an outage, a sync that ran first).
+ *  - A shared asset the person set to MANUAL themselves is theirs: never moved,
+ *    never priced.
+ *
+ * What it costs per sync: one holdings read for the account, which gives every
+ * held asset's mode and price at once. A ticker the market prices costs nothing
+ * more. Only a holding with no price gets an asset and quote read, and the
+ * day's price is written only when it changed (a quote write starts a portfolio
+ * recalculation on a server).
  *
  * A snapshot import on a MANUAL asset also writes the day's price, from the
  * position's average cost (Wealthfolio manual_snapshot_service.rs). The feed's
  * price is written AFTER the import, and a manual quote is one per asset and
  * day (last write wins), so the market value is what stays.
  *
- * Quote ids: Wealthfolio derives a MANUAL quote's id from the asset and the
- * day and saves over it (quotes/service.rs `update_quote`, v3.10), so writing
- * the day's price on every sync replaces it rather than piling up rows.
- *
- * Nothing here fails a sync: each asset is tried on its own, and a host that
- * refuses the calls (an older one, or a missing permission) prices nothing.
+ * Nothing here fails the sync: a failed holdings read skips the account's
+ * snapshot for this sync (writing it without knowing which holdings are on
+ * per-account assets would move them back), and a failed price is logged.
  */
 import { scopedSymbol, type FeedPrice, type HoldingsSnapshot } from '../../shared/holdings';
 import type { HoldingsSyncOutcome } from '../../shared/sync-host';
 
-/** The four host calls this needs, as the SDK names them. */
+/** How long a MARKET asset must have had no quote before it is priced from the feed. */
+export const UNPRICED_FOR_MS = 3 * 24 * 60 * 60 * 1000;
+
+/** An account's holding, as much of it as this reads. */
+export interface HeldAsset {
+  instrument?: { id: string; symbol: string; quoteMode?: string | null } | null;
+  price?: number | null;
+}
+
+/** The host calls this needs, as the SDK names them. */
 export interface PricingApi {
-  getProfile(assetId: string): Promise<{ quoteMode?: string | null }>;
+  getHoldings(wfAccountId: string): Promise<HeldAsset[]>;
+  getProfile(assetId: string): Promise<{ quoteMode?: string | null; createdAt?: string | null }>;
   updateQuoteMode(assetId: string, quoteMode: string): Promise<unknown>;
-  getHistory(assetId: string): Promise<Array<{ close?: number | string | null }>>;
+  getHistory(assetId: string): Promise<Array<{ timestamp?: string; close?: number | string | null; dataSource?: string | null }>>;
   updateQuote(assetId: string, quote: ManualQuote): Promise<void>;
 }
 
@@ -88,52 +104,14 @@ export function manualQuote(assetId: string, date: string, price: string, curren
   };
 }
 
-const hasMarketPrice = (history: Array<{ close?: number | string | null }>) =>
-  history.some((q) => Number(q.close) > 0);
+type History = Awaited<ReturnType<PricingApi['getHistory']>>;
 
-/** Whether Wealthfolio has no price of its own for this asset (see above). A
- *  host that refuses the calls says no: nothing is moved or priced. */
-export async function needsFeedPrice(api: PricingApi, assetId: string): Promise<boolean> {
-  try {
-    const mode = String((await api.getProfile(assetId))?.quoteMode ?? '').toUpperCase();
-    if (mode === 'MANUAL') return true;
-    return mode === 'MARKET' && !hasMarketPrice(await api.getHistory(assetId));
-  } catch {
-    return false;
-  }
-}
+/** A quote from a provider: what makes an asset priced by the market. */
+const hasMarketQuote = (history: History) =>
+  history.some((q) => Number(q.close) > 0 && String(q.dataSource ?? '').toUpperCase() !== 'MANUAL');
 
-/**
- * Writes the day's price for every holding that needs one. `assetIds` maps an
- * UPPERCASED symbol to the id Wealthfolio's import check found for it before
- * this sync wrote anything. Returns the symbols priced.
- */
-export async function priceHoldingsFromFeed(
-  api: PricingApi,
-  date: string,
-  prices: readonly FeedPrice[],
-  assetIds: ReadonlyMap<string, string>,
-  log: (line: string) => void = (line) => console.warn(line),
-): Promise<string[]> {
-  const priced: string[] = [];
-  for (const { symbol, price, currency } of prices) {
-    const assetId = assetIds.get(symbol.trim().toUpperCase());
-    if (!assetId || !(Number(price) > 0)) continue;
-    try {
-      const profile = await api.getProfile(assetId);
-      const mode = String(profile?.quoteMode ?? '').toUpperCase();
-      if (mode !== 'MANUAL') {
-        if (mode !== 'MARKET' || hasMarketPrice(await api.getHistory(assetId))) continue;
-        await api.updateQuoteMode(assetId, 'MANUAL');
-      }
-      await api.updateQuote(assetId, manualQuote(assetId, date, price, currency));
-      priced.push(symbol);
-    } catch (e: any) {
-      log(`[simplefin-sync] could not price ${symbol} from SimpleFin: ${e?.message ?? e}`);
-    }
-  }
-  return priced;
-}
+const symbolKey = (symbol: string) => symbol.trim().toUpperCase();
+const dayOf = (value: string | undefined) => String(value ?? '').slice(0, 10);
 
 /** The snapshot calls the holdings write needs, as the SDK names them. */
 export interface SnapshotIo {
@@ -145,22 +123,43 @@ export interface SnapshotIo {
   importSnapshots(wfAccountId: string, snapshots: HoldingsSnapshot[]): Promise<{ snapshotsImported: number; errors: string[] }>;
 }
 
-const symbolKey = (symbol: string) => symbol.trim().toUpperCase();
+/** Whether a shared asset has gone unpriced long enough to move a holding off
+ *  it (see the header). `known` is what the account's holdings already say
+ *  about it; without them the asset's profile is read. Any failed read says no. */
+async function sharedIsUnpriced(
+  api: PricingApi,
+  assetId: string,
+  now: Date,
+  known?: { quoteMode?: string | null; price?: number | null },
+): Promise<boolean> {
+  if (known && Number(known.price) > 0) return false;
+  if (known?.quoteMode && known.quoteMode.toUpperCase() !== 'MARKET') return false;
+  try {
+    const profile = await api.getProfile(assetId);
+    const mode = known?.quoteMode ?? profile?.quoteMode;
+    if (String(mode ?? '').toUpperCase() !== 'MARKET') return false;
+    const created = Date.parse(String(profile?.createdAt ?? ''));
+    if (!Number.isFinite(created) || now.getTime() - created < UNPRICED_FOR_MS) return false;
+    return !hasMarketQuote(await api.getHistory(assetId));
+  } catch {
+    return false;
+  }
+}
 
 /**
  * One account's positions for a date, with every holding that needs a price
- * from the feed moved to its own per-account asset and priced there.
+ * from the feed on its per-account asset, priced there.
  *
- *  1. One check, over the snapshot as the bank names it plus each priced
- *     holding's per-account symbol: which assets already exist, and their ids.
- *  2. A holding moves to its per-account asset when its symbol was made from
- *     its description (never a ticker), when that asset exists, or when the
- *     shared one needs a feed price (`needsFeedPrice`). The new asset is
- *     created priced by hand (`quoteMode: 'MANUAL'`).
- *  3. The snapshot is written unless the date already has one, except on the
+ *  1. The account's holdings: which assets it holds, their mode and price.
+ *  2. Which holdings are on, or move to, their per-account asset (header).
+ *  3. One import check over the snapshot, with those holdings' per-account
+ *     symbols added: the assets that exist, and their ids. A holding on its
+ *     per-account asset whose shared asset now has a market quote moves back.
+ *  4. The snapshot is written unless the date already has one, except on the
  *     day a holding first moves: a snapshot is one row per account and date in
- *     Wealthfolio (stable id), so writing again replaces the day's positions.
- *  4. The feed's price is written on each per-account asset, every sync.
+ *     Wealthfolio, so writing again replaces the day's positions. A move back
+ *     shows from the next day's snapshot.
+ *  5. The feed's price is written on each per-account asset when it changed.
  */
 export async function syncHoldingsWithFeedPrices(
   io: SnapshotIo,
@@ -169,49 +168,102 @@ export async function syncHoldingsWithFeedPrices(
   snapshot: HoldingsSnapshot,
   prices: readonly FeedPrice[],
   tag: string | undefined,
-  log?: (line: string) => void,
+  log: (line: string) => void = (line) => console.warn(line),
+  now = new Date(),
 ): Promise<HoldingsSyncOutcome> {
-  const priced = new Map(prices.map((p): [string, FeedPrice] => [symbolKey(p.symbol), p]));
+  const priced = new Map(
+    prices.filter((p) => Number(p.price) > 0).map((p): [string, FeedPrice] => [symbolKey(p.symbol), p]),
+  );
   const scoped = (symbol: string) => scopedSymbol(symbol, tag!);
-  const candidates = tag ? snapshot.positions.filter((p) => priced.has(symbolKey(p.symbol))) : [];
 
+  // 1–2. Without the holdings, a holding already on its per-account asset
+  // would be written back onto the shared one, so the account waits a sync.
+  const moving = new Set<string>();
+  let held = new Map<string, HeldAsset>();
+  if (tag && priced.size > 0) {
+    let holdings: HeldAsset[];
+    try {
+      holdings = await pricing.getHoldings(wfAccountId);
+    } catch (e: any) {
+      throw new Error(`could not read the account's holdings: ${e?.message ?? e}`);
+    }
+    held = new Map(
+      (holdings ?? []).filter((h) => h.instrument?.id && h.instrument.symbol)
+        .map((h): [string, HeldAsset] => [symbolKey(h.instrument!.symbol), h]),
+    );
+    for (const p of snapshot.positions) {
+      const key = symbolKey(p.symbol);
+      const feed = priced.get(key);
+      if (!feed) continue;
+      if (feed.fromDescription) moving.add(key);
+      else if (held.has(symbolKey(scoped(p.symbol)))) moving.add(key); // may move back in step 3
+      else if (held.has(key)) {
+        const h = held.get(key)!;
+        if (await sharedIsUnpriced(pricing, h.instrument!.id, now, { quoteMode: h.instrument!.quoteMode, price: h.price })) moving.add(key);
+      }
+    }
+  }
+
+  // 3.
   const check = await io.checkImport(wfAccountId, [{
     ...snapshot,
-    positions: [...snapshot.positions, ...candidates.map((p) => ({ ...p, symbol: scoped(p.symbol) }))],
+    positions: [
+      ...snapshot.positions,
+      ...snapshot.positions.filter((p) => moving.has(symbolKey(p.symbol))).map((p) => ({ ...p, symbol: scoped(p.symbol) })),
+    ],
   }]);
   if (check.validationErrors.length > 0) {
     throw new Error(check.validationErrors.join('; '));
   }
-  // Ids of the assets that existed BEFORE this sync.
-  const before = new Map(
-    check.symbols
-      .filter((s) => !!s.assetId)
-      .map((s): [string, string] => [symbolKey(s.symbol), s.assetId!]),
+  const ids = new Map(
+    check.symbols.filter((s) => !!s.assetId).map((s): [string, string] => [symbolKey(s.symbol), s.assetId!]),
   );
-
-  const moving = new Set<string>();
-  for (const p of candidates) {
-    const shared = before.get(symbolKey(p.symbol));
-    if (
-      priced.get(symbolKey(p.symbol))!.fromDescription
-      || before.has(symbolKey(scoped(p.symbol)))
-      || (shared && await needsFeedPrice(pricing, shared))
-    ) {
-      moving.add(symbolKey(p.symbol));
+  // A holding the account does not hold yet, under either symbol, whose shared
+  // asset already exists (another account's, or from before): judged from that
+  // asset, so it does not spend a sync valued at $0 first.
+  if (tag) {
+    for (const p of snapshot.positions) {
+      const key = symbolKey(p.symbol);
+      const sharedId = ids.get(key);
+      if (!priced.has(key) || moving.has(key) || !sharedId) continue;
+      if (held.has(key) || held.has(symbolKey(scoped(p.symbol)))) continue;
+      if (await sharedIsUnpriced(pricing, sharedId, now)) moving.add(key);
     }
   }
+  for (const key of [...moving]) {
+    const feed = priced.get(key)!;
+    const sharedId = ids.get(key);
+    const scopedId = ids.get(symbolKey(scoped(feed.symbol)));
+    // A fuzzy match can hand back the shared asset for the per-account symbol:
+    // pricing it would value every account's shares from this one.
+    if (sharedId && scopedId === sharedId) {
+      moving.delete(key);
+      continue;
+    }
+    if (!feed.fromDescription && scopedId && sharedId) {
+      try {
+        if (hasMarketQuote(await pricing.getHistory(sharedId))) moving.delete(key);
+      } catch {
+        // Unknown: it stays where it is.
+      }
+    }
+  }
+
   const written: HoldingsSnapshot = {
     ...snapshot,
     positions: snapshot.positions.map((p) =>
       moving.has(symbolKey(p.symbol)) ? { ...p, symbol: scoped(p.symbol), quoteMode: 'MANUAL' as const } : p),
   };
-  const writtenKeys = new Set(written.positions.map((p) => symbolKey(p.symbol)));
+  // A per-account symbol is priced here, never by a provider: not unresolved.
+  const unresolvedKeys = new Set(
+    snapshot.positions.map((p) => symbolKey(p.symbol)).filter((k) => !moving.has(k)),
+  );
   const unresolvedSymbols = check.symbols
-    .filter((s) => !s.found && writtenKeys.has(symbolKey(s.symbol)))
+    .filter((s) => !s.found && unresolvedKeys.has(symbolKey(s.symbol)))
     .map((s) => s.symbol);
 
-  const dayOf = (value: string) => String(value).slice(0, 10);
-  const firstMove = [...moving].some((k) => !before.has(symbolKey(scoped(priced.get(k)!.symbol))));
+  // 4.
+  const firstMove = [...moving].some((k) => !ids.has(symbolKey(scoped(priced.get(k)!.symbol))));
   let imported = 0;
   let skipped = 0;
   if (check.existingDates.some((d) => dayOf(d) === snapshot.date) && !firstMove) {
@@ -223,17 +275,42 @@ export async function syncHoldingsWithFeedPrices(
     }
     imported = result.snapshotsImported;
   }
-
   if (moving.size === 0) return { imported, skipped, unresolvedSymbols };
-  // A per-account asset created just now has an id only after the import.
-  const ids = firstMove
-    ? new Map(
-      (await io.checkImport(wfAccountId, [written])).symbols
-        .filter((s) => !!s.assetId)
-        .map((s): [string, string] => [symbolKey(s.symbol), s.assetId!]),
-    )
-    : before;
-  const scopedPrices = [...moving].map((k) => ({ ...priced.get(k)!, symbol: scoped(priced.get(k)!.symbol) }));
-  const pricedFromFeed = await priceHoldingsFromFeed(pricing, snapshot.date, scopedPrices, ids, log);
+
+  // 5. A per-account asset created just now has an id only after the import.
+  // The snapshot is saved by now, so a failed read only skips today's prices.
+  let scopedIds = ids;
+  if (firstMove) {
+    try {
+      const after = await io.checkImport(wfAccountId, [written]);
+      scopedIds = new Map(
+        after.symbols.filter((s) => !!s.assetId).map((s): [string, string] => [symbolKey(s.symbol), s.assetId!]),
+      );
+    } catch (e: any) {
+      log(`[simplefin-sync] could not find the new per-account assets to price: ${e?.message ?? e}`);
+      return { imported, skipped, unresolvedSymbols };
+    }
+  }
+  const pricedFromFeed: string[] = [];
+  for (const key of moving) {
+    const feed = priced.get(key)!;
+    const symbol = scoped(feed.symbol);
+    const assetId = scopedIds.get(symbolKey(symbol));
+    if (!assetId || assetId === ids.get(key)) continue;
+    try {
+      const mode = held.get(symbolKey(symbol))?.instrument?.quoteMode
+        ?? (await pricing.getProfile(assetId))?.quoteMode;
+      if (String(mode ?? '').toUpperCase() !== 'MANUAL') {
+        await pricing.updateQuoteMode(assetId, 'MANUAL');
+      }
+      const today = (await pricing.getHistory(assetId))
+        .find((q) => dayOf(q.timestamp) === snapshot.date && String(q.dataSource ?? '').toUpperCase() === 'MANUAL');
+      if (today && Math.abs(Number(today.close) - Number(feed.price)) < 1e-8) continue;
+      await pricing.updateQuote(assetId, manualQuote(assetId, snapshot.date, feed.price, feed.currency));
+      pricedFromFeed.push(symbol);
+    } catch (e: any) {
+      log(`[simplefin-sync] could not price ${symbol} from SimpleFin: ${e?.message ?? e}`);
+    }
+  }
   return { imported, skipped, unresolvedSymbols, pricedFromFeed };
 }

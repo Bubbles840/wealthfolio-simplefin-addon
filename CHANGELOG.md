@@ -7,19 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+The add-on asks for more permissions (assets, quotes, and reading an
+account's holdings), so in-app Update refuses it: use **Install from File**
+over the installed add-on.
+
 ### Fixed
 - **A holding Wealthfolio can't price shows its real value.** A position that
   isn't a ticker (a basket of stocks a robo-advisor reports as one holding)
   had no market price, so Wealthfolio valued it at $0 while the bank reported
   its market value. The sync now writes that day's price from SimpleFin's
   market value ÷ shares, as a manual quote, on an asset of the holding's own
-  for each account: two accounts can hold different baskets under one symbol,
-  and Wealthfolio keeps one asset, and one price a day, per symbol. A ticker
-  the market prices stays shared and is never touched. A holding SimpleFin
-  sends without a symbol (some retirement plans do) is now filed under its
-  description instead of being dropped, which had left such an account with
-  no holdings at all. The add-on asks for two more permissions (assets,
-  quotes) for this.
+  for each account (tagged with the start of the Wealthfolio account's id, so
+  renaming or reconnecting the account keeps it): two accounts can
+  hold different baskets under one symbol, and Wealthfolio keeps one asset,
+  and one price a day, per symbol. A holding moves to its own asset only after
+  its shared asset has gone several days with no market price, and moves back
+  as soon as the shared asset gets one, so a newly bought ticker waiting for
+  its first quote is never caught. A ticker the market prices stays shared and
+  is never touched, and neither is an asset you set to manual pricing
+  yourself.
+- **A holding SimpleFin sends without a symbol is synced.** Some retirement
+  plans send funds with a description but no symbol; they were dropped, which
+  left such an account with no holdings at all. They are now filed under their
+  description, so an account that never had a holdings snapshot starts getting
+  one. Two holdings filed under one name (two funds whose descriptions agree up
+  to the cut, or one ticker sent as two lots) are one position, their shares
+  added, instead of one of them being lost.
 
 ## [1.67.1] - 2026-10-22
 

@@ -273,18 +273,67 @@ describe('feedPrices', () => {
 });
 
 describe('accountTag', () => {
-  it("takes the bank's identifier from the end of the account name", () => {
-    expect(accountTag({ id: 'ACT-1', name: 'Individual (ABCD)' })).toBe('ABCD');
-    expect(accountTag({ id: 'ACT-1', name: 'EXAMPLE CO. 401(K) PLAN (1234)' })).toBe('1234');
+  it("is the first eight letters and digits of the Wealthfolio account id", () => {
+    expect(accountTag('3f2a9c1e-77b0-4d2e-9a1b-0c5e6f7a8b9c')).toBe('3F2A9C1E');
   });
 
-  it('falls back to the last four characters of the SimpleFin id', () => {
-    expect(accountTag({ id: 'ACT-9f3a2b', name: 'Brokerage' })).toBe('3A2B');
-    expect(accountTag({ id: 'ACT-9f3a2b' })).toBe('3A2B');
+  it('tells apart accounts whose names end alike', () => {
+    // Names like "Individual - Brokerage" and "Joint - Brokerage" used to give one tag.
+    expect(accountTag('aaaa1111-0000-4000-8000-000000000001')).not.toBe(accountTag('bbbb2222-0000-4000-8000-000000000001'));
+  });
+
+  it('keeps a short or odd id whole', () => {
+    expect(accountTag('wf-1')).toBe('WF1');
+    expect(accountTag('---')).toBe('---');
   });
 
   it('names the per-account symbol after it', () => {
     expect(scopedSymbol(' MODEL BASKET ', 'ABCD')).toBe('MODEL BASKET (ABCD)');
+  });
+});
+
+describe('holdings filed under one symbol', () => {
+  it('are one position: shares added, cost share-weighted', () => {
+    const snapshot = toHoldingsSnapshot(account({ holdings: [
+      { symbol: 'VTI', shares: '2', purchase_price: '100' },
+      { symbol: 'vti', shares: '1.5', purchase_price: '200' },
+      { symbol: 'AAPL', shares: '1' },
+    ] }));
+    expect(snapshot?.positions).toEqual([
+      { symbol: 'VTI', quantity: '3.50', avgCost: '142.85714286', currency: 'USD' },
+      { symbol: 'AAPL', quantity: '1', avgCost: undefined, currency: 'USD' },
+    ]);
+  });
+
+  it('leave the cost out when either line has none', () => {
+    const snapshot = toHoldingsSnapshot(account({ holdings: [
+      { symbol: 'VTI', shares: '2', purchase_price: '100' },
+      { symbol: 'VTI', shares: '1' },
+    ] }));
+    expect(snapshot?.positions).toEqual([{ symbol: 'VTI', quantity: '3.00', avgCost: undefined, currency: 'USD' }]);
+  });
+
+  it('stay apart in different currencies', () => {
+    const snapshot = toHoldingsSnapshot(account({ holdings: [
+      { symbol: 'X', shares: '1' },
+      { symbol: 'X', shares: '1', currency: 'CAD' },
+    ] }));
+    expect(snapshot?.positions.map((p) => p.currency)).toEqual(['USD', 'CAD']);
+  });
+
+  it('two funds whose descriptions agree up to the cut keep both their shares and value', () => {
+    const name = 'Example LifePath Index 2060 Non-Lendable Fund';
+    const holdings = [
+      { description: `${name} F`, shares: '10', market_value: '1000.00' },
+      { description: `${name} M`, shares: '30', market_value: '2000.00' },
+    ];
+    const snapshot = toHoldingsSnapshot(account({ holdings }));
+    expect(snapshot?.positions).toHaveLength(1);
+    expect(snapshot?.positions[0].quantity).toBe('40.00');
+    // One price for the merged position: total value over total shares.
+    expect(feedPrices(account({ holdings }))).toEqual([
+      { symbol: snapshot!.positions[0].symbol, price: '75.00', currency: 'USD', fromDescription: true },
+    ]);
   });
 });
 
@@ -313,7 +362,4 @@ describe('a holding SimpleFin sends without a symbol', () => {
     ]);
   });
 
-  it('tags the account by the number after a trailing dash', () => {
-    expect(accountTag({ id: 'ACT-9f3a2b', name: 'Example Co 401(K) Plan - 123456' })).toBe('123456');
-  });
 });

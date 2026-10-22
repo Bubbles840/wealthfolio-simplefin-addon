@@ -301,7 +301,7 @@ export function toHoldingsSnapshot(
 
   return {
     date: day > today ? today : day, // `YYYY-MM-DD` strings order lexically
-    positions,
+    positions: mergePositions(positions),
     cashBalances: { [account.currency]: cashFor(account, holdings) },
   };
 }
@@ -330,44 +330,100 @@ function parseScaled(value: string | number | null | undefined): bigint | null {
  * leaves the holding as it was.
  */
 export function feedPrices(account: SimplefinAccount): FeedPrice[] {
-  const prices: FeedPrice[] = [];
+  // Holdings filed under one symbol are one position (see `mergePositions`),
+  // so they get one price: their value over their shares.
+  const groups = new Map<string, { symbol: string; currency: string; fromDescription: boolean; shares: bigint; value: bigint }>();
   for (const holding of account.holdings ?? []) {
     const { symbol, fromDescription } = holdingSymbol(holding);
     const shares = parseScaled(holding.shares);
     const value = parseScaled(holding.market_value);
     if (!symbol || shares === null || shares === 0n || value === null) continue;
-    // value/shares, both scaled by 10^8: scale once more before dividing,
-    // and round half up on the last place.
-    const scaled = (value * PRICE_SCALE * 2n + shares) / (shares * 2n);
-    const whole = scaled / PRICE_SCALE;
-    let fraction = (scaled % PRICE_SCALE).toString().padStart(PRICE_PLACES, '0').replace(/0+$/, '');
-    if (fraction.length < 2) fraction = fraction.padEnd(2, '0');
+    const currency = holding.currency?.trim() || account.currency;
+    const key = `${symbol.toUpperCase()}|${currency}`;
+    const group = groups.get(key);
+    if (group) {
+      group.shares += shares;
+      group.value += value;
+    } else {
+      groups.set(key, { symbol, currency, fromDescription, shares, value });
+    }
+  }
+  const prices: FeedPrice[] = [];
+  for (const { symbol, currency, fromDescription, shares, value } of groups.values()) {
     prices.push({
       symbol,
-      price: `${whole}.${fraction}`,
-      currency: holding.currency?.trim() || account.currency,
+      price: divideScaled(value, shares),
+      currency,
       ...(fromDescription ? { fromDescription: true as const } : {}),
     });
   }
   return prices;
 }
 
+/** `a ÷ b`, both scaled by 10^8, to 8 places, rounded half up; at least two places. */
+function divideScaled(a: bigint, b: bigint): string {
+  const scaled = (a * PRICE_SCALE * 2n + b) / (b * 2n);
+  return formatScaled(scaled);
+}
+
+function formatScaled(scaled: bigint): string {
+  const whole = scaled / PRICE_SCALE;
+  let fraction = (scaled % PRICE_SCALE).toString().padStart(PRICE_PLACES, '0').replace(/0+$/, '');
+  if (fraction.length < 2) fraction = fraction.padEnd(2, '0');
+  return `${whole}.${fraction}`;
+}
+
 /**
- * The short name an account's per-account assets carry: the bank's own
- * identifier at the end of the account name ("Individual (ABCD)" or
- * "Example Plan - 123456"), else the last four characters of the SimpleFin id.
+ * One position per symbol and currency. Wealthfolio keys a snapshot's positions
+ * by asset, so two lines filed under one symbol kept only one of them: two
+ * funds whose descriptions agree up to the cut (`DESCRIPTION_SYMBOL_MAX`), or a
+ * ticker a bank reports as two lots. Their shares are added; the cost is their
+ * share-weighted average, or left out when either line has none. A single line
+ * is passed through exactly as it came.
+ */
+function mergePositions(positions: HoldingsPosition[]): HoldingsPosition[] {
+  const byKey = new Map<string, HoldingsPosition[]>();
+  for (const p of positions) {
+    const key = `${p.symbol.trim().toUpperCase()}|${p.currency}`;
+    byKey.set(key, [...(byKey.get(key) ?? []), p]);
+  }
+  const merged: HoldingsPosition[] = [];
+  for (const group of byKey.values()) {
+    const quantities = group.map((p) => parseScaled(p.quantity));
+    if (group.length === 1 || quantities.some((q) => q === null)) {
+      merged.push(...group);
+      continue;
+    }
+    const total = quantities.reduce((sum, q) => sum! + q!, 0n)!;
+    const costs = group.map((p) => (p.avgCost === undefined ? null : parseScaled(p.avgCost)));
+    const avgCost = total > 0n && costs.every((c) => c !== null)
+      ? divideScaled(costs.reduce((sum, c, i) => sum + (c! * quantities[i]!) / PRICE_SCALE, 0n), total)
+      : undefined;
+    merged.push({ ...group[0], quantity: formatScaled(total), avgCost });
+  }
+  return merged;
+}
+
+/**
+ * The short name an account's per-account assets carry: the first eight
+ * letters and digits of the WEALTHFOLIO account's id. Stable on purpose: a
+ * name changes when the account is renamed or SimpleFin is reconnected (which
+ * also changes the SimpleFin id), and that would leave the old asset orphaned.
+ * Two accounts' tags are never the same in practice (eight hex digits of a
+ * UUID), where the ends of their names can be ("Individual - Brokerage" and
+ * "Joint - Brokerage").
  *
  * Why per account at all: Wealthfolio keeps ONE asset per symbol for every
  * account, and one price per asset per day. Two accounts can hold different
  * things under one symbol (two accounts at one robo-advisor, each holding its
  * own basket under the same name, worth different amounts a share), so a price
- * from one account's market value valued the other's shares. Only holdings priced from the feed are scoped; a ticker the
- * market prices is the same thing in every account and stays shared.
+ * from one account's market value valued the other's shares. Only holdings
+ * priced from the feed are scoped; a ticker the market prices is the same
+ * thing in every account and stays shared.
  */
-export function accountTag(account: { id: string; name?: string | null }): string {
-  const name = account.name ?? '';
-  const fromName = (/\(([^()]+)\)\s*$/.exec(name) ?? /\s[-–]\s*([A-Za-z0-9]+)\s*$/.exec(name))?.[1]?.trim();
-  return (fromName || account.id.slice(-4)).toUpperCase();
+export function accountTag(wfAccountId: string): string {
+  const compact = wfAccountId.replace(/[^A-Za-z0-9]/g, '');
+  return (compact.slice(0, 8) || wfAccountId).toUpperCase();
 }
 
 /** The symbol of a holding's per-account asset. */

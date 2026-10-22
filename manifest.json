@@ -89,9 +89,10 @@
     {
       "category": "portfolio",
       "functions": [
-        "getLatestValuations"
+        "getLatestValuations",
+        "getHoldings"
       ],
-      "purpose": "Read current account balances to size one-time starting-balance corrections"
+      "purpose": "Read current account balances to size one-time starting-balance corrections, and read which holdings an investment account has priced, so only a holding with no price is looked at"
     },
     {
       "category": "secrets",

@@ -4494,7 +4494,7 @@ async function runSyncPass(
       const snapshot = toHoldingsSnapshot(sfAccount);
       if (!snapshot) continue;
       try {
-        const outcome = await host.syncHoldings(wfAccountId, snapshot, feedPrices(sfAccount), { tag: accountTag(sfAccount) });
+        const outcome = await host.syncHoldings(wfAccountId, snapshot, feedPrices(sfAccount), { tag: accountTag(wfAccountId) });
         holdingsSnapshots.imported += outcome.imported;
         holdingsSnapshots.skipped += outcome.skipped;
         for (const symbol of outcome.pricedFromFeed ?? []) {
