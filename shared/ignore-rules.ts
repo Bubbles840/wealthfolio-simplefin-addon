@@ -37,6 +37,7 @@
  */
 import { ruleApplies } from './mapper.js';
 import { IGNORE_RULES_SINCE } from './version.js';
+import type { Relink } from './relink.js';
 import type { SimplefinAccount, SimplefinTransaction } from './types.js';
 
 export const IGNORE_RULES_SECRET_KEY = 'ignore_rules';
@@ -186,54 +187,63 @@ export function ignoreRuleMatches(rule: IgnoreRule, description: string | undefi
 export type SameRuleAccount = (ruleAccount: string, sfAccountId: string) => boolean;
 
 /**
- * Two SimpleFin ids mapped to the same Wealthfolio account are one account to a
- * rule. A connection removed and added again comes back under new account ids,
- * mapped to the same Wealthfolio accounts as before: a rule saved on the old id
- * keeps reaching the account through the new one, and nothing stored has to be
- * rewritten for it.
+ * A rule saved on an account a CONFIRMED re-link retired (shared/relink.ts)
+ * reaches the account that replaced it: a connection removed and added again
+ * comes back under new ids, and the rule keeps working without being rewritten.
+ * Nothing else is aliased: several SimpleFin accounts mapped to one Wealthfolio
+ * account on purpose stay separate accounts to a rule. The rule's old id need
+ * not stay in the mapping; the confirmed re-link remembers it.
  */
-export function sameMappedAccount(mapping: Readonly<Record<string, string>>): SameRuleAccount {
-  return (a, b) => a === b || (!!mapping[a] && mapping[a] === mapping[b]);
+export function relinkedRuleAccount(relinks: readonly Relink[]): SameRuleAccount {
+  return (rule, account) => rule === account || relinks.some((r) => r.newId === account && r.oldIds.includes(rule));
 }
 
 /** One account a rule can be limited to, as the editor offers it. */
 export interface RuleAccountOption {
-  /** The SimpleFin id a new rule is saved on: the one in the last download. */
+  /** The SimpleFin id a new rule is saved on. */
   id: string;
   name: string;
-  /** Older ids mapped to the same Wealthfolio account (a re-linked connection):
-   *  a rule saved on one of them shows, and applies, here. */
+  /** Ids a confirmed re-link retired in favour of this one: a rule saved on one
+   *  of them shows, and applies, here. */
   aliases: string[];
 }
 
 /**
- * The accounts a rule can be limited to: one per Wealthfolio account, not one per
- * SimpleFin id. After a connection is added again, the old and the new id are
- * both mapped and both carry the bank's name, which listed one account twice
- * under the same name. The id in the last download (`inDownload`) is the one
- * offered; the others become its aliases. Two different accounts that still
- * share a name are told apart by their Wealthfolio account names.
+ * The accounts a rule can be limited to: one per mapped SimpleFin id, except an
+ * id a confirmed re-link retired, which becomes an alias of the id that
+ * replaced it (it never reports again, and listing it would show one account
+ * twice under the same name). Two accounts that share a name are told apart by
+ * their Wealthfolio account's name when that differs, else by the end of their id.
  */
 export function ruleAccountOptions(
   mapping: Readonly<Record<string, string>>,
   names: Readonly<Record<string, string>>,
-  inDownload: ReadonlySet<string>,
+  relinks: readonly Relink[] = [],
   wfNames: Readonly<Record<string, string>> = {},
 ): RuleAccountOption[] {
-  const byWf = new Map<string, string[]>();
-  for (const [id, wf] of Object.entries(mapping)) {
-    if (wf) byWf.set(wf, [...(byWf.get(wf) ?? []), id]);
+  const retiredBy = new Map<string, string>();
+  for (const r of relinks) {
+    if (mapping[r.newId] !== r.wfAccountId) continue;
+    for (const old of r.oldIds) retiredBy.set(old, r.newId);
   }
-  const options: Array<RuleAccountOption & { wf: string }> = [];
-  for (const [wf, ids] of byWf) {
-    const sorted = [...ids].sort();
-    const present = sorted.filter((id) => inDownload.has(id));
-    const id = present.length === 1 ? present[0] : sorted[0];
-    options.push({ id, name: names[id] ?? names[sorted.find((x) => names[x]) ?? ''] ?? id, aliases: sorted.filter((x) => x !== id), wf });
-  }
-  const count = new Map<string, number>();
-  for (const o of options) count.set(o.name, (count.get(o.name) ?? 0) + 1);
-  return options.map(({ wf, ...o }) => ((count.get(o.name) ?? 0) > 1 && wfNames[wf] ? { ...o, name: `${o.name} · ${wfNames[wf]}` } : o));
+  const ids = Object.keys(mapping).filter((id) => mapping[id] && !retiredBy.has(id)).sort();
+  const options = ids.map((id) => ({
+    id,
+    name: names[id] ?? id,
+    aliases: [...retiredBy].filter(([, to]) => to === id).map(([from]) => from).sort(),
+  }));
+  // Shared names first get the Wealthfolio account's name (when it says
+  // something new), then, if still shared, the end of the SimpleFin id.
+  const withWf = (o: RuleAccountOption) => {
+    const wf = wfNames[mapping[o.id]];
+    return wf && wf !== o.name ? `${o.name} · ${wf}` : o.name;
+  };
+  const shared = (o: RuleAccountOption, by: (x: RuleAccountOption) => string) =>
+    options.some((x) => x.id !== o.id && by(x) === by(o));
+  return options.map((o) => {
+    if (!shared(o, (x) => x.name)) return o;
+    return { ...o, name: shared(o, withWf) ? `${withWf(o)} · …${o.id.slice(-4)}` : withWf(o) };
+  });
 }
 
 /** The first rule that ignores a transaction in this account, or null. */

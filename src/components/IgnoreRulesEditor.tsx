@@ -20,9 +20,9 @@ const PREVIEW_ROWS = 12;
 
 interface Props {
   rules: IgnoreRule[];
-  /** The mapped accounts, one per Wealthfolio account (`ruleAccountOptions`): the
-   *  only ones a rule reaches. `aliases` are older SimpleFin ids of the same
-   *  account, from a connection added again; a rule saved on one belongs here. */
+  /** The mapped accounts (`ruleAccountOptions`): the only ones a rule reaches.
+   *  `aliases` are ids a confirmed re-link retired in favour of this one; a rule
+   *  saved on one belongs here. */
   accounts: Array<{ id: string; name: string; aliases?: string[] }>;
   /** Saves the whole list. Rejects with the reason when nothing was saved. */
   onChange: (next: IgnoreRule[]) => Promise<void>;
@@ -72,7 +72,7 @@ export function IgnoreRulesEditor({ rules, accounts, onChange, loadFeed, compani
   const [feedError, setFeedError] = useState('');
   const [feedWarnings, setFeedWarnings] = useState<string[]>([]);
 
-  /** The option an id belongs to: its own, or the one it is an older id of. */
+  /** The option an id belongs to: its own, or the one that replaced it (a confirmed re-link). */
   const canonical = useMemo(() => {
     const of = new Map<string, string>();
     for (const a of accounts) {
@@ -151,8 +151,9 @@ export function IgnoreRulesEditor({ rules, accounts, onChange, loadFeed, compani
 
   // The preview follows the draft as it is typed (the feed is read once); with
   // no draft it shows what the saved rules leave out.
+  // A retired id is left out, as the sync leaves it out even if it reports.
   const isMapped = useMemo(() => {
-    const ids = new Set(accounts.flatMap((a) => [a.id, ...(a.aliases ?? [])]));
+    const ids = new Set(accounts.map((a) => a.id));
     return (id: string) => ids.has(id);
   }, [accounts]);
   const sameAccount = (ruleAccount: string, sfAccountId: string) => canonical(ruleAccount) === canonical(sfAccountId);

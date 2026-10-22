@@ -21,6 +21,7 @@ import type { Scheduler } from '../utils/scheduler';
 import type { MappingRule, SimplefinAccount, AccountMapping } from '../../shared/types';
 import type { LoanLinks } from '../../shared/loan-balances';
 import type { RelinkDecisions } from '../../shared/relink';
+import { companionUnderstandsRelinks } from '../../shared/version';
 import { accountCreatedChange } from '../../shared/change-entries';
 import { directCallLine } from '../../shared/simplefin-budget';
 import { ChangeLogCard, syncNowSentence } from '../components/ChangeLogCard';
@@ -358,12 +359,6 @@ export function SettingsTab({
     await store.setIgnoreRules(next);
     setIgnoreRules(next);
   }, [store]);
-  /** The mapped accounts, the only ones a rule reaches: one per Wealthfolio
-   *  account, so a connection added again doesn't list one account twice. */
-  const ignoreRuleAccounts = useMemo(
-    () => ruleAccountOptions(accountMapping, sfinNames, new Set(Object.keys(balances)), wfNames),
-    [accountMapping, sfinNames, balances, wfNames],
-  );
   /** The preview's feed: one SimpleFin download, made only when the person asks.
    *  Counted as a manual call (the 20 and the 5-minute gap): the button can be
    *  clicked again and again, and the headroom past 20 is Setup's and Refresh's. */
@@ -386,6 +381,18 @@ export function SettingsTab({
   // R2: Undo and Redo, the companion's version (the gate and the Telegram
   // pointer), Sync now (the Sync page's own forced run) and "Your overrides".
   const [companionVersion, setCompanionVersion] = useState<string | null>(null);
+  /** The mapped accounts, the only ones a rule reaches. An account a confirmed
+   *  re-link retired folds into the one that replaced it, but only once the
+   *  companion reads confirmed re-links: an older one matches exact ids, and the
+   *  editor must say what the scheduled syncs will do. */
+  const ignoreRuleAccounts = useMemo(
+    () => ruleAccountOptions(
+      accountMapping, sfinNames,
+      companionUnderstandsRelinks(companionVersion) ? relinkDecisions?.confirmed ?? [] : [],
+      wfNames,
+    ),
+    [accountMapping, sfinNames, relinkDecisions, companionVersion, wfNames],
+  );
   useEffect(() => {
     store.getCompanionVersion?.().then((v) => setCompanionVersion(v ?? null)).catch(() => {});
   }, [store]);
@@ -517,7 +524,9 @@ export function SettingsTab({
               companionVersion={companionVersion}
               onSave={saveMapping}
               relinkDecisions={relinkDecisions ?? undefined}
-              onRelinkDecisions={relinkDecisions ? (change) => store.updateRelinkDecisions(change) : undefined}
+              onRelinkDecisions={relinkDecisions
+                ? async (change) => { const next = await store.updateRelinkDecisions(change); setRelinkDecisions(next); return next; }
+                : undefined}
               sfinNames={sfinNames}
               lastSeen={Object.fromEntries(Object.entries(balances).map(([id, b]) => [id, b.date]))}
               onAccountCreated={(created) => { void store.recordChange?.(accountCreatedChange(created)); }}

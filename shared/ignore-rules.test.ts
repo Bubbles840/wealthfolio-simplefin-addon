@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
   ignoreRuleProblem, normalizeIgnoreRules, parseIgnoreRules, parseIgnoreRulesStrict,
   ignoreRuleMatches, ignoreRuleFor, findIgnored, withIgnoreRule, withoutIgnoreRule,
-  sameMappedAccount, ruleAccountOptions,
+  relinkedRuleAccount, ruleAccountOptions,
   IGNORE_PATTERN_MAX, type IgnoreRule,
 } from './ignore-rules.js';
 import type { SimplefinAccount } from './types.js';
@@ -151,40 +151,59 @@ describe('editing', () => {
 
 describe('a re-linked connection', () => {
   // The connection was added again: the same bank account came back as
-  // 'sfin-new', mapped to the same Wealthfolio account as 'sfin-old'.
-  const mapping = { 'sfin-old': 'wf-cash', 'sfin-new': 'wf-cash', 'sfin-chk': 'wf-chk' };
+  // 'sfin-new', mapped to the same Wealthfolio account as 'sfin-old', and the
+  // person confirmed it. 'sfin-sav' is a second account merged into wf-cash on purpose.
+  const mapping = { 'sfin-old': 'wf-cash', 'sfin-new': 'wf-cash', 'sfin-sav': 'wf-cash', 'sfin-chk': 'wf-chk' };
+  const relinks = [{ wfAccountId: 'wf-cash', newId: 'sfin-new', oldIds: ['sfin-old'] }];
   const sweeps = (id: string): SimplefinAccount => ({
     id, name: 'Cash Account', currency: 'USD', balance: '0', 'balance-date': 1,
     transactions: [{ id: `${id}-1`, posted: 1, amount: '-5.00', description: 'SWEEP FROM CORE' }],
   });
 
-  it('counts two ids mapped to one Wealthfolio account as one account', () => {
-    const same = sameMappedAccount(mapping);
+  it('reaches from a retired id to the one that replaced it, and nowhere else', () => {
+    const same = relinkedRuleAccount(relinks);
     expect(same('sfin-old', 'sfin-new')).toBe(true);
-    expect(same('sfin-old', 'sfin-chk')).toBe(false);
-    expect(same('sfin-x', 'sfin-y')).toBe(false);
+    expect(same('sfin-new', 'sfin-old')).toBe(false);
+    expect(same('sfin-old', 'sfin-sav')).toBe(false);
     expect(same('sfin-x', 'sfin-x')).toBe(true);
   });
 
   it('a rule saved on the old id keeps reaching the account through the new one', () => {
     const r = rule({ account: 'sfin-old' });
-    expect(findIgnored([r], [sweeps('sfin-new')], () => true, sameMappedAccount(mapping))).toHaveLength(1);
-    expect(findIgnored([r], [sweeps('sfin-chk')], () => true, sameMappedAccount(mapping))).toEqual([]);
+    expect(findIgnored([r], [sweeps('sfin-new')], () => true, relinkedRuleAccount(relinks))).toHaveLength(1);
+    expect(findIgnored([r], [sweeps('sfin-chk')], () => true, relinkedRuleAccount(relinks))).toEqual([]);
     expect(ignoreRuleFor([r], 'sfin-new', 'SWEEP FROM CORE')).toBeNull();
   });
 
-  it('offers one account per Wealthfolio account, under the id in the last download', () => {
-    const names = { 'sfin-old': 'Cash Account', 'sfin-new': 'Cash Account', 'sfin-chk': 'Checking' };
-    expect(ruleAccountOptions(mapping, names, new Set(['sfin-new', 'sfin-chk']))).toEqual([
-      { id: 'sfin-new', name: 'Cash Account', aliases: ['sfin-old'] },
+  it('a rule limited to one of two accounts merged on purpose does not reach the other', () => {
+    const r = rule({ account: 'sfin-new' });
+    expect(findIgnored([r], [sweeps('sfin-new'), sweeps('sfin-sav')], () => true, relinkedRuleAccount(relinks)).map((h) => h.account.id))
+      .toEqual(['sfin-new']);
+    // Without a confirmed re-link nothing is aliased at all.
+    expect(findIgnored([rule({ account: 'sfin-old' })], [sweeps('sfin-new')], () => true, relinkedRuleAccount([]))).toEqual([]);
+  });
+
+  it('offers every mapped account, folding only a retired id into the one that replaced it', () => {
+    const names = { 'sfin-old': 'Cash Account', 'sfin-new': 'Cash Account', 'sfin-sav': 'Savings', 'sfin-chk': 'Checking' };
+    expect(ruleAccountOptions(mapping, names, relinks)).toEqual([
       { id: 'sfin-chk', name: 'Checking', aliases: [] },
+      { id: 'sfin-new', name: 'Cash Account', aliases: ['sfin-old'] },
+      { id: 'sfin-sav', name: 'Savings', aliases: [] },
     ]);
   });
 
-  it('tells two different accounts with the same name apart by their Wealthfolio names', () => {
-    const options = ruleAccountOptions(
-      { a: 'wf-1', b: 'wf-2' }, { a: 'Brokerage', b: 'Brokerage' }, new Set(['a', 'b']), { 'wf-1': 'Taxable', 'wf-2': 'Roth' },
-    );
-    expect(options.map((o) => o.name)).toEqual(['Brokerage · Taxable', 'Brokerage · Roth']);
+  it('merges nothing without a confirmed re-link, whatever is or is not in the download', () => {
+    const names = { 'sfin-old': 'Cash Account', 'sfin-new': 'Cash Account' };
+    expect(ruleAccountOptions({ 'sfin-old': 'wf-cash', 'sfin-new': 'wf-cash' }, names, [], { 'wf-cash': 'Cash' }).map((o) => o.id))
+      .toEqual(['sfin-new', 'sfin-old']);
+  });
+
+  it('tells accounts with one name apart: by Wealthfolio name when it differs, else by the end of the id', () => {
+    expect(ruleAccountOptions({ a: 'wf-1', b: 'wf-2' }, { a: 'Brokerage', b: 'Brokerage' }, [], { 'wf-1': 'Taxable', 'wf-2': 'Roth' })
+      .map((o) => o.name)).toEqual(['Brokerage · Taxable', 'Brokerage · Roth']);
+    // An account auto-created from the bank's name: no "X · X".
+    expect(ruleAccountOptions({ 'ACT-1111': 'wf-1', 'ACT-2222': 'wf-2' }, { 'ACT-1111': 'Card', 'ACT-2222': 'Card' }, [], { 'wf-1': 'Card', 'wf-2': 'Card' })
+      .map((o) => o.name)).toEqual(['Card · …1111', 'Card · …2222']);
   });
 });
+

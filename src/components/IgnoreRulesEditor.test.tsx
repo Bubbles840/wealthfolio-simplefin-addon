@@ -40,7 +40,15 @@ describe('IgnoreRulesEditor', () => {
     expect(screen.getByTestId('ignore-rule')).toHaveTextContent('contains “SWEEP FROM CORE FUND” · Cash Account · core sweeps');
   });
 
-  it('shows a rule saved on an older id of an account under that account, and knows it is the same rule', () => {
+  it('without aliases (no confirmed reconnection, or a companion that would not follow one) lets the rule be added on the new id', () => {
+    // What the scheduled syncs will do: an exact-id rule on the old id reaches nothing new.
+    const unaliased = [{ id: 'sfin-cash', name: 'Cash Account' }, { id: 'sfin-cash-old', name: 'Cash Account · …-old' }];
+    render(<IgnoreRulesEditor rules={[{ ...sweep, account: 'sfin-cash-old' }]} accounts={unaliased} onChange={vi.fn()} companionVersion="1.66.0" />);
+    fill('SWEEP FROM CORE FUND', 'sfin-cash');
+    expect(screen.queryByText('You already have this rule.')).toBeNull();
+  });
+
+  it('shows a rule saved on a retired id under the account that replaced it, and knows it is the same rule', () => {
     const relinked = [{ id: 'sfin-cash', name: 'Cash Account', aliases: ['sfin-cash-old'] }, { id: 'sfin-chk', name: 'Checking' }];
     render(<IgnoreRulesEditor rules={[{ ...sweep, account: 'sfin-cash-old' }]} accounts={relinked} onChange={vi.fn()} />);
     expect(screen.getByTestId('ignore-rule')).toHaveTextContent('contains “SWEEP FROM CORE FUND” · Cash Account');
