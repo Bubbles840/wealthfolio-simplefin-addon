@@ -58,7 +58,7 @@ export function AccountMapper({ ctx, simplefinAccounts, initialMapping, initialL
       .catch(() => setLoans(null));
   }, [ctx]);
 
-  const handleSelect = (sfin: SimplefinAccount, value: string) => {
+  const handleSelect = (sfin: SimplefinAccount, value: string, confirmed = false) => {
     if (value === CREATE_NEW_VALUE) {
       // Don't create yet — ask what kind of account this is first
       setPendingTypeChoice(sfin.id);
@@ -68,7 +68,8 @@ export function AccountMapper({ ctx, simplefinAccounts, initialMapping, initialL
     // An account either syncs into a Wealthfolio account or records a loan's
     // balance, never both.
     const isLoan = value.startsWith(LOAN_PREFIX);
-    if (isLoan && mapping[sfin.id] && pendingLoan?.sfinId !== sfin.id) {
+    if (isLoan && mapping[sfin.id] && !confirmed) {
+      // Also a different pick while asking: it replaces the pending one, still unconfirmed.
       setPendingLoan({ sfinId: sfin.id, value });
       return;
     }
@@ -118,6 +119,9 @@ export function AccountMapper({ ctx, simplefinAccounts, initialMapping, initialL
   /** A link to a loan that no longer exists. Only known once the loans were read. */
   const gone = (sfinId: string) => !!loanLinks[sfinId] && loans !== null && !loans.some((l) => l.id === loanLinks[sfinId]);
   const loanName = (assetId: string) => loans?.find((l) => l.id === assetId)?.name ?? 'the loan';
+  /** The loans a row may pick: one feed per loan, so not another row's. */
+  const loansFor = (sfinId: string) =>
+    (loans ?? []).filter((l) => !Object.entries(loanLinks).some(([id, assetId]) => id !== sfinId && assetId === l.id));
 
   return (
     <div>
@@ -143,12 +147,19 @@ export function AccountMapper({ ctx, simplefinAccounts, initialMapping, initialL
               {wfAccounts.map((wf) => (
                 <option key={wf.id} value={wf.id}>{wf.name}</option>
               ))}
-              {loansOffered && loans && loans.length > 0 && (
+              {loansOffered && loansFor(sfin.id).length > 0 && (
                 <optgroup label="Loans (record the balance only)">
-                  {loans.map((l) => (
+                  {loansFor(sfin.id).map((l) => (
                     <option key={l.id} value={LOAN_PREFIX + l.id}>{l.name}</option>
                   ))}
                 </optgroup>
+              )}
+              {/* The row's own link is always an option, so the select shows it
+                  when the list above is hidden (older companion) or unread. */}
+              {loanLinks[sfin.id] && !gone(sfin.id) && !(loansOffered && loans?.some((l) => l.id === loanLinks[sfin.id])) && (
+                <option value={LOAN_PREFIX + loanLinks[sfin.id]}>
+                  {loans?.find((l) => l.id === loanLinks[sfin.id])?.name ?? 'Linked loan'}
+                </option>
               )}
               <option value={CREATE_NEW_VALUE}>+ Create new account</option>
             </Select>
@@ -174,7 +185,7 @@ export function AccountMapper({ ctx, simplefinAccounts, initialMapping, initialL
                   records its balance on {loanName(pendingLoan.value.slice(LOAN_PREFIX.length))} instead.
                 </span>
                 <Button variant="outline" style={{ padding: '3px 8px', fontSize: 12 }}
-                  onClick={() => handleSelect(sfin, pendingLoan.value)}>
+                  onClick={() => handleSelect(sfin, pendingLoan.value, true)}>
                   Link to the loan
                 </Button>
                 <Button variant="ghost" style={{ padding: '3px 8px', fontSize: 12 }}

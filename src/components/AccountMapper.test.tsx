@@ -1,6 +1,6 @@
 import React from 'react';
 import { describe, it, expect, vi } from 'vitest';
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { AccountMapper } from './AccountMapper';
 
 describe('AccountMapper', () => {
@@ -155,5 +155,58 @@ describe('AccountMapper', () => {
     );
     await waitFor(() => expect(ctx.api.accounts.getAll).toHaveBeenCalled());
     expect(screen.queryByRole('group')).toBeNull();
+  });
+
+  it('offers a loan on one row only: another row already links it', async () => {
+    const other = { ...servicer, id: 'ACT-loan-2', name: 'Servicer (relinked)' };
+    render(<AccountMapper ctx={loanCtx()} simplefinAccounts={[servicer, other]} initialMapping={{}}
+      initialLoanLinks={{ 'ACT-loan': 'LIAB-1' }} onSave={vi.fn()} />);
+    await screen.findAllByRole('option', { name: 'Home Loan' });
+    const [first, second] = screen.getAllByRole('combobox');
+    expect(within(first).getByRole('option', { name: 'Home Loan' })).toBeTruthy();
+    expect(within(second).queryByRole('option', { name: 'Home Loan' })).toBeNull();
+    expect((first as HTMLSelectElement).value).toBe('loan:LIAB-1');
+  });
+
+  it('shows an existing link, not "Select account", when loans are not offered or not read', async () => {
+    const old = render(<AccountMapper ctx={loanCtx()} simplefinAccounts={[servicer]} initialMapping={{}}
+      initialLoanLinks={{ 'ACT-loan': 'LIAB-1' }} companionVersion="1.67.1" onSave={vi.fn()} />);
+    await screen.findByRole('option', { name: 'Checking' });
+    let select = screen.getByRole('combobox') as HTMLSelectElement;
+    expect(select.selectedOptions[0].textContent).toBe('Home Loan');
+    expect(select.value).toBe('loan:LIAB-1');
+    old.unmount();
+
+    const ctx = loanCtx();
+    ctx.api.alternativeAssets.getAll.mockRejectedValue(new Error('no permission'));
+    render(<AccountMapper ctx={ctx} simplefinAccounts={[servicer]} initialMapping={{}}
+      initialLoanLinks={{ 'ACT-loan': 'LIAB-1' }} onSave={vi.fn()} />);
+    await waitFor(() => expect(ctx.api.alternativeAssets.getAll).toHaveBeenCalled());
+    select = screen.getByRole('combobox') as HTMLSelectElement;
+    expect(select.selectedOptions[0].textContent).toBe('Linked loan');
+    expect(select.value).toBe('loan:LIAB-1');
+  });
+
+  it('keeps asking when a second loan is picked while the prompt is open', async () => {
+    const ctx = loanCtx();
+    ctx.api.alternativeAssets.getAll.mockResolvedValue([
+      { id: 'LIAB-1', kind: 'liability', name: 'Home Loan' },
+      { id: 'LIAB-2', kind: 'liability', name: 'Car Loan' },
+    ]);
+    const onSave = vi.fn();
+    render(<AccountMapper ctx={ctx} simplefinAccounts={[servicer]} initialMapping={{ 'ACT-loan': 'wf-chk' }} onSave={onSave} />);
+    await screen.findByRole('option', { name: 'Home Loan' });
+    const select = screen.getByRole('combobox') as HTMLSelectElement;
+    fireEvent.change(select, { target: { value: 'loan:LIAB-1' } });
+    fireEvent.change(select, { target: { value: 'loan:LIAB-2' } });
+
+    screen.getByText(/records its balance on Car Loan instead/);
+    expect(select.value).toBe('wf-chk');
+    fireEvent.click(screen.getByRole('button', { name: 'Save Mapping' }));
+    expect(onSave).toHaveBeenLastCalledWith({ 'ACT-loan': 'wf-chk' }, {});
+
+    fireEvent.click(screen.getByRole('button', { name: 'Link to the loan' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Save Mapping' }));
+    expect(onSave).toHaveBeenLastCalledWith({}, { 'ACT-loan': 'LIAB-2' });
   });
 });
