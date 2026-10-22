@@ -11,6 +11,7 @@ import { SIMPLEFIN_REQUESTS_SECRET_KEY } from '../../shared/simplefin-budget.js'
 import { TRANSFER_NAMES_SECRET_KEY, parseTransferNames, type TransferNames } from '../../shared/transfer-names.js';
 import { SKIPPED_TRANSACTIONS_SECRET_KEY, parseSkippedTransactions, type SkippedTransaction } from '../../shared/skipped-transactions.js';
 import { IGNORE_RULES_SECRET_KEY, parseIgnoreRules, type IgnoreRule } from '../../shared/ignore-rules.js';
+import { confirmLoanBalance, linkedLoansOf, LOAN_LINKS_SECRET_KEY, parseLoanLinks, type LinkedLoan, type LoanBalance, type LoanBalanceDecision, type LoanLinks } from '../../shared/loan-balances.js';
 import { loadSyncOverrides, syncOverridesIgnoredLog, syncOverridesOrEmpty, type LoadedSyncOverrides, type SyncOverrides } from '../../shared/sync-overrides.js';
 import { hostTakesCardTransferOut, WEALTHFOLIO_VERSION_SECRET_KEY } from '../../shared/version.js';
 import type { WealthfolioClient } from './wealthfolio.js';
@@ -77,6 +78,19 @@ export class RestSyncHost implements SyncHost {
   ) {
     this.log = opts.log;
     this.capabilities = { readsSourceGroupId: true, cardTransferOut: !!opts.cardTransferOut };
+  }
+
+  async listLoans(): Promise<LinkedLoan[]> {
+    return linkedLoansOf(await this.client.getAlternativeHoldings());
+  }
+
+  async confirmLoanBalance(loan: LinkedLoan, entry: LoanBalance): Promise<LoanBalanceDecision> {
+    return confirmLoanBalance({
+      history: async (id) => (await this.client.getQuoteHistory(id)).map((q) => ({
+        date: String(q.timestamp).slice(0, 10), close: q.close, dataSource: q.dataSource, notes: q.notes ?? null,
+      })),
+      write: (id, quote) => this.client.updateQuote(id, quote),
+    }, loan, entry);
   }
 
   /**
@@ -402,6 +416,11 @@ export class RestSyncStore implements SyncStore {
    *  companion tool, and honoured here (see shared/skipped-transactions.ts). */
   async getSkippedTransactions(): Promise<SkippedTransaction[]> {
     return parseSkippedTransactions(await this.client.getAddonSecret(this.addonId, SKIPPED_TRANSACTIONS_SECRET_KEY));
+  }
+
+  /** Loan accounts linked to a Wealthfolio loan (shared/loan-balances.ts). */
+  async getLoanLinks(): Promise<LoanLinks> {
+    return parseLoanLinks(await this.client.getAddonSecret(this.addonId, LOAN_LINKS_SECRET_KEY));
   }
 
   /** The add-on's ignore rules (shared/ignore-rules.ts). Without this a

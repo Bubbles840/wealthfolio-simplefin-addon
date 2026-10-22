@@ -45,11 +45,14 @@ type StoreOverrides = {
   accessUrl?: string | null;
   accountMapping?: Record<string, string> | null;
   syncScheduleHours?: number | null;
+  /** Absent: a store with no loan links at all. A function: its read. */
+  loanLinks?: Record<string, string> | (() => Promise<Record<string, string>>);
 };
 
 function makeStore(overrides: StoreOverrides = {}) {
-  const { accessUrl = null, accountMapping = null, syncScheduleHours = null } = overrides;
+  const { accessUrl = null, accountMapping = null, syncScheduleHours = null, loanLinks } = overrides;
   return {
+    ...(loanLinks ? { getLoanLinks: typeof loanLinks === 'function' ? vi.fn(loanLinks) : vi.fn(async () => loanLinks) } : {}),
     getAccessUrl: vi.fn(async () => accessUrl),
     getAccountMapping: vi.fn(async () => accountMapping),
     getSyncScheduleHours: vi.fn(async () => syncScheduleHours),
@@ -109,6 +112,19 @@ describe('addon enable()', () => {
     enable(ctx);
     // The scheduler's immediate wall-clock check sees no prior sync (due) and
     // triggers runSync — this is the startup catch-up.
+    await waitFor(() => expect(runSync).toHaveBeenCalled());
+  });
+
+  it('runs the startup catch-up when only a loan is linked', async () => {
+    vi.mocked(runSync).mockClear();
+    const ctx = makeCtx();
+    const values: Record<string, string> = {
+      simplefin_access_url: 'https://u:p@bridge.simplefin.org/simplefin',
+      loan_links: JSON.stringify({ 'sfin-loan': 'LIAB-1' }),
+      sync_schedule_hours: '6',
+    };
+    ctx.api.secrets.get = vi.fn(async (k: string) => values[k] ?? null);
+    enable(ctx);
     await waitFor(() => expect(runSync).toHaveBeenCalled());
   });
 
@@ -202,6 +218,46 @@ describe('SimplefinSyncView', () => {
     );
     await waitFor(() => expect(screen.getByText('SetupPage')).toBeInTheDocument());
     expect(SetupPage).toHaveBeenCalled();
+  });
+
+  it('is set up with only a loan linked: the scheduler starts and Setup is not shown again', async () => {
+    const scheduler = makeScheduler(false);
+    render(
+      React.createElement(SimplefinSyncView, {
+        ctx: {} as any,
+        store: makeStore({
+          accessUrl: 'https://u:p@bridge.simplefin.org/simplefin',
+          accountMapping: {},
+          loanLinks: { 'sfin-loan': 'LIAB-1' },
+          syncScheduleHours: 6,
+        }),
+        scheduler,
+      }),
+    );
+    await waitFor(() => expect(screen.getByText('SyncPage')).toBeInTheDocument());
+    expect(scheduler.start).toHaveBeenCalledWith(6, expect.any(Function), expect.any(Function));
+  });
+
+  it('a failed loan-links read leaves the mapping path as it was', async () => {
+    const failing = () => Promise.reject(new Error('unreadable'));
+    const url = 'https://u:p@bridge.simplefin.org/simplefin';
+    const mapped = render(
+      React.createElement(SimplefinSyncView, {
+        ctx: {} as any,
+        store: makeStore({ accessUrl: url, accountMapping: { 'sfin-1': 'wf-a' }, loanLinks: failing, syncScheduleHours: 0 }),
+        scheduler: makeScheduler(),
+      }),
+    );
+    await waitFor(() => expect(screen.getByText('SyncPage')).toBeInTheDocument());
+    mapped.unmount();
+    render(
+      React.createElement(SimplefinSyncView, {
+        ctx: {} as any,
+        store: makeStore({ accessUrl: url, accountMapping: {}, loanLinks: failing }),
+        scheduler: makeScheduler(),
+      }),
+    );
+    await waitFor(() => expect(screen.getByText('SetupPage')).toBeInTheDocument());
   });
 
   it('shows SetupPage when accessUrl exists but mapping is null', async () => {

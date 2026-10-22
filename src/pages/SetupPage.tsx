@@ -1,6 +1,7 @@
 import React, { useRef, useState } from 'react';
 import type { AddonContext } from '@wealthfolio/addon-sdk';
 import type { AccountMapping, SimplefinAccount } from '../../shared/types';
+import type { LoanLinks } from '../../shared/loan-balances';
 import { claimToken, fetchAccounts } from '../utils/simplefin';
 import { AccountMapper } from '../components/AccountMapper';
 import { Button, Card, ErrorBox, Input } from '../components/ui';
@@ -87,9 +88,10 @@ export function SetupPage({ ctx, store, onComplete }: Props) {
   };
 
   // Step 2: save the mapping, and finish.
-  const handleSaveMapping = async (m: AccountMapping) => {
+  const handleSaveMapping = async (m: AccountMapping, links: LoanLinks) => {
     try {
       await store.setAccountMapping(m);
+      await store.setLoanLinks?.(links);
       setMapping(m);
       await store.setSyncScheduleHours(DEFAULT_SYNC_HOURS);
       onComplete();

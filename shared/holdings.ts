@@ -78,7 +78,7 @@ export interface HoldingsSnapshotOptions {
 }
 
 /** `YYYY-MM-DD` for an instant, read on the calendar of `timeZone`. */
-function calendarDay(instant: Date, timeZone?: string | null): string {
+export function calendarDay(instant: Date, timeZone?: string | null): string {
   const build = (zone?: string | null) =>
     new Intl.DateTimeFormat('en-US', {
       ...(zone ? { timeZone: zone } : {}),

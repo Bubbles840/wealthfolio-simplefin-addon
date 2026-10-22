@@ -24,13 +24,22 @@ export interface SimplefinSyncViewProps {
   search?: string;
 }
 
+/** Loan accounts linked in Setup. A person whose only SimpleFin account is a
+ *  loan has no mapping, but is set up; a failed read links none, so the mapping
+ *  path is unchanged. */
+const readLoanLinks = (store: SecretsStore): Promise<Record<string, string>> =>
+  Promise.resolve().then(() => store.getLoanLinks?.()).then((links) => links ?? {}).catch(() => ({}));
+
+const hasAccounts = (mapping: Record<string, string> | null | undefined, loanLinks: Record<string, string>) =>
+  (!!mapping && Object.keys(mapping).length > 0) || Object.keys(loanLinks).length > 0;
+
 export function SimplefinSyncView({ ctx, store, scheduler, search }: SimplefinSyncViewProps) {
   const [isSetup, setIsSetup] = useState<boolean | null>(null);
 
   useEffect(() => {
-    Promise.all([store.getAccessUrl(), store.getAccountMapping()]).then(
-      ([accessUrl, mapping]) => {
-        const setup = !!accessUrl && !!mapping && Object.keys(mapping).length > 0;
+    Promise.all([store.getAccessUrl(), store.getAccountMapping(), readLoanLinks(store)]).then(
+      ([accessUrl, mapping, loanLinks]) => {
+        const setup = !!accessUrl && hasAccounts(mapping, loanLinks);
         if (setup) {
           store.getSyncScheduleHours().then((hours) => {
             if (hours && hours > 0 && !scheduler.isRunning()) {
@@ -94,11 +103,12 @@ const enable: AddonEnableFunction = (ctx) => {
   void addonStore.publishAddonVersion().catch(() => {});
   void (async () => {
     try {
-      const [accessUrl, mapping] = await Promise.all([
+      const [accessUrl, mapping, loanLinks] = await Promise.all([
         startupStore.getAccessUrl(),
         startupStore.getAccountMapping(),
+        readLoanLinks(startupStore),
       ]);
-      if (!accessUrl || !mapping || Object.keys(mapping).length === 0) return;
+      if (!accessUrl || !hasAccounts(mapping, loanLinks)) return;
       const hours = await startupStore.getSyncScheduleHours();
       if (hours && hours > 0 && !startupScheduler.isRunning()) {
         startupScheduler.start(

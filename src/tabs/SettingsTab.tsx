@@ -19,6 +19,7 @@ import { fetchAccounts } from '../utils/simplefin';
 import type { SecretsStore, CategoryCatalogEntry, AccountBalanceInfo } from '../utils/secrets';
 import type { Scheduler } from '../utils/scheduler';
 import type { MappingRule, SimplefinAccount, AccountMapping } from '../../shared/types';
+import type { LoanLinks } from '../../shared/loan-balances';
 import { accountCreatedChange } from '../../shared/change-entries';
 import { directCallLine } from '../../shared/simplefin-budget';
 import { ChangeLogCard, syncNowSentence } from '../components/ChangeLogCard';
@@ -150,6 +151,7 @@ export function SettingsTab({
   // the overwhelmingly common visit to this tab is for something else.
   const [sfAccounts, setSfAccounts] = useState<SimplefinAccount[] | null>(null);
   const [mapping, setMapping] = useState<AccountMapping>({});
+  const [loanLinks, setLoanLinks] = useState<LoanLinks>({});
   /**
    * Whether the stored mapping has actually been READ yet — `{}` alone cannot
    * say, and the difference is destructive here. `AccountMapper` snapshots
@@ -187,7 +189,8 @@ export function SettingsTab({
       // state load down with it — every card would then render defaults as
       // though they were the stored settings.
       store.getIgnoredAccounts?.() ?? [],
-    ]).then(([hours, heal, adjust, r, m, ignored]) => {
+      store.getLoanLinks?.() ?? {},
+    ]).then(([hours, heal, adjust, r, m, ignored, links]) => {
       setScheduleHours(hours);
       setAutoHeal(heal);
       setAutoAdjust(adjust);
@@ -195,6 +198,7 @@ export function SettingsTab({
       knownRules.current = JSON.stringify(r);
       setMapping(m ?? {});
       setIgnoredAccounts(ignored ?? []);
+      setLoanLinks(links ?? {});
       setMappingLoaded(true);
     }).catch(() => {
       // `mappingLoaded` deliberately stays FALSE: it gates the mapper, and
@@ -253,11 +257,13 @@ export function SettingsTab({
     }
   }, [ctx, store, onAccountsChanged]);
 
-  const saveMapping = useCallback(async (m: AccountMapping) => {
+  const saveMapping = useCallback(async (m: AccountMapping, links: LoanLinks) => {
     setAccountsError('');
     try {
       await store.setAccountMapping(m);
       setMapping(m);
+      await store.setLoanLinks?.(links);
+      setLoanLinks(links);
       setMappingSaved(true);
       onAccountsChanged?.();
       // Mapping an account IS the decision to sync it, so it can no longer be
@@ -266,7 +272,7 @@ export function SettingsTab({
       // wrong the moment the mapping is cleared again: the account would go
       // quiet with no reminder, which is the failure this whole feature
       // exists to prevent.
-      const nowMapped = Object.keys(m).filter((id) => !!m[id]);
+      const nowMapped = [...Object.keys(m).filter((id) => !!m[id]), ...Object.keys(links)];
       if (ignoredAccounts.some((id) => nowMapped.includes(id))) {
         const next = ignoredAccounts.filter((id) => !nowMapped.includes(id));
         setIgnoredAccounts(next);
@@ -500,6 +506,8 @@ export function SettingsTab({
               ctx={ctx}
               simplefinAccounts={sfAccounts}
               initialMapping={mapping}
+              initialLoanLinks={loanLinks}
+              companionVersion={companionVersion}
               onSave={saveMapping}
               onAccountCreated={(created) => { void store.recordChange?.(accountCreatedChange(created)); }}
             />

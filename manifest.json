@@ -145,12 +145,19 @@
       "purpose": "Read whether a holding is priced by the market or by hand, and switch one Wealthfolio has no price for (a basket of stocks reported as one holding) to manual pricing"
     },
     {
+      "category": "alternative-assets",
+      "functions": [
+        "getAll"
+      ],
+      "purpose": "List your loans, so a SimpleFin loan account can be linked to the one it records its balance on"
+    },
+    {
       "category": "quotes",
       "functions": [
         "getHistory",
         "update"
       ],
-      "purpose": "Check whether a holding has any market price, and write the day's price for one that has none, from the value your bank reports"
+      "purpose": "Check whether a holding has any market price, and write the day's price for one that has none, from the value your bank reports. Record a linked loan account's balance on your Wealthfolio loan, as that day's confirmed balance"
     }
   ]
 }

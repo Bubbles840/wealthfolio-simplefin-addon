@@ -67,6 +67,19 @@ The addon has three tabs: **Home**, **Reports** and **Settings**.
     as one movement and kept out of spending and income.
   - A one-time starting balance lands each account on the bank's real
     balance; any difference is flagged with a one-click fix.
+  - A loan account (a mortgage or car loan servicer) can be linked to a
+    Wealthfolio loan instead: pick the loan under **Loans** in the account
+    mapping. Each sync records the servicer's balance as that day's confirmed
+    balance, so the loan follows the servicer instead of an estimate. Its
+    transactions are not imported (the payments already come in from the
+    account that paid them). A balance is written only when it differs from
+    the loan's latest recorded one, never onto a loan you closed (or confirmed at zero), and never
+    over one you confirmed yourself that day. A day's balance you edit but
+    leave the "SimpleFin" note on counts as the sync's, so the next sync can
+    replace it; the feed's balance wins from the next day either way. Whatever
+    the servicer reports is trusted: if it sends a payoff amount rather than
+    the principal, that is what the loan shows. A feed showing nothing owed is
+    reported, not written, so you can close the loan yourself.
 - **Reports** (with the companion) — the daily, weekly and monthly reports
   as they stand right now, plus every edition that was sent. On a Wealthfolio
   server with Web Push, each report is also pushed to your devices. The tab
