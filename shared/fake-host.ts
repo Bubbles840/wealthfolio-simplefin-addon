@@ -2,11 +2,12 @@ import { postedLedgerTotal } from './ledger-total.js';
 import type { AccountMapping, MappingRule, SimplefinAccountSet } from './types.js';
 import type { AmazonLedger } from './amazon-ledger.js';
 import type { VenmoLedger } from './venmo-ledger.js';
-import type { HoldingsSnapshot } from './holdings.js';
+import type { FeedPrice, HoldingsSnapshot } from './holdings.js';
 import type { SkippedTransaction } from './skipped-transactions.js';
 import type { TransferNames } from './transfer-names.js';
 import type { IgnoreRule } from './ignore-rules.js';
 import type { SyncOverrides } from './sync-overrides.js';
+import { confirmLoanBalance, type LinkedLoan, type LoanLinks, type LoanQuote } from './loan-balances.js';
 import type {
   ActivityWrite,
   HostActivity,
@@ -115,12 +116,24 @@ export interface FakeHostSeed {
    *  the same object are two writers sharing one count. Absent leaves the two
    *  store methods off (no budget). `failReads` makes the read reject. */
   requestLog?: { raw: string | null; failReads?: boolean };
+  /** SimpleFin loan accounts → liability asset ids (shared/loan-balances.ts). */
+  loanLinks?: LoanLinks;
+  /** Recorded balances per liability, mutated by `confirmLoanBalance`. */
+  loanQuotes?: Map<string, LoanQuote[]>;
+  /** Make `confirmLoanBalance` throw with this message. */
+  loanThrows?: string;
+  /** The loans Wealthfolio has. Absent: every linked asset id is a USD loan. */
+  loans?: LinkedLoan[];
+  /** Make `listLoans` reject. */
+  loansThrow?: boolean;
 }
 
 export interface FakeHost {
   host: SyncHost;
+  /** Recorded balances per liability, as `confirmLoanBalance` left them. */
+  loanQuotes: Map<string, LoanQuote[]>;
   /** Every holdings snapshot handed to the host, in call order. */
-  holdings: Array<{ wfAccountId: string; snapshot: HoldingsSnapshot }>;
+  holdings: Array<{ wfAccountId: string; snapshot: HoldingsSnapshot; prices?: FeedPrice[]; scope?: { tag: string } }>;
   store: SyncStore;
   /** Live activities per Wealthfolio account id. Mutated by saveMany/linkPair. */
   activities: Map<string, HostActivity[]>;
@@ -185,7 +198,8 @@ export function createFakeHost(seed: FakeHostSeed = {}): FakeHost {
   const driftAlertThreshold = seed.driftAlertThreshold ?? null;
 
   const activities = cloneActivities(seed.existing);
-  const holdings: Array<{ wfAccountId: string; snapshot: HoldingsSnapshot }> = [];
+  const holdings: Array<{ wfAccountId: string; snapshot: HoldingsSnapshot; prices?: FeedPrice[]; scope?: { tag: string } }> = [];
+  const loanQuotes: Map<string, LoanQuote[]> = seed.loanQuotes ?? new Map();
   const saved: SaveManyRequest[] = [];
   const links: Array<[LinkLeg, LinkLeg]> = [];
   const imported: ImportRow[][] = [];
@@ -368,12 +382,27 @@ export function createFakeHost(seed: FakeHostSeed = {}): FakeHost {
     ...(seed.noHoldingsSupport
       ? {}
       : {
-          async syncHoldings(wfAccountId: string, snapshot: HoldingsSnapshot) {
-            holdings.push({ wfAccountId, snapshot });
+          async syncHoldings(wfAccountId: string, snapshot: HoldingsSnapshot, prices?: FeedPrice[], scope?: { tag: string }) {
+            holdings.push({ wfAccountId, snapshot, ...(prices ? { prices } : {}), ...(scope ? { scope } : {}) });
             if (seed.holdingsThrows) throw new Error(seed.holdingsThrows);
             return seed.holdingsOutcome ?? { imported: 1, skipped: 0, unresolvedSymbols: [] };
           },
         }),
+
+    async listLoans() {
+      if (seed.loansThrow) throw new Error('loans unavailable');
+      return seed.loans ?? Object.values(seed.loanLinks ?? {}).map((id) => ({ id, name: id, currency: 'USD' }));
+    },
+    async confirmLoanBalance(loan, entry) {
+      if (seed.loanThrows) throw new Error(seed.loanThrows);
+      return confirmLoanBalance({
+        history: async (id) => loanQuotes.get(id) ?? [],
+        write: async (id, quote) => {
+          const kept = (loanQuotes.get(id) ?? []).filter((q) => !(q.date === entry.date && q.dataSource === 'MANUAL'));
+          loanQuotes.set(id, [...kept, { date: entry.date, close: quote.close, dataSource: quote.dataSource, notes: quote.notes }]);
+        },
+      }, loan, entry);
+    },
 
     async saveMany(req: SaveManyRequest): Promise<SaveManyResult> {
       saved.push(req);
@@ -595,10 +624,13 @@ export function createFakeHost(seed: FakeHostSeed = {}): FakeHost {
     async getIgnoreRules() {
       return seed.ignoreRules ?? [];
     },
+    async getLoanLinks() {
+      return seed.loanLinks ?? {};
+    },
     ...(seed.syncOverrides
       ? { async getSyncOverrides() { return seed.syncOverrides!; } }
       : {}),
   };
 
-  return { host, store, activities, saved, links, imported, holdings, amazon: () => amazonLedger, venmo: () => venmoLedger };
+  return { host, store, activities, saved, links, imported, holdings, loanQuotes, amazon: () => amazonLedger, venmo: () => venmoLedger };
 }

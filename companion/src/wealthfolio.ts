@@ -250,6 +250,38 @@ export class WealthfolioClient {
     return Array.isArray(rows) ? rows : [];
   }
 
+  /** Property, vehicles, loans and the rest (`GET /alternative-holdings`). */
+  async getAlternativeHoldings(): Promise<unknown[]> {
+    const res = await fetch(`${this.baseUrl}/api/v1/alternative-holdings`, {
+      headers: this.authHeaders(),
+    });
+    if (!res.ok) throw await this.httpError('getAlternativeHoldings', res);
+    const rows = (await res.json()) as unknown;
+    return Array.isArray(rows) ? rows : [];
+  }
+
+  /** An asset's quotes (`GET /market-data/quotes/history`). A liability's are its
+   *  recorded balances. */
+  async getQuoteHistory(assetId: string): Promise<Array<{ timestamp: string; close: string | number; dataSource: string; notes?: string | null }>> {
+    const res = await fetch(`${this.baseUrl}/api/v1/market-data/quotes/history?symbol=${encodeURIComponent(assetId)}`, {
+      headers: this.authHeaders(),
+    });
+    if (!res.ok) throw await this.httpError('getQuoteHistory', res);
+    const rows = (await res.json()) as unknown;
+    return Array.isArray(rows) ? rows : [];
+  }
+
+  /** Saves one quote (`PUT /market-data/quotes/{assetId}`), the route the app's
+   *  own manual quote edit uses. A MANUAL one replaces that day's MANUAL quote. */
+  async updateQuote(assetId: string, quote: Record<string, unknown>): Promise<void> {
+    const res = await fetch(`${this.baseUrl}/api/v1/market-data/quotes/${encodeURIComponent(assetId)}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json', ...this.authHeaders() },
+      body: JSON.stringify(quote),
+    });
+    if (!res.ok) throw await this.httpError('updateQuote', res);
+  }
+
   /** Unlinks a linked pair in place (`POST /activities/unlink`, 3.8+): both
    *  rows lose their group and are marked external; nothing else changes. */
   async unlinkTransferActivities(activityAId: string, activityBId: string): Promise<unknown[]> {

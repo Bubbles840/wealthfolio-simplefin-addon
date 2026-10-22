@@ -7,6 +7,50 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+Update both halves. The add-on asks for more permissions (assets, quotes,
+your loans, and reading an account's holdings), so in-app Update refuses it:
+use **Install from File** over the installed add-on, then pull the companion
+image. Loans are offered in the account mapping only once the companion is on
+this release.
+
+### Added
+- **A loan account can keep a Wealthfolio loan on the servicer's balance.**
+  Pick the loan under **Loans** in the account mapping, and each sync records
+  the servicer's balance on it as that day's confirmed balance, the same one
+  Confirm balance saves, in the loan's own currency. Its transactions are not
+  imported (the payments already come in from the account that paid them). A
+  balance is written only when it differs from the latest recorded one, never
+  over one you recorded yourself that day, never before the loan began, and
+  never onto a loan that is closed or confirmed at zero. A feed showing
+  nothing owed, a feed in another currency, and one loan linked from two
+  accounts are reported instead of written. Turning a mapped account into a
+  loan asks first, since its imports stop.
+
+### Fixed
+- **A holding Wealthfolio can't price shows its real value.** A position that
+  isn't a ticker (a basket of stocks a robo-advisor reports as one holding)
+  had no market price, so Wealthfolio valued it at $0 while the bank reported
+  its market value. The sync now writes that day's price from SimpleFin's
+  market value ÷ shares, as a manual quote, on an asset of the holding's own
+  for each account (tagged with the start of the Wealthfolio account's id, so
+  renaming or reconnecting the account keeps it): two accounts can
+  hold different baskets under one symbol, and Wealthfolio keeps one asset,
+  and one price a day, per symbol. A ticker moves to its own asset only after
+  its shared asset has gone several days with no market price, and moves back
+  from the next day's snapshot once the shared asset gets one, so a newly
+  bought ticker waiting for its first quote is never caught. A ticker the
+  market prices stays shared and is never touched, and neither is an asset you
+  set to manual pricing yourself, or a symbol the bank sends in two
+  currencies.
+- **A holding SimpleFin sends without a symbol is synced.** Some retirement
+  plans send funds with a description but no symbol; they were dropped, which
+  left such an account with no holdings at all. They are now filed under their
+  description, on an asset of their own from the first sync and priced as
+  above, so an account that never had a holdings snapshot starts getting
+  one. Two holdings filed under one name (two funds whose descriptions agree up
+  to the cut, or one ticker sent as two lots) are one position, their shares
+  added, instead of one of them being lost.
+
 ## [1.67.1] - 2026-10-22
 
 Update both halves: each writes its own change log, and Reset is in the

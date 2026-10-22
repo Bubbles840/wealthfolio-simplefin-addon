@@ -15,8 +15,10 @@ import type {
   HoldingsSyncOutcome,
 } from '../../shared/sync-host';
 import type { ActivityType, SimplefinAccountSet } from '../../shared/types';
-import type { HoldingsSnapshot } from '../../shared/holdings';
-import type { AddonContext, ActivityCreate, ActivitySearchFilters, ActivityUpdate } from '@wealthfolio/addon-sdk';
+import type { FeedPrice, HoldingsSnapshot } from '../../shared/holdings';
+import { syncHoldingsWithFeedPrices, type PricingApi } from './holdings-prices';
+import { confirmLoanBalance, linkedLoansOf, type LinkedLoan, type LoanBalance, type LoanBalanceDecision } from '../../shared/loan-balances';
+import type { AddonContext, ActivityCreate, ActivitySearchFilters, ActivityUpdate, Quote } from '@wealthfolio/addon-sdk';
 
 /**
  * Normalize a host date to YYYY-MM-DD.
@@ -232,21 +234,41 @@ export class AddonSyncHost implements SyncHost {
    * full ISO instants elsewhere, so a raw equality check would silently never
    * match and re-import the same snapshot on every sync.
    */
-  async syncHoldings(wfAccountId: string, snapshot: HoldingsSnapshot): Promise<HoldingsSyncOutcome> {
-    const check = await this.ctx.api.snapshots.checkImport(wfAccountId, [snapshot]);
-    if (check.validationErrors.length > 0) {
-      throw new Error(check.validationErrors.join('; '));
-    }
-    const unresolvedSymbols = check.symbols.filter((s) => !s.found).map((s) => s.symbol);
-    const dayOf = (value: string) => String(value).slice(0, 10);
-    if (check.existingDates.some((d) => dayOf(d) === snapshot.date)) {
-      return { imported: 0, skipped: 1, unresolvedSymbols };
-    }
-    const result = await this.ctx.api.snapshots.importSnapshots(wfAccountId, [snapshot]);
-    if (result.errors.length > 0) {
-      throw new Error(result.errors.join('; '));
-    }
-    return { imported: result.snapshotsImported, skipped: 0, unresolvedSymbols };
+  async syncHoldings(
+    wfAccountId: string,
+    snapshot: HoldingsSnapshot,
+    prices: FeedPrice[] = [],
+    scope?: { tag: string },
+  ): Promise<HoldingsSyncOutcome> {
+    // The snapshot write and the feed's prices are one decision (which
+    // holdings get a per-account asset), so they live together in
+    // holdings-prices.ts; this adapter only supplies the SDK calls.
+    const snapshots = this.ctx.api.snapshots as any;
+    return syncHoldingsWithFeedPrices(
+      {
+        checkImport: (id, s) => snapshots.checkImport(id, s),
+        importSnapshots: (id, s) => snapshots.importSnapshots(id, s),
+      },
+      this.pricingApi(),
+      wfAccountId,
+      snapshot,
+      prices,
+      scope?.tag,
+      this.log,
+    );
+  }
+
+  /** The asset and quote calls holdings-prices.ts needs, each made as a method
+   *  on `ctx.api` (the sandbox's Proxy treats a detached function as one more path). */
+  private pricingApi(): PricingApi {
+    const api = this.ctx.api as any;
+    return {
+      getHoldings: (wfAccountId) => api.portfolio.getHoldings(wfAccountId),
+      getProfile: (assetId) => api.assets.getProfile(assetId),
+      updateQuoteMode: (assetId, mode) => api.assets.updateQuoteMode(assetId, mode),
+      getHistory: (assetId) => api.quotes.getHistory(assetId),
+      updateQuote: (assetId, quote) => api.quotes.update(assetId, quote),
+    };
   }
 
   /**
@@ -276,5 +298,19 @@ export class AddonSyncHost implements SyncHost {
 
   async unlinkPair(legs: [UnlinkLeg, UnlinkLeg]): Promise<UnlinkResult> {
     return unlinkPairPreferInPlace(await this.inPlace('activities.unlinkTransfer'), (req) => this.saveMany(req), legs);
+  }
+
+  /** Each call made as a method on `ctx.api`, as `inPlace` explains. */
+  async listLoans(): Promise<LinkedLoan[]> {
+    return linkedLoansOf(await this.ctx.api.alternativeAssets.getAll());
+  }
+
+  async confirmLoanBalance(loan: LinkedLoan, entry: LoanBalance): Promise<LoanBalanceDecision> {
+    return confirmLoanBalance({
+      history: async (id) => ((await this.ctx.api.quotes.getHistory(id)) ?? []).map((q) => ({
+        date: String(q.timestamp).slice(0, 10), close: q.close, dataSource: q.dataSource, notes: q.notes ?? null,
+      })),
+      write: (id, quote) => this.ctx.api.quotes.update(id, quote as unknown as Quote),
+    }, loan, entry);
   }
 }

@@ -7,7 +7,8 @@ import { REIMBURSEMENT_SUBTYPE } from './cash-flow-bucket.js';
 import { accountTxKey, detectTransferPairs, TRANSFER_MATCH_WINDOW_SECONDS } from './transfers.js';
 import type { TransferCandidate } from './transfers.js';
 import { planReconciliation, IN_TRANSIT_COMMENT_PREFIX } from './reconcile.js';
-import { toHoldingsSnapshot } from './holdings.js';
+import { accountTag, feedPrices, toHoldingsSnapshot } from './holdings.js';
+import { loanBalanceOf, type LinkedLoan, type LoanLinks } from './loan-balances.js';
 import type { FeedTx, ExistingRow } from './reconcile.js';
 /** Re-exported from reconcile.ts (which defines it, so `changed()` can recognise
  *  the marker without importing sync-core and creating a cycle). This module owns
@@ -453,6 +454,9 @@ export interface SyncResult {
    *  (shared/ignore-rules.ts) matched them. Absent on a run that returned before
    *  reading the feed, and 0 when no rule matched anything. */
   ignoredByRules?: number;
+  /** Loan balances written to a linked liability this run (shared/loan-balances.ts).
+   *  Absent on a run that returned before reading the feed. */
+  loanBalancesRecorded?: number;
   stuckTransferAlerts: Array<{ outTxId: string; description: string; amountCents: number; currency: string }>;
   /** Every feed transaction this run CONFIRMED as created, for the companion's
    *  import notice. Driven off the create echo, so a rejected create is not
@@ -2338,6 +2342,22 @@ async function runSyncPass(
   const ignoredAccountIds = new Set(
     (await store.getIgnoredAccounts?.().catch(() => [])) ?? [],
   );
+  /** Loan accounts linked to a liability (shared/loan-balances.ts): not
+   *  unmapped, and recorded after the accounts below. A failed read links none. */
+  const loanLinks: LoanLinks = (await store.getLoanLinks?.().catch(() => ({}))) ?? {};
+  /** The linked loans that still exist, by asset id; null when they could not
+   *  be read (the links are then trusted, and nothing is written this run). A
+   *  link to a loan that was deleted is no link: its account is unmapped again. */
+  let loansById: Map<string, LinkedLoan> | null = null;
+  if (Object.keys(loanLinks).length > 0 && host.listLoans && host.confirmLoanBalance) {
+    try {
+      loansById = new Map((await host.listLoans()).map((l) => [l.id, l]));
+    } catch (e: any) {
+      errors.push(`Loan balances skipped: the loans could not be read (${e?.message ?? e})`);
+    }
+  }
+  const linkedLoan = (sfinId: string): boolean =>
+    !!loanLinks[sfinId] && (loansById === null || loansById.has(loanLinks[sfinId]));
   /** Bank transactions the user has said are not real (shared/skipped-transactions.ts),
    *  per account. A failed read imports everything, as before the list existed. */
   const skippedTxKeys = new Set(
@@ -2461,7 +2481,7 @@ async function runSyncPass(
   for (const sfAccount of accountSet.accounts) {
     const wfAccountId = mapping[sfAccount.id];
     if (!wfAccountId) {
-      if (ignoredAccountIds.has(sfAccount.id)) continue;
+      if (ignoredAccountIds.has(sfAccount.id) || linkedLoan(sfAccount.id)) continue;
       unmappedAccounts.push({
         sfinAccountId: sfAccount.id,
         accountName: sfAccount.name,
@@ -4494,9 +4514,15 @@ async function runSyncPass(
       const snapshot = toHoldingsSnapshot(sfAccount);
       if (!snapshot) continue;
       try {
-        const outcome = await host.syncHoldings(wfAccountId, snapshot);
+        const outcome = await host.syncHoldings(wfAccountId, snapshot, feedPrices(sfAccount), { tag: accountTag(wfAccountId) });
         holdingsSnapshots.imported += outcome.imported;
         holdingsSnapshots.skipped += outcome.skipped;
+        for (const symbol of outcome.pricedFromFeed ?? []) {
+          (holdingsSnapshots.pricedFromFeed ??= []).push(symbol);
+        }
+        if (outcome.pricedFromFeed?.length) {
+          console.log(`[simplefin-sync] priced ${outcome.pricedFromFeed.join(', ')} (${sfAccount.name}) from SimpleFin's market value`);
+        }
         for (const symbol of outcome.unresolvedSymbols) {
           // Deduped across accounts: the same unresolvable ticker in two
           // brokerages is one problem to report, not two.
@@ -4507,6 +4533,51 @@ async function runSyncPass(
       } catch (e: any) {
         errors.push(`Holdings snapshot failed (${sfAccount.name}): ${e?.message ?? e}`);
       }
+    }
+  }
+
+  // ── Loan balances (accounts linked to a liability) ───────────────────────
+  //
+  // A pass of its own for the same reasons as the holdings one: a loan account
+  // is never mapped, so it takes no part in the account loop, and a refused
+  // write is per loan and never fatal.
+  let loanBalancesRecorded = 0;
+  if (loansById && host.confirmLoanBalance) {
+    // One loan, one feed: two accounts linked to it (SimpleFin shows a duplicate
+    // after a bank is re-linked) would each overwrite the other every sync, so
+    // neither is recorded until the person keeps one link.
+    const feedsOfLoan = new Map<string, string[]>();
+    for (const sfAccount of accountSet.accounts) {
+      const assetId = loanLinks[sfAccount.id];
+      if (assetId && loansById.has(assetId)) feedsOfLoan.set(assetId, [...(feedsOfLoan.get(assetId) ?? []), sfAccount.name]);
+    }
+    for (const [assetId, names] of feedsOfLoan) {
+      if (names.length < 2) continue;
+      errors.push(`Loan balance not recorded: ${loansById.get(assetId)!.name} is linked from ${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}; keep one link`);
+    }
+    for (const sfAccount of accountSet.accounts) {
+      const loan = loansById.get(loanLinks[sfAccount.id] ?? '');
+      if (!loan || feedsOfLoan.get(loan.id)!.length > 1) continue;
+      try {
+        const entry = loanBalanceOf(sfAccount);
+        if (!entry) continue;
+        const decision = await host.confirmLoanBalance(loan, entry);
+        if (decision === 'write') loanBalancesRecorded++;
+        else if (decision === 'zero') {
+          errors.push(`${sfAccount.name} shows nothing owed on ${loan.name}: if the loan is paid off, close it in Wealthfolio`);
+        } else if (decision === 'currency') {
+          errors.push(`Loan balance not recorded (${sfAccount.name}): the bank reports ${entry.currency}, ${loan.name} is in ${loan.currency}`);
+        } else if (decision === 'theirs') {
+          console.log(`[simplefin-sync] ${sfAccount.name}: ${entry.date} already has a balance you recorded, so the bank's is not written`);
+        } else if (decision === 'early') {
+          console.log(`[simplefin-sync] ${sfAccount.name}: ${entry.date} is before ${loan.name} began, so the bank's balance is not written`);
+        }
+      } catch (e: any) {
+        errors.push(`Loan balance failed (${sfAccount.name}): ${e?.message ?? e}`);
+      }
+    }
+    if (loanBalancesRecorded > 0) {
+      console.log(`[simplefin-sync] ${loanBalancesRecorded} loan balance(s) recorded`);
     }
   }
 
@@ -4767,5 +4838,6 @@ async function runSyncPass(
     refusedCreates,
     holdingsSnapshots,
     ignoredByRules,
+    loanBalancesRecorded,
   };
 }
