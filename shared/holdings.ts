@@ -102,6 +102,46 @@ function parseMicros(value: string | number | null | undefined): bigint | null {
   return match[1] === '-' ? -micros : micros;
 }
 
+/** A non-negative decimal string as an integer and its count of decimals. */
+function parseDecimal(value: string | number | null | undefined): { n: bigint; scale: number } | null {
+  if (value === null || value === undefined) return null;
+  const match = /^\+?(\d+)(?:\.(\d*))?$/.exec(String(value).trim());
+  if (!match) return null;
+  const fraction = match[2] ?? '';
+  return { n: BigInt(match[1] + fraction), scale: fraction.length };
+}
+
+const AVG_COST_DECIMALS = 8;
+
+/**
+ * Per-share cost, or `undefined` when SimpleFin gave none.
+ *
+ * `cost_basis` is the position's TOTAL cost, so it is divided by the shares.
+ * `purchase_price` is meant to be per share, but some providers send the total
+ * there as well (the same figure as `cost_basis`), so it is only used when
+ * there is no total. Zero means unknown, never free: a zero cost basis shows
+ * up as fictional gains on the holdings page.
+ */
+function averageCost(
+  costBasis: string | null | undefined,
+  purchasePrice: string | null | undefined,
+  shares: string,
+): string | undefined {
+  const total = parseDecimal(costBasis);
+  const count = parseDecimal(shares);
+  if (total && total.n > 0n && count && count.n > 0n) {
+    // total / count, rounded half up to AVG_COST_DECIMALS.
+    const num = total.n * 10n ** BigInt(count.scale + AVG_COST_DECIMALS) * 2n;
+    const den = count.n * 10n ** BigInt(total.scale);
+    const q = (num / den + 1n) / 2n;
+    const unit = 10n ** BigInt(AVG_COST_DECIMALS);
+    const fraction = (q % unit).toString().padStart(AVG_COST_DECIMALS, '0').replace(/0+$/, '');
+    return fraction ? `${q / unit}.${fraction}` : `${q / unit}`;
+  }
+  const price = parseDecimal(purchasePrice);
+  return price && price.n > 0n ? String(purchasePrice).trim() : undefined;
+}
+
 function formatMicros(micros: bigint): string {
   const negative = micros < 0n;
   const abs = negative ? -micros : micros;
@@ -197,10 +237,7 @@ export function toHoldingsSnapshot(
     positions.push({
       symbol,
       quantity: shares,
-      // `undefined` (an absent key), never a zero: a zero cost basis is a
-      // positive claim that the position was free, which shows up as fictional
-      // gains on the holdings page.
-      avgCost: holding.purchase_price ? String(holding.purchase_price) : undefined,
+      avgCost: averageCost(holding.cost_basis, holding.purchase_price, shares),
       // SimpleFin omits a holding's currency when it matches the account's,
       // which is the overwhelmingly common case. Some providers send `""`
       // instead, which means the same thing.
