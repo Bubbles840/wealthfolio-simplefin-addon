@@ -20,6 +20,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   showing Wealthfolio's bare "host is not approved". Nothing changes for
   SimpleFin Bridge users, and the in-app Update still works.
 
+### Fixed
+- **A fresh companion learns transfer names and files bookkeeping (#28,
+  @mandishshah).** Wealthfolio answers a secret that was never stored with
+  `null`, and the companion read that as the text "null", so both read as
+  corrupt on every sync until something else wrote them.
+- **Holdings cost is the cost basis divided by the shares (#29,
+  @mandishshah).** Some providers send a position's total cost as its
+  per-share `purchase_price`, which showed every holding at a near-100% loss,
+  and a `0.00` meaning unknown was written as a zero cost, which showed the
+  whole value as gain. Snapshots already written keep their cost; the next
+  sync's snapshot has the right one.
+
 ## [1.66.0] - 2026-10-20
 
 Update the add-on and the companion together: a companion older than 1.66.0
