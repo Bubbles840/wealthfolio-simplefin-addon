@@ -28,6 +28,8 @@ export function SetupPage({ ctx, store, onComplete }: Props) {
   const [token, setToken] = useState('');
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
+  /** The token claimed in this visit and the access URL it gave. */
+  const claimed = useRef<{ token: string; accessUrl: string } | null>(null);
   const [sfAccounts, setSfAccounts] = useState<SimplefinAccount[]>([]);
   const [mapping, setMapping] = useState<AccountMapping>({});
   /** Step 1's "See what it looks like": the sample-data preview (project 4). */
@@ -43,7 +45,13 @@ export function SetupPage({ ctx, store, onComplete }: Props) {
       // the token stays unspent and the person can simply try again later.
       const refused = await directCallLine(store, 'setup');
       if (refused) { setError(refused); return; }
-      const accessUrl = await claimToken(token.trim(), ctx.api.network);
+      // A token can be claimed once: a retry after a failed download reuses
+      // the access URL this token already gave, and only a new token is claimed.
+      const pasted = token.trim();
+      const accessUrl = claimed.current?.token === pasted
+        ? claimed.current.accessUrl
+        : await claimToken(pasted, ctx.api.network);
+      claimed.current = { token: pasted, accessUrl };
       await store.setAccessUrl(accessUrl);
 
       // Pre-compute base64(user:pass) and store as a secret so the brokered

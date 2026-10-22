@@ -22,6 +22,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Bridge users, and the in-app Update still works.
 
 ### Fixed
+- **Setup no longer spends the token on a retry.** When the first download
+  failed after the token was claimed (SimpleFin unreachable, a host not yet
+  approved), Connect claimed the same one-time token again and got "this
+  setup token was already used". It now retries with the access URL the
+  token already gave; only a different token is claimed.
 - **A fresh companion learns transfer names and files bookkeeping (#28,
   @mandishshah).** Wealthfolio answers a secret that was never stored with
   `null`, and the companion read that as the text "null", so both read as
