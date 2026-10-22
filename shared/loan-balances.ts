@@ -51,33 +51,66 @@ export const LOAN_BALANCE_NOTES = 'loan_event|type=balance_correction|note=Simpl
 export interface LoanBalance {
   /** `YYYY-MM-DD`, the feed's balance date on the local calendar. */
   date: string;
-  /** What is owed, as a positive decimal string. */
+  /** What is owed, as a non-negative decimal string ("0" for a feed showing
+   *  nothing owed). */
   balance: string;
+  /** The FEED's currency, possibly blank. Only checked against the loan's: the
+   *  quote is always written in the loan's own currency. */
   currency: string;
 }
 
+/** A Wealthfolio loan a feed can be linked to, as much as the decision reads. */
+export interface LinkedLoan {
+  id: string;
+  name: string;
+  currency: string;
+  /** `YYYY-MM-DD`, from the loan's `origination_date`, when it has one. */
+  originationDate?: string;
+}
+
+/** The loans among Wealthfolio's alternative assets (kind `liability`), from
+ *  `alternativeAssets.getAll` or `GET /alternative-holdings`; anything that is
+ *  not a liability with an id is dropped. */
+export function linkedLoansOf(holdings: unknown): LinkedLoan[] {
+  if (!Array.isArray(holdings)) return [];
+  const loans: LinkedLoan[] = [];
+  for (const h of holdings as Array<Record<string, unknown>>) {
+    if (!h || h.kind !== 'liability' || typeof h.id !== 'string' || !h.id) continue;
+    const meta = (h.metadata && typeof h.metadata === 'object' ? h.metadata : {}) as Record<string, unknown>;
+    const origination = typeof meta.origination_date === 'string' && /^\d{4}-\d{2}-\d{2}/.test(meta.origination_date)
+      ? meta.origination_date.slice(0, 10) : undefined;
+    loans.push({
+      id: h.id,
+      name: typeof h.name === 'string' ? h.name : h.id,
+      currency: typeof h.currency === 'string' ? h.currency.trim() : '',
+      ...(origination ? { originationDate: origination } : {}),
+    });
+  }
+  return loans;
+}
+
 /**
- * The balance a loan's feed reports, or null when there is none to record.
+ * The balance a loan's feed reports, or null when there is nothing readable:
+ * no number, or no usable balance date.
  *
  * Servicers report what is owed as a negative balance, some as positive; either
- * way the loan's balance is its size. A zero is left alone: it can mean paid
- * off, but it is also what a feed shows while it is broken, and recording it
- * would close the loan in Wealthfolio.
+ * way the loan's balance is its size. Dated like a holdings snapshot: the
+ * balance's own date, on the local calendar, never after today.
  */
 export function loanBalanceOf(
   account: SimplefinAccount,
   options: { timeZone?: string | null; now?: Date } = {},
 ): LoanBalance | null {
   const balance = canonical(account.balance ?? '');
-  if (balance === null || balance === '0') return null;
-  // Dated like a holdings snapshot: the balance's own date, on the local
-  // calendar, never after today.
-  const day = calendarDay(new Date(account['balance-date'] * 1000), options.timeZone);
+  if (balance === null) return null;
+  const at = new Date(Number(account['balance-date']) * 1000);
+  if (!Number.isFinite(at.getTime())) return null;
+  const day = calendarDay(at, options.timeZone);
   const today = calendarDay(options.now ?? new Date(), options.timeZone);
   return {
     date: day > today ? today : day,
     balance,
-    currency: account.currency,
+    currency: String(account.currency ?? '').trim(),
   };
 }
 
@@ -90,7 +123,25 @@ export interface LoanQuote {
   notes?: string | null;
 }
 
-export type LoanBalanceDecision = 'write' | 'unchanged' | 'theirs';
+/** Upstream's note on the zero a loan's Close records (`LOAN_CLOSED_NOTE`). */
+export const LOAN_CLOSED_NOTES = 'loan_closed';
+
+export type LoanBalanceDecision =
+  /** Recorded. */
+  | 'write'
+  /** The latest recorded balance on or before the date already says this. */
+  | 'unchanged'
+  /** The day has a balance the person recorded: theirs stands. */
+  | 'theirs'
+  /** The loan was closed on or before the date: never reopened from the feed. */
+  | 'closed'
+  /** The feed shows nothing owed on an open loan: reported, so the person can
+   *  close it; never written (it would close the loan on the feed's word). */
+  | 'zero'
+  /** The feed's currency is set and is not the loan's: reported, not written. */
+  | 'currency'
+  /** The date is before the loan's origination, which Wealthfolio refuses. */
+  | 'early';
 
 /** A decimal as its size, with no sign or padding zeros: "-0100.50" → "100.5". */
 function canonical(value: string | number): string | null {
@@ -101,39 +152,62 @@ function canonical(value: string | number): string | null {
   return fraction ? `${whole}.${fraction}` : whole;
 }
 
+/** A non-negative decimal string rounded half up to cents, as Wealthfolio's own
+ *  Confirm balance stores it ("250000.905" → "250000.91"). */
+export function toCents(value: string): string {
+  const [whole, fraction = ''] = value.split('.');
+  let cents = BigInt(whole) * 100n + BigInt((fraction + '00').slice(0, 2));
+  if (fraction.length > 2 && Number(fraction[2]) >= 5) cents += 1n;
+  const c = (cents % 100n).toString().padStart(2, '0');
+  return canonical(`${cents / 100n}.${c}`)!;
+}
+
 const sameAmount = (a: string | number, b: string) => {
   const ca = canonical(a);
-  return ca !== null && ca === canonical(b);
+  return ca !== null && toCents(ca) === toCents(b);
 };
 
+const hasProvenance = (notes: string | null | undefined, provenance: string) =>
+  !!notes && notes.startsWith(provenance) && (notes.length === provenance.length || notes[provenance.length] === '|');
+
 /**
- * Whether to record `entry`. Wealthfolio keeps one manual balance per loan per
- * day, so a write replaces whatever is recorded that day:
- *
- *  - `unchanged`: the day already has this balance. Writing it again would only
- *    start another portfolio recalculation.
- *  - `theirs`: the day has a balance the person recorded (any manual quote
- *    without the sync's note). Theirs stands; the feed's goes in tomorrow.
- *  - `write`: otherwise, including replacing the sync's own earlier balance.
+ * Whether to record `entry` on `loan`, given its recorded balances. A
+ * confirmation overrides the estimate and every tagged payment from its date,
+ * so the feed is written only when it says something new (`unchanged`), never
+ * over the person's own word for the day (`theirs`), and never onto a closed
+ * loan (`closed`) — Wealthfolio reads a balance after a close as reopening it.
  */
-export function decideLoanBalance(existing: readonly LoanQuote[], entry: LoanBalance): LoanBalanceDecision {
-  const sameDay = existing.filter((q) => String(q.date).slice(0, 10) === entry.date && q.dataSource === 'MANUAL');
+export function decideLoanBalance(
+  loan: LinkedLoan,
+  existing: readonly LoanQuote[],
+  entry: LoanBalance,
+): LoanBalanceDecision {
+  if (entry.currency && loan.currency && entry.currency.toUpperCase() !== loan.currency.toUpperCase()) return 'currency';
+  const upTo = existing
+    .filter((q) => q.dataSource === 'MANUAL' && String(q.date).slice(0, 10) <= entry.date)
+    .sort((a, b) => (String(a.date).slice(0, 10) < String(b.date).slice(0, 10) ? 1 : -1));
+  const latest = upTo[0];
+  if (latest && hasProvenance(latest.notes, LOAN_CLOSED_NOTES)) return 'closed';
+  if (entry.balance === '0') return 'zero';
+  if (loan.originationDate && entry.date < loan.originationDate) return 'early';
+  const sameDay = upTo.filter((q) => String(q.date).slice(0, 10) === entry.date);
   if (sameDay.some((q) => q.notes !== LOAN_BALANCE_NOTES)) return 'theirs';
-  if (sameDay.some((q) => sameAmount(q.close, entry.balance))) return 'unchanged';
+  if (latest && sameAmount(latest.close, entry.balance)) return 'unchanged';
   return 'write';
 }
 
-/** The manual quote Wealthfolio saves for a confirmed balance. Its id is
- *  rebuilt by Wealthfolio from the asset, the day and the source.
+/** The manual quote Wealthfolio saves for a confirmed balance, in the loan's
+ *  currency and rounded to cents. Its id is rebuilt by Wealthfolio from the
+ *  asset, the day and the source.
  *
  *  The amounts are JSON numbers, the one place this module leaves decimal
  *  strings: Wealthfolio reads a quote's amounts as floats (rust_decimal's
  *  `serde-float`), refuses a string there, and the SDK types them as numbers. */
-export function loanBalanceQuote(assetId: string, entry: LoanBalance, now = new Date()) {
-  const amount = Number(entry.balance);
+export function loanBalanceQuote(loan: LinkedLoan, entry: LoanBalance, now = new Date()) {
+  const amount = Number(toCents(entry.balance));
   return {
-    id: `${assetId}_${entry.date}_MANUAL`,
-    assetId,
+    id: `${loan.id}_${entry.date}_MANUAL`,
+    assetId: loan.id,
     timestamp: `${entry.date}T00:00:00Z`,
     open: amount,
     high: amount,
@@ -141,7 +215,7 @@ export function loanBalanceQuote(assetId: string, entry: LoanBalance, now = new 
     close: amount,
     adjclose: amount,
     volume: 0,
-    currency: entry.currency,
+    currency: loan.currency,
     dataSource: 'MANUAL' as const,
     createdAt: now.toISOString(),
     notes: LOAN_BALANCE_NOTES,
@@ -156,13 +230,13 @@ export interface LoanBalanceIo {
   write(assetId: string, quote: LoanQuoteWrite): Promise<void>;
 }
 
-/** Records `entry` on the loan unless the decision above says not to. */
+/** Records `entry` on `loan` unless the decision above says not to. */
 export async function confirmLoanBalance(
   io: LoanBalanceIo,
-  assetId: string,
+  loan: LinkedLoan,
   entry: LoanBalance,
 ): Promise<LoanBalanceDecision> {
-  const decision = decideLoanBalance(await io.history(assetId), entry);
-  if (decision === 'write') await io.write(assetId, loanBalanceQuote(assetId, entry));
+  const decision = decideLoanBalance(loan, await io.history(loan.id), entry);
+  if (decision === 'write') await io.write(loan.id, loanBalanceQuote(loan, entry));
   return decision;
 }

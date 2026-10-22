@@ -7,7 +7,7 @@ import type { SkippedTransaction } from './skipped-transactions.js';
 import type { TransferNames } from './transfer-names.js';
 import type { IgnoreRule } from './ignore-rules.js';
 import type { SyncOverrides } from './sync-overrides.js';
-import { confirmLoanBalance, type LoanLinks, type LoanQuote } from './loan-balances.js';
+import { confirmLoanBalance, type LinkedLoan, type LoanLinks, type LoanQuote } from './loan-balances.js';
 import type {
   ActivityWrite,
   HostActivity,
@@ -122,6 +122,10 @@ export interface FakeHostSeed {
   loanQuotes?: Map<string, LoanQuote[]>;
   /** Make `confirmLoanBalance` throw with this message. */
   loanThrows?: string;
+  /** The loans Wealthfolio has. Absent: every linked asset id is a USD loan. */
+  loans?: LinkedLoan[];
+  /** Make `listLoans` reject. */
+  loansThrow?: boolean;
 }
 
 export interface FakeHost {
@@ -385,7 +389,11 @@ export function createFakeHost(seed: FakeHostSeed = {}): FakeHost {
           },
         }),
 
-    async confirmLoanBalance(assetId, entry) {
+    async listLoans() {
+      if (seed.loansThrow) throw new Error('loans unavailable');
+      return seed.loans ?? Object.values(seed.loanLinks ?? {}).map((id) => ({ id, name: id, currency: 'USD' }));
+    },
+    async confirmLoanBalance(loan, entry) {
       if (seed.loanThrows) throw new Error(seed.loanThrows);
       return confirmLoanBalance({
         history: async (id) => loanQuotes.get(id) ?? [],
@@ -393,7 +401,7 @@ export function createFakeHost(seed: FakeHostSeed = {}): FakeHost {
           const kept = (loanQuotes.get(id) ?? []).filter((q) => !(q.date === entry.date && q.dataSource === 'MANUAL'));
           loanQuotes.set(id, [...kept, { date: entry.date, close: quote.close, dataSource: quote.dataSource, notes: quote.notes }]);
         },
-      }, assetId, entry);
+      }, loan, entry);
     },
 
     async saveMany(req: SaveManyRequest): Promise<SaveManyResult> {

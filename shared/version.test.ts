@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'fs';
 import { join } from 'path';
-import { companionUnderstandsIgnoreRules, IGNORE_RULES_SINCE, SIMPLEFIN_SYNC_VERSION } from './version.js';
+import { companionUnderstandsIgnoreRules, companionUnderstandsLoanBalances, IGNORE_RULES_SINCE, LOAN_BALANCES_SINCE, SIMPLEFIN_SYNC_VERSION } from './version.js';
 
 describe('SIMPLEFIN_SYNC_VERSION', () => {
   /**
@@ -111,5 +111,15 @@ describe('the ignore rules gate', () => {
     expect(companionUnderstandsIgnoreRules('1.65.0')).toBe(false);
     expect(companionUnderstandsIgnoreRules('garbage')).toBe(false);
     expect(companionUnderstandsIgnoreRules(null)).toBe(true);
+  });
+});
+
+describe('the loan balances gate', () => {
+  it('opens at the release whose companion reads loan links, and with no companion at all', () => {
+    expect(companionUnderstandsLoanBalances(LOAN_BALANCES_SINCE)).toBe(true);
+    expect(companionUnderstandsLoanBalances('9.0.0')).toBe(true);
+    expect(companionUnderstandsLoanBalances('1.67.1')).toBe(false);
+    expect(companionUnderstandsLoanBalances('garbage')).toBe(false);
+    expect(companionUnderstandsLoanBalances(null)).toBe(true);
   });
 });

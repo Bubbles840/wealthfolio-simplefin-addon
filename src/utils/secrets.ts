@@ -635,15 +635,6 @@ export class SecretsStore {
    * Malformed degrades to "none ignored": that over-reports (the banner comes
    * back) rather than hiding an account the user never meant to exclude.
    */
-  /** SimpleFin loan accounts → the Wealthfolio liability each one records its
-   *  balance on (shared/loan-balances.ts). */
-  async getLoanLinks(): Promise<LoanLinks> {
-    return parseLoanLinks(await this.ctx.api.secrets.get(KEYS.loanLinks));
-  }
-  async setLoanLinks(links: LoanLinks): Promise<void> {
-    await this.ctx.api.secrets.set(KEYS.loanLinks, JSON.stringify(links));
-  }
-
   async getIgnoredAccounts(): Promise<string[]> {
     const raw = await this.ctx.api.secrets.get(KEYS.ignoredAccounts);
     if (!raw) return [];
@@ -656,6 +647,15 @@ export class SecretsStore {
   }
   async setIgnoredAccounts(ids: string[]): Promise<void> {
     await this.ctx.api.secrets.set(KEYS.ignoredAccounts, JSON.stringify(ids));
+  }
+
+  /** SimpleFin loan accounts → the Wealthfolio liability each one records its
+   *  balance on (shared/loan-balances.ts). */
+  async getLoanLinks(): Promise<LoanLinks> {
+    return parseLoanLinks(await this.ctx.api.secrets.get(KEYS.loanLinks));
+  }
+  async setLoanLinks(links: LoanLinks): Promise<void> {
+    await this.ctx.api.secrets.set(KEYS.loanLinks, JSON.stringify(links));
   }
 
   /** The learned transfer names the companion publishes (null when absent or unreadable). */

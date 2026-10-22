@@ -507,6 +507,7 @@ export function SettingsTab({
               simplefinAccounts={sfAccounts}
               initialMapping={mapping}
               initialLoanLinks={loanLinks}
+              companionVersion={companionVersion}
               onSave={saveMapping}
               onAccountCreated={(created) => { void store.recordChange?.(accountCreatedChange(created)); }}
             />

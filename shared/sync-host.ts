@@ -7,7 +7,7 @@ import type { TransferNames } from './transfer-names.js';
 import type { IgnoreRule } from './ignore-rules.js';
 import type { LoadedSyncOverrides, SyncOverrides } from './sync-overrides.js';
 import type { UnlinkLeg, UnlinkResult } from './link-pair.js';
-import type { LoanBalance, LoanBalanceDecision, LoanLinks } from './loan-balances.js';
+import type { LinkedLoan, LoanBalance, LoanBalanceDecision, LoanLinks } from './loan-balances.js';
 
 /** A Wealthfolio activity row, normalized across the SDK and REST shapes. */
 export interface HostActivity {
@@ -233,7 +233,10 @@ export interface SyncHost {
    * confirmed balance (shared/loan-balances.ts), unless the day already has it
    * or has one the person recorded. Optional: a host without it records none.
    */
-  confirmLoanBalance?(assetId: string, entry: LoanBalance): Promise<LoanBalanceDecision>;
+  confirmLoanBalance?(loan: LinkedLoan, entry: LoanBalance): Promise<LoanBalanceDecision>;
+  /** The loans (liabilities) Wealthfolio has: their currency, origination and
+   *  whether a linked one still exists. With `confirmLoanBalance`, or neither. */
+  listLoans?(): Promise<LinkedLoan[]>;
   readonly capabilities: {
     /** True when listActivities returns a trustworthy sourceGroupId. */
     readsSourceGroupId: boolean;

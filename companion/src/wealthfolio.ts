@@ -250,6 +250,16 @@ export class WealthfolioClient {
     return Array.isArray(rows) ? rows : [];
   }
 
+  /** Property, vehicles, loans and the rest (`GET /alternative-holdings`). */
+  async getAlternativeHoldings(): Promise<unknown[]> {
+    const res = await fetch(`${this.baseUrl}/api/v1/alternative-holdings`, {
+      headers: this.authHeaders(),
+    });
+    if (!res.ok) throw await this.httpError('getAlternativeHoldings', res);
+    const rows = (await res.json()) as unknown;
+    return Array.isArray(rows) ? rows : [];
+  }
+
   /** An asset's quotes (`GET /market-data/quotes/history`). A liability's are its
    *  recorded balances. */
   async getQuoteHistory(assetId: string): Promise<Array<{ timestamp: string; close: string | number; dataSource: string; notes?: string | null }>> {

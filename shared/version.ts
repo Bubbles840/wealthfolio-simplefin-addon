@@ -155,6 +155,22 @@ export function companionUnderstandsIgnoreRules(companionVersion: string | null)
   return isAtLeastVersion(companionVersion.trim(), IGNORE_RULES_SINCE);
 }
 
+/**
+ * The first release whose companion reads loan links (shared/loan-balances.ts).
+ * An older companion ignores `loan_links`: it reports a linked loan account as
+ * unmapped (the banner and the daily "not mapped" finding come back) and never
+ * records its balance. The app offers no loans in the account mapping until a
+ * connected companion is this new. Raise to the release that ships this.
+ */
+export const LOAN_BALANCES_SINCE = '1.68.0';
+
+/** True when `companionVersion` reads loan links. No companion at all (null)
+ *  is true: nothing else is syncing that could ignore them. */
+export function companionUnderstandsLoanBalances(companionVersion: string | null): boolean {
+  if (companionVersion === null) return true;
+  return isAtLeastVersion(companionVersion.trim(), LOAN_BALANCES_SINCE);
+}
+
 /** The companion's half: an installed add-on that reads `asReimbursement`.
  *  Unknown (null — the companion cannot see the addons directory) is false. */
 export function addonUnderstandsPaybacks(installedAddonVersion: string | null): boolean {

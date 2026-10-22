@@ -8,7 +8,7 @@ import { accountTxKey, detectTransferPairs, TRANSFER_MATCH_WINDOW_SECONDS } from
 import type { TransferCandidate } from './transfers.js';
 import { planReconciliation, IN_TRANSIT_COMMENT_PREFIX } from './reconcile.js';
 import { toHoldingsSnapshot } from './holdings.js';
-import { loanBalanceOf, type LoanLinks } from './loan-balances.js';
+import { loanBalanceOf, type LinkedLoan, type LoanLinks } from './loan-balances.js';
 import type { FeedTx, ExistingRow } from './reconcile.js';
 /** Re-exported from reconcile.ts (which defines it, so `changed()` can recognise
  *  the marker without importing sync-core and creating a cycle). This module owns
@@ -2345,6 +2345,19 @@ async function runSyncPass(
   /** Loan accounts linked to a liability (shared/loan-balances.ts): not
    *  unmapped, and recorded after the accounts below. A failed read links none. */
   const loanLinks: LoanLinks = (await store.getLoanLinks?.().catch(() => ({}))) ?? {};
+  /** The linked loans that still exist, by asset id; null when they could not
+   *  be read (the links are then trusted, and nothing is written this run). A
+   *  link to a loan that was deleted is no link: its account is unmapped again. */
+  let loansById: Map<string, LinkedLoan> | null = null;
+  if (Object.keys(loanLinks).length > 0 && host.listLoans && host.confirmLoanBalance) {
+    try {
+      loansById = new Map((await host.listLoans()).map((l) => [l.id, l]));
+    } catch (e: any) {
+      errors.push(`Loan balances skipped: the loans could not be read (${e?.message ?? e})`);
+    }
+  }
+  const linkedLoan = (sfinId: string): boolean =>
+    !!loanLinks[sfinId] && (loansById === null || loansById.has(loanLinks[sfinId]));
   /** Bank transactions the user has said are not real (shared/skipped-transactions.ts),
    *  per account. A failed read imports everything, as before the list existed. */
   const skippedTxKeys = new Set(
@@ -2468,7 +2481,7 @@ async function runSyncPass(
   for (const sfAccount of accountSet.accounts) {
     const wfAccountId = mapping[sfAccount.id];
     if (!wfAccountId) {
-      if (ignoredAccountIds.has(sfAccount.id) || loanLinks[sfAccount.id]) continue;
+      if (ignoredAccountIds.has(sfAccount.id) || linkedLoan(sfAccount.id)) continue;
       unmappedAccounts.push({
         sfinAccountId: sfAccount.id,
         accountName: sfAccount.name,
@@ -4523,17 +4536,23 @@ async function runSyncPass(
   // is never mapped, so it takes no part in the account loop, and a refused
   // write is per loan and never fatal.
   let loanBalancesRecorded = 0;
-  if (host.confirmLoanBalance) {
+  if (loansById && host.confirmLoanBalance) {
     for (const sfAccount of accountSet.accounts) {
-      const assetId = loanLinks[sfAccount.id];
-      if (!assetId) continue;
-      const entry = loanBalanceOf(sfAccount);
-      if (!entry) continue;
+      const loan = loansById.get(loanLinks[sfAccount.id] ?? '');
+      if (!loan) continue;
       try {
-        const decision = await host.confirmLoanBalance(assetId, entry);
+        const entry = loanBalanceOf(sfAccount);
+        if (!entry) continue;
+        const decision = await host.confirmLoanBalance(loan, entry);
         if (decision === 'write') loanBalancesRecorded++;
-        else if (decision === 'theirs') {
+        else if (decision === 'zero') {
+          errors.push(`${sfAccount.name} shows nothing owed on ${loan.name}: if the loan is paid off, close it in Wealthfolio`);
+        } else if (decision === 'currency') {
+          errors.push(`Loan balance not recorded (${sfAccount.name}): the bank reports ${entry.currency}, ${loan.name} is in ${loan.currency}`);
+        } else if (decision === 'theirs') {
           console.log(`[simplefin-sync] ${sfAccount.name}: ${entry.date} already has a balance you recorded, so the bank's is not written`);
+        } else if (decision === 'early') {
+          console.log(`[simplefin-sync] ${sfAccount.name}: ${entry.date} is before ${loan.name} began, so the bank's balance is not written`);
         }
       } catch (e: any) {
         errors.push(`Loan balance failed (${sfAccount.name}): ${e?.message ?? e}`);

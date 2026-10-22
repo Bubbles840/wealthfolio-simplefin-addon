@@ -72,8 +72,14 @@ The addon has three tabs: **Home**, **Reports** and **Settings**.
     mapping. Each sync records the servicer's balance as that day's confirmed
     balance, so the loan follows the servicer instead of an estimate. Its
     transactions are not imported (the payments already come in from the
-    account that paid them), and a balance you confirmed yourself that day is
-    kept.
+    account that paid them). A balance is written only when it differs from
+    the loan's latest recorded one, never onto a loan you closed, and never
+    over one you confirmed yourself that day. A day's balance you edit but
+    leave the "SimpleFin" note on counts as the sync's, so the next sync can
+    replace it; the feed's balance wins from the next day either way. Whatever
+    the servicer reports is trusted: if it sends a payoff amount rather than
+    the principal, that is what the loan shows. A feed showing nothing owed is
+    reported, not written, so you can close the loan yourself.
 - **Reports** (with the companion) — the daily, weekly and monthly reports
   as they stand right now, plus every edition that was sent. On a Wealthfolio
   server with Web Push, each report is also pushed to your devices. The tab
