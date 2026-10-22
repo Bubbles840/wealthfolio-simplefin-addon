@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.67.0] - 2026-10-22
+
+Update the add-on in the app as usual: there are no new permissions. Pull the
+companion image too: the never-stored-secret fix is companion-only, and the
+holdings cost fix applies to whichever half syncs. Lunch Flow users: tick the
+Lunch Flow hosts in the update's permission dialog, or later under the add-on's
+eye icon (see below).
+
 ### Added
 - **Lunch Flow setup tokens (#25).** Lunch Flow runs a SimpleFIN server of
   its own, the one it feeds Actual Budget from. A setup token from a Lunch
