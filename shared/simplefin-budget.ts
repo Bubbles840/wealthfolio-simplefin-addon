@@ -74,9 +74,9 @@ export interface RequestLogIo {
 /** The stored record as epoch ms, newest first. Absent or empty is `[]`;
  *  anything but an array of parseable time strings is corrupt (null).
  *  JSON `null` is absent too: the server answers a secret that was never
- *  written with HTTP 200 and body `null`, which the companion's client hands
- *  over as the string "null". Read as corrupt, it blocked the companion's
- *  first sync after the upgrade. */
+ *  written with HTTP 200 and body `null`, which the companion's client used to
+ *  hand over as the string "null". Read as corrupt, it blocked the
+ *  companion's first sync after the upgrade. */
 export function parseRequestLog(raw: string | null | undefined): number[] | null {
   if (raw === null || raw === undefined || raw.trim() === '') return [];
   let parsed: unknown;

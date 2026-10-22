@@ -155,6 +155,12 @@ describe('WealthfolioClient', () => {
     expect(v).toBeNull();
   });
 
+  it('returns null, not the text "null", for a secret that was never stored', async () => {
+    mockFetch.mockResolvedValueOnce({ ok: true, status: 200, text: async () => 'null' });
+    const c = new WealthfolioClient('http://wf');
+    expect(await c.getAddonSecret('simplefin-sync', 'sync_overrides')).toBeNull();
+  });
+
   it('setAddonSecret POSTs { key, secret } (not { key, value }) with auth headers', async () => {
     // Regression test: the real server rejects { key, value } with HTTP 422
     // ("missing field `secret`"). Pin the exact wire shape so a future
