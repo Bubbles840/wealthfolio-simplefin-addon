@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { balanceCauseLines, balanceHeaderLine, balanceIncludesLine, type BalanceExplanation } from '../../shared/audit-balance';
 import {
   headlineAgreeLine, headlineAgrees, headlineReasonLine, headlineRowLine, headlineSummaryLine, headlineUnexplainedLine,
@@ -189,7 +189,11 @@ export function HealthView({ report, fix, at }: { report: HealthReport; fix?: He
   const [, tick] = useState(0);
   const onFixed = useRef(fix?.onFixed);
   onFixed.current = fix?.onFixed;
-  useEffect(() => {
+  // A layout effect, so the card is subscribed by the time it can be clicked.
+  // A passive one runs a task after a non-urgent render (the app mounts the
+  // card from an async read): a link that settled first was heard by no card,
+  // and the page never read the snapshot again.
+  useLayoutEffect(() => {
     const me: FixListener = { update: () => tick((n) => n + 1), onFixed: () => onFixed.current?.() };
     fixState.listeners.add(me);
     // A run may have finished between the render and this subscription.
