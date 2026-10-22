@@ -8,6 +8,7 @@ import { accountTxKey, detectTransferPairs, TRANSFER_MATCH_WINDOW_SECONDS } from
 import type { TransferCandidate } from './transfers.js';
 import { planReconciliation, IN_TRANSIT_COMMENT_PREFIX } from './reconcile.js';
 import { toHoldingsSnapshot } from './holdings.js';
+import { loanBalanceOf, type LoanLinks } from './loan-balances.js';
 import type { FeedTx, ExistingRow } from './reconcile.js';
 /** Re-exported from reconcile.ts (which defines it, so `changed()` can recognise
  *  the marker without importing sync-core and creating a cycle). This module owns
@@ -453,6 +454,9 @@ export interface SyncResult {
    *  (shared/ignore-rules.ts) matched them. Absent on a run that returned before
    *  reading the feed, and 0 when no rule matched anything. */
   ignoredByRules?: number;
+  /** Loan balances written to a linked liability this run (shared/loan-balances.ts).
+   *  Absent on a run that returned before reading the feed. */
+  loanBalancesRecorded?: number;
   stuckTransferAlerts: Array<{ outTxId: string; description: string; amountCents: number; currency: string }>;
   /** Every feed transaction this run CONFIRMED as created, for the companion's
    *  import notice. Driven off the create echo, so a rejected create is not
@@ -2338,6 +2342,9 @@ async function runSyncPass(
   const ignoredAccountIds = new Set(
     (await store.getIgnoredAccounts?.().catch(() => [])) ?? [],
   );
+  /** Loan accounts linked to a liability (shared/loan-balances.ts): not
+   *  unmapped, and recorded after the accounts below. A failed read links none. */
+  const loanLinks: LoanLinks = (await store.getLoanLinks?.().catch(() => ({}))) ?? {};
   /** Bank transactions the user has said are not real (shared/skipped-transactions.ts),
    *  per account. A failed read imports everything, as before the list existed. */
   const skippedTxKeys = new Set(
@@ -2461,7 +2468,7 @@ async function runSyncPass(
   for (const sfAccount of accountSet.accounts) {
     const wfAccountId = mapping[sfAccount.id];
     if (!wfAccountId) {
-      if (ignoredAccountIds.has(sfAccount.id)) continue;
+      if (ignoredAccountIds.has(sfAccount.id) || loanLinks[sfAccount.id]) continue;
       unmappedAccounts.push({
         sfinAccountId: sfAccount.id,
         accountName: sfAccount.name,
@@ -4510,6 +4517,33 @@ async function runSyncPass(
     }
   }
 
+  // ── Loan balances (accounts linked to a liability) ───────────────────────
+  //
+  // A pass of its own for the same reasons as the holdings one: a loan account
+  // is never mapped, so it takes no part in the account loop, and a refused
+  // write is per loan and never fatal.
+  let loanBalancesRecorded = 0;
+  if (host.confirmLoanBalance) {
+    for (const sfAccount of accountSet.accounts) {
+      const assetId = loanLinks[sfAccount.id];
+      if (!assetId) continue;
+      const entry = loanBalanceOf(sfAccount);
+      if (!entry) continue;
+      try {
+        const decision = await host.confirmLoanBalance(assetId, entry);
+        if (decision === 'write') loanBalancesRecorded++;
+        else if (decision === 'theirs') {
+          console.log(`[simplefin-sync] ${sfAccount.name}: ${entry.date} already has a balance you recorded, so the bank's is not written`);
+        }
+      } catch (e: any) {
+        errors.push(`Loan balance failed (${sfAccount.name}): ${e?.message ?? e}`);
+      }
+    }
+    if (loanBalancesRecorded > 0) {
+      console.log(`[simplefin-sync] ${loanBalancesRecorded} loan balance(s) recorded`);
+    }
+  }
+
   const linkFailures = await store.getTransferLinkFailures();
   let linkFailuresChanged = false;
   const stuckTransferAlerts: SyncResult['stuckTransferAlerts'] = [];
@@ -4767,5 +4801,6 @@ async function runSyncPass(
     refusedCreates,
     holdingsSnapshots,
     ignoredByRules,
+    loanBalancesRecorded,
   };
 }

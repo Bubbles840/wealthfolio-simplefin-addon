@@ -2,6 +2,7 @@ import { parseReportStore, reportsSecretKey, type ReportKind, type ReportStore }
 import { SIMPLEFIN_REQUESTS_SECRET_KEY } from '../../shared/simplefin-budget';
 import { TRANSFER_NAMES_SECRET_KEY, parseTransferNames, type TransferNames } from '../../shared/transfer-names';
 import { SKIPPED_TRANSACTIONS_SECRET_KEY, parseSkippedTransactions, parseSkippedTransactionsStrict, type ParsedSkippedTransactions, type SkippedTransaction } from '../../shared/skipped-transactions';
+import { LOAN_LINKS_SECRET_KEY, parseLoanLinks, type LoanLinks } from '../../shared/loan-balances';
 import { IGNORE_RULES_SECRET_KEY, IgnoreRulesUnreadableError, IGNORE_PROBLEM_TEXT, ignoreRuleProblem, normalizeIgnoreRules, parseIgnoreRules, parseIgnoreRulesStrict, type IgnoreRule, type ParsedIgnoreRules } from '../../shared/ignore-rules';
 import type { AddonContext } from '@wealthfolio/addon-sdk';
 import { AMAZON_LEDGER_SECRET_KEY } from '../../shared/amazon-ledger';
@@ -120,6 +121,7 @@ const KEYS = {
   ignoredAccounts: 'ignored_accounts',
   skippedTransactions: SKIPPED_TRANSACTIONS_SECRET_KEY,
   ignoreRules: IGNORE_RULES_SECRET_KEY,
+  loanLinks: LOAN_LINKS_SECRET_KEY,
   // Companion-published, add-on-read-only; the companion recomputes it, so Reset clears it.
   transferNames: TRANSFER_NAMES_SECRET_KEY,
   autoHeal: 'auto_heal',
@@ -633,6 +635,15 @@ export class SecretsStore {
    * Malformed degrades to "none ignored": that over-reports (the banner comes
    * back) rather than hiding an account the user never meant to exclude.
    */
+  /** SimpleFin loan accounts → the Wealthfolio liability each one records its
+   *  balance on (shared/loan-balances.ts). */
+  async getLoanLinks(): Promise<LoanLinks> {
+    return parseLoanLinks(await this.ctx.api.secrets.get(KEYS.loanLinks));
+  }
+  async setLoanLinks(links: LoanLinks): Promise<void> {
+    await this.ctx.api.secrets.set(KEYS.loanLinks, JSON.stringify(links));
+  }
+
   async getIgnoredAccounts(): Promise<string[]> {
     const raw = await this.ctx.api.secrets.get(KEYS.ignoredAccounts);
     if (!raw) return [];

@@ -49,4 +49,49 @@ describe('AccountMapper', () => {
     await screen.findByText('nope');
     expect(onAccountCreated).not.toHaveBeenCalled();
   });
+
+  it('links a loan account to a liability instead of mapping it, and back', async () => {
+    const ctx = {
+      api: {
+        accounts: { getAll: vi.fn(async () => [{ id: 'wf-chk', name: 'Checking' }]) },
+        alternativeAssets: { getAll: vi.fn(async () => [
+          { id: 'LIAB-1', kind: 'liability', name: 'Home Loan' },
+          { id: 'PROP-1', kind: 'property', name: 'House' },
+        ]) },
+      },
+    } as any;
+    const onSave = vi.fn();
+    render(
+      <AccountMapper
+        ctx={ctx}
+        simplefinAccounts={[
+          { id: 'ACT-chk', name: 'Checking', currency: 'USD', balance: '10', 'balance-date': 1, transactions: [] } as any,
+          { id: 'ACT-loan', name: 'Servicer', currency: 'USD', balance: '-1000', 'balance-date': 1, transactions: [] } as any,
+        ]}
+        initialMapping={{ 'ACT-chk': 'wf-chk' }}
+        onSave={onSave}
+      />,
+    );
+    await screen.findAllByRole('option', { name: 'Home Loan' });
+    expect(screen.queryByRole('option', { name: 'House' })).toBeNull();
+    const [, loanSelect] = screen.getAllByRole('combobox');
+    fireEvent.change(loanSelect, { target: { value: 'loan:LIAB-1' } });
+    screen.getByText(/records this account's balance on the loan/);
+    fireEvent.click(screen.getByRole('button', { name: 'Save Mapping' }));
+    expect(onSave).toHaveBeenLastCalledWith({ 'ACT-chk': 'wf-chk' }, { 'ACT-loan': 'LIAB-1' });
+
+    fireEvent.change(loanSelect, { target: { value: 'wf-chk' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save Mapping' }));
+    expect(onSave).toHaveBeenLastCalledWith({ 'ACT-chk': 'wf-chk', 'ACT-loan': 'wf-chk' }, {});
+  });
+
+  it('offers no loans when the host cannot list them', async () => {
+    const ctx = { api: { accounts: { getAll: vi.fn(async () => []) } } } as any;
+    render(
+      <AccountMapper ctx={ctx} initialMapping={{}} onSave={vi.fn()}
+        simplefinAccounts={[{ id: 'ACT-1', name: 'Spend', currency: 'USD', balance: '1', 'balance-date': 1, transactions: [] } as any]} />,
+    );
+    await waitFor(() => expect(ctx.api.accounts.getAll).toHaveBeenCalled());
+    expect(screen.queryByRole('group')).toBeNull();
+  });
 });

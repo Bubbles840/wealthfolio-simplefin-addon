@@ -134,6 +134,33 @@
         }
       ],
       "purpose": "Import holdings snapshots for investment accounts, so a brokerage syncs its positions and not only its cash."
+    },
+    {
+      "category": "alternative-assets",
+      "functions": [
+        {
+          "name": "getAll",
+          "isDeclared": true,
+          "isDetected": false
+        }
+      ],
+      "purpose": "List your loans, so a SimpleFin loan account can be linked to the one it records its balance on."
+    },
+    {
+      "category": "quotes",
+      "functions": [
+        {
+          "name": "getHistory",
+          "isDeclared": true,
+          "isDetected": false
+        },
+        {
+          "name": "update",
+          "isDeclared": true,
+          "isDetected": false
+        }
+      ],
+      "purpose": "Record a linked loan account's balance on your Wealthfolio loan each sync, as that day's confirmed balance."
     }
   ]
 }

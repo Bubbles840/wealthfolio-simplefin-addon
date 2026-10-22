@@ -7,6 +7,7 @@ import type { TransferNames } from './transfer-names.js';
 import type { IgnoreRule } from './ignore-rules.js';
 import type { LoadedSyncOverrides, SyncOverrides } from './sync-overrides.js';
 import type { UnlinkLeg, UnlinkResult } from './link-pair.js';
+import type { LoanBalance, LoanBalanceDecision, LoanLinks } from './loan-balances.js';
 
 /** A Wealthfolio activity row, normalized across the SDK and REST shapes. */
 export interface HostActivity {
@@ -227,6 +228,12 @@ export interface SyncHost {
    * manual run and answers empty on a scheduled one (R7).
    */
   postedLedgerTotals?(accounts: ReadonlyArray<{ wfAccountId: string; accountType: string }>): Promise<Map<string, number>>;
+  /**
+   * Records a loan feed's balance on a Wealthfolio liability as that day's
+   * confirmed balance (shared/loan-balances.ts), unless the day already has it
+   * or has one the person recorded. Optional: a host without it records none.
+   */
+  confirmLoanBalance?(assetId: string, entry: LoanBalance): Promise<LoanBalanceDecision>;
   readonly capabilities: {
     /** True when listActivities returns a trustworthy sourceGroupId. */
     readsSourceGroupId: boolean;
@@ -386,4 +393,11 @@ export interface SyncStore {
    * a stored payback alone instead of reverting it. Optional.
    */
   readSyncOverrides?(): Promise<LoadedSyncOverrides | null>;
+  /**
+   * SimpleFin loan accounts linked to a Wealthfolio liability
+   * (shared/loan-balances.ts). Their transactions are not imported; their
+   * balance is recorded on the liability. Optional like the getters above; a
+   * host without it, or a failed read, links nothing.
+   */
+  getLoanLinks?(): Promise<LoanLinks>;
 }

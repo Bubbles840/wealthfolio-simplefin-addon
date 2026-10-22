@@ -16,7 +16,8 @@ import type {
 } from '../../shared/sync-host';
 import type { ActivityType, SimplefinAccountSet } from '../../shared/types';
 import type { HoldingsSnapshot } from '../../shared/holdings';
-import type { AddonContext, ActivityCreate, ActivitySearchFilters, ActivityUpdate } from '@wealthfolio/addon-sdk';
+import { confirmLoanBalance, type LoanBalance, type LoanBalanceDecision } from '../../shared/loan-balances';
+import type { AddonContext, ActivityCreate, ActivitySearchFilters, ActivityUpdate, Quote } from '@wealthfolio/addon-sdk';
 
 /**
  * Normalize a host date to YYYY-MM-DD.
@@ -276,5 +277,15 @@ export class AddonSyncHost implements SyncHost {
 
   async unlinkPair(legs: [UnlinkLeg, UnlinkLeg]): Promise<UnlinkResult> {
     return unlinkPairPreferInPlace(await this.inPlace('activities.unlinkTransfer'), (req) => this.saveMany(req), legs);
+  }
+
+  /** Each call made as a method on `ctx.api`, as `inPlace` explains. */
+  async confirmLoanBalance(assetId: string, entry: LoanBalance): Promise<LoanBalanceDecision> {
+    return confirmLoanBalance({
+      history: async (id) => ((await this.ctx.api.quotes.getHistory(id)) ?? []).map((q) => ({
+        date: String(q.timestamp).slice(0, 10), close: q.close, dataSource: q.dataSource, notes: q.notes ?? null,
+      })),
+      write: (id, quote) => this.ctx.api.quotes.update(id, quote as unknown as Quote),
+    }, assetId, entry);
   }
 }

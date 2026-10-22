@@ -67,6 +67,13 @@ The addon has three tabs: **Home**, **Reports** and **Settings**.
     as one movement and kept out of spending and income.
   - A one-time starting balance lands each account on the bank's real
     balance; any difference is flagged with a one-click fix.
+  - A loan account (a mortgage or car loan servicer) can be linked to a
+    Wealthfolio loan instead: pick the loan under **Loans** in the account
+    mapping. Each sync records the servicer's balance as that day's confirmed
+    balance, so the loan follows the servicer instead of an estimate. Its
+    transactions are not imported (the payments already come in from the
+    account that paid them), and a balance you confirmed yourself that day is
+    kept.
 - **Reports** (with the companion) — the daily, weekly and monthly reports
   as they stand right now, plus every edition that was sent. On a Wealthfolio
   server with Web Push, each report is also pushed to your devices. The tab

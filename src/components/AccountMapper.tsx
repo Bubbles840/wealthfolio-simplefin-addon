@@ -1,18 +1,23 @@
 import React, { useEffect, useState } from 'react';
 import type { AddonContext } from '@wealthfolio/addon-sdk';
 import type { SimplefinAccount, AccountMapping } from '../../shared/types';
+import type { LoanLinks } from '../../shared/loan-balances';
 import { Button, ErrorBox, Select } from './ui';
 
 interface Props {
   ctx: AddonContext;
   simplefinAccounts: SimplefinAccount[];
   initialMapping: AccountMapping;
-  onSave: (mapping: AccountMapping) => void;
+  /** Loan accounts already linked to a Wealthfolio loan (shared/loan-balances.ts). */
+  initialLoanLinks?: LoanLinks;
+  onSave: (mapping: AccountMapping, loanLinks: LoanLinks) => void;
   /** After a Wealthfolio account is created here — for the change log. */
   onAccountCreated?: (created: { sfinId: string; wfId: string; name: string; accountType: string }) => void;
 }
 
 const CREATE_NEW_VALUE = '__create_new__';
+/** A loan option's value: the prefix, then the liability's asset id. */
+const LOAN_PREFIX = 'loan:';
 
 const ACCOUNT_TYPE_OPTIONS = [
   { type: 'CASH', label: 'Bank / Cash' },
@@ -22,9 +27,11 @@ const ACCOUNT_TYPE_OPTIONS = [
 
 type CreatableAccountType = (typeof ACCOUNT_TYPE_OPTIONS)[number]['type'];
 
-export function AccountMapper({ ctx, simplefinAccounts, initialMapping, onSave, onAccountCreated }: Props) {
+export function AccountMapper({ ctx, simplefinAccounts, initialMapping, initialLoanLinks = {}, onSave, onAccountCreated }: Props) {
   const [wfAccounts, setWfAccounts] = useState<Array<{ id: string; name: string }>>([]);
+  const [loans, setLoans] = useState<Array<{ id: string; name: string }>>([]);
   const [mapping, setMapping] = useState<AccountMapping>(initialMapping);
+  const [loanLinks, setLoanLinks] = useState<LoanLinks>(initialLoanLinks);
   const [loadError, setLoadError] = useState('');
   const [creatingId, setCreatingId] = useState<string | null>(null);
   const [createErrors, setCreateErrors] = useState<Record<string, string>>({});
@@ -34,6 +41,11 @@ export function AccountMapper({ ctx, simplefinAccounts, initialMapping, onSave, 
     ctx.api.accounts.getAll()
       .then(setWfAccounts)
       .catch((e: any) => setLoadError(e.message ?? 'Failed to load accounts'));
+    // Loans are optional: a host without alternative assets offers none.
+    Promise.resolve()
+      .then(() => ctx.api.alternativeAssets.getAll())
+      .then((all) => setLoans(all.filter((a) => a.kind === 'liability').map((a) => ({ id: a.id, name: a.name }))))
+      .catch(() => setLoans([]));
   }, [ctx]);
 
   const handleSelect = (sfin: SimplefinAccount, value: string) => {
@@ -43,7 +55,11 @@ export function AccountMapper({ ctx, simplefinAccounts, initialMapping, onSave, 
       return;
     }
     setPendingTypeChoice(null);
-    setMapping((prev) => ({ ...prev, [sfin.id]: value }));
+    // An account either syncs into a Wealthfolio account or records a loan's
+    // balance, never both.
+    const isLoan = value.startsWith(LOAN_PREFIX);
+    setMapping((prev) => ({ ...prev, [sfin.id]: isLoan ? '' : value }));
+    setLoanLinks((prev) => ({ ...prev, [sfin.id]: isLoan ? value.slice(LOAN_PREFIX.length) : '' }));
   };
 
   const handleCreateAccount = async (sfin: SimplefinAccount, accountType: CreatableAccountType) => {
@@ -61,6 +77,7 @@ export function AccountMapper({ ctx, simplefinAccounts, initialMapping, onSave, 
       });
       setWfAccounts((prev) => [...prev, { id: created.id, name: created.name }]);
       setMapping((prev) => ({ ...prev, [sfin.id]: created.id }));
+      setLoanLinks((prev) => ({ ...prev, [sfin.id]: '' }));
       onAccountCreated?.({ sfinId: sfin.id, wfId: created.id, name: created.name, accountType });
     } catch (e: any) {
       setCreateErrors((prev) => ({
@@ -78,7 +95,7 @@ export function AccountMapper({ ctx, simplefinAccounts, initialMapping, onSave, 
       const match = wfAccounts.find(
         (wf) => wf.name.toLowerCase() === sfin.name.toLowerCase(),
       );
-      if (match) auto[sfin.id] = match.id;
+      if (match && !loanLinks[sfin.id]) auto[sfin.id] = match.id;
     }
     setMapping(auto);
   };
@@ -98,7 +115,7 @@ export function AccountMapper({ ctx, simplefinAccounts, initialMapping, onSave, 
           </div>
           <div style={{ flex: 1 }}>
             <Select
-              value={mapping[sfin.id] ?? ''}
+              value={mapping[sfin.id] || (loanLinks[sfin.id] ? LOAN_PREFIX + loanLinks[sfin.id] : '')}
               onChange={(e) => handleSelect(sfin, e.target.value)}
               disabled={creatingId === sfin.id}
               style={{ width: '100%' }}
@@ -107,8 +124,22 @@ export function AccountMapper({ ctx, simplefinAccounts, initialMapping, onSave, 
               {wfAccounts.map((wf) => (
                 <option key={wf.id} value={wf.id}>{wf.name}</option>
               ))}
+              {loans.length > 0 && (
+                <optgroup label="Loans (record the balance only)">
+                  {loans.map((l) => (
+                    <option key={l.id} value={LOAN_PREFIX + l.id}>{l.name}</option>
+                  ))}
+                </optgroup>
+              )}
               <option value={CREATE_NEW_VALUE}>+ Create new account</option>
             </Select>
+            {loanLinks[sfin.id] && (
+              <div className="sfin-subtle" style={{ fontSize: 12, marginTop: 4 }}>
+                Each sync records this account's balance on the loan as that day's confirmed
+                balance. Its transactions are not imported: the payments already show up in the
+                account that paid them.
+              </div>
+            )}
             {pendingTypeChoice === sfin.id && (
               <div style={{ marginTop: 6, display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>
                 <span className="sfin-subtle" style={{ fontSize: 12 }}>What kind of account?</span>
@@ -140,7 +171,10 @@ export function AccountMapper({ ctx, simplefinAccounts, initialMapping, onSave, 
             const cleanMapping = Object.fromEntries(
               Object.entries(mapping).filter(([, v]) => !!v)
             );
-            onSave(cleanMapping);
+            const cleanLoanLinks = Object.fromEntries(
+              Object.entries(loanLinks).filter(([, v]) => !!v)
+            );
+            onSave(cleanMapping, cleanLoanLinks);
           }}
           disabled={Object.values(mapping).filter(Boolean).length === 0}
         >
