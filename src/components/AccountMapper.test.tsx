@@ -226,4 +226,53 @@ describe('AccountMapper', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Save Mapping' }));
     expect(onSave).toHaveBeenLastCalledWith({}, { 'ACT-loan': 'LIAB-2' });
   });
+
+  describe('a reconnection', () => {
+    const ctx = () => ({ api: { accounts: { getAll: vi.fn(async () => [{ id: 'wf-chk', name: 'Checking' }]) } } }) as any;
+    const newFeed = { id: 'ACT-new', name: 'Checking', currency: 'USD', balance: '10', 'balance-date': 1, transactions: [] } as any;
+    const mapping = { 'ACT-old': 'wf-chk', 'ACT-new': 'wf-chk' };
+    const none = { confirmed: [], declined: [] };
+
+    it('asks, and saves a confirmed one', async () => {
+      const onRelinkDecisions = vi.fn();
+      render(<AccountMapper ctx={ctx()} simplefinAccounts={[newFeed]} initialMapping={mapping} onSave={vi.fn()}
+        relinkDecisions={none} onRelinkDecisions={onRelinkDecisions} sfinNames={{ 'ACT-old': 'Old Checking' }} />);
+      await screen.findByText(/Old Checking is also mapped here and no longer in/);
+      fireEvent.click(screen.getByRole('button', { name: 'Yes, it replaces it' }));
+      await waitFor(() => expect(onRelinkDecisions).toHaveBeenCalledWith({
+        confirmed: [{ wfAccountId: 'wf-chk', newId: 'ACT-new', oldIds: ['ACT-old'] }], declined: [],
+      }));
+      await screen.findByText(/Reconnection of Old Checking/);
+    });
+
+    it('remembers a no, and asks nothing more', async () => {
+      const onRelinkDecisions = vi.fn();
+      render(<AccountMapper ctx={ctx()} simplefinAccounts={[newFeed]} initialMapping={mapping} onSave={vi.fn()}
+        relinkDecisions={none} onRelinkDecisions={onRelinkDecisions} />);
+      fireEvent.click(await screen.findByRole('button', { name: 'No, both feed this account' }));
+      await waitFor(() => expect(onRelinkDecisions).toHaveBeenCalledWith({ confirmed: [], declined: ['wf-chk|ACT-new|ACT-old'] }));
+      await waitFor(() => expect(screen.queryByText(/no longer in/)).toBeNull());
+    });
+
+    it('asks nothing without a writer, and offers no answer until the companion reads them', async () => {
+      const { unmount } = render(<AccountMapper ctx={ctx()} simplefinAccounts={[newFeed]} initialMapping={mapping} onSave={vi.fn()} />);
+      await screen.findByRole('option', { name: 'Checking' });
+      expect(screen.queryByText(/no longer in/)).toBeNull();
+      unmount();
+
+      render(<AccountMapper ctx={ctx()} simplefinAccounts={[newFeed]} initialMapping={mapping} onSave={vi.fn()}
+        relinkDecisions={none} onRelinkDecisions={vi.fn()} companionVersion="1.67.1" />);
+      await screen.findByText(/Update the companion to/);
+      expect(screen.queryByRole('button', { name: /Yes, it replaces/ })).toBeNull();
+    });
+
+    it('can undo a confirmation', async () => {
+      const onRelinkDecisions = vi.fn();
+      const confirmed = { confirmed: [{ wfAccountId: 'wf-chk', newId: 'ACT-new', oldIds: ['ACT-old'] }], declined: [] };
+      render(<AccountMapper ctx={ctx()} simplefinAccounts={[newFeed]} initialMapping={mapping} onSave={vi.fn()}
+        relinkDecisions={confirmed} onRelinkDecisions={onRelinkDecisions} />);
+      fireEvent.click(await screen.findByRole('button', { name: 'Undo' }));
+      await waitFor(() => expect(onRelinkDecisions).toHaveBeenCalledWith(none));
+    });
+  });
 });

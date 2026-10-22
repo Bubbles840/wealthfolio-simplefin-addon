@@ -1,7 +1,7 @@
 import { findIgnored, normalizeIgnoreRules } from './ignore-rules.js';
 import { bankFirstTransferOut, genericTransferNeedsCorroboration } from './bank-first-payment.js';
 import { fillFeedCurrencies } from './feed-currency.js';
-import { detectRelinks, planRelinkAdoption } from './relink.js';
+import { activeRelinks, emptyRelinkDecisions, openRelinkQuestions, planRelinkAdoption } from './relink.js';
 import { learnedNameKeys, learnedTransferType } from './transfer-names.js';
 import { mapTransactionWithSource, type MappedType } from './mapper.js';
 import { REIMBURSEMENT_SUBTYPE } from './cash-flow-bucket.js';
@@ -22,7 +22,7 @@ import type { AmazonLedger } from './amazon-ledger.js';
 import {
   consumeVenmoMatch, isReadableVenmoLedger, matchVenmoPayments, venmoDescription, type VenmoLedger, type VenmoMatch,
 } from './venmo-ledger.js';
-import type { AccountMapping, ActivityType, SimplefinAccount, SimplefinTransaction, UnmappedAccount } from './types.js';
+import type { AccountMapping, ActivityType, SimplefinAccount, SimplefinAccountSet, SimplefinTransaction, UnmappedAccount } from './types.js';
 import type { ActivityWrite, HoldingsSyncOutcome, HostActivity, ImportRow, LinkLeg, LinkResult, SaveManyRequest, SaveManyResult, SyncHost, SyncStore } from './sync-host.js';
 import { unlinkPairByRecreate, type UnlinkLeg, type UnlinkResult } from './link-pair.js';
 import { ledgerGroupId } from './link-in-place.js';
@@ -2151,7 +2151,28 @@ async function runSyncPass(
         : new Date(lastSync.getTime() - SYNC_LOOKBACK_OVERLAP_MS);
   const authKey = await store.getAuthB64Key();
   // `fetchedAt` (set above from the recorded request time) is stamped on every bank figure.
-  const accountSet = await host.fetchSimplefin(accessUrl, startDate, authKey);
+  const downloaded = await host.fetchSimplefin(accessUrl, startDate, authKey);
+
+  // A connection removed and added again (shared/relink.ts) that the person
+  // confirmed: its accounts came back under new ids, mapped to the same
+  // Wealthfolio accounts as the old ones. The old ids are retired for good:
+  // left out of this run even if one reports again (the new connection was
+  // added before the old one was removed), so the overlap is never imported
+  // from them a second time. A failed read confirms nothing.
+  const relinkDecisions = (await store.getRelinkDecisions?.().catch(() => null)) ?? emptyRelinkDecisions();
+  const relinks = activeRelinks(relinkDecisions.confirmed, mapping);
+  const relinkOf = new Map(relinks.map((r) => [r.newId, r]));
+  /** Old ids a confirmed re-link replaced: not a feed that is late, so nothing waits on them. */
+  const replacedIds = new Set(relinks.flatMap((r) => r.oldIds));
+  const accountSet: SimplefinAccountSet = { ...downloaded, accounts: downloaded.accounts.filter((a) => !replacedIds.has(a.id)) };
+  for (const r of relinks) {
+    console.log(`[simplefin-sync] re-linked connection: account ${r.newId} replaces ${r.oldIds.join(', ')} (Wealthfolio ${r.wfAccountId})`);
+  }
+  // The shape alone is a question, never an action: two feeds deliberately
+  // mapped to one account, one of them missing for a run, look the same.
+  for (const q of openRelinkQuestions(mapping, new Set(downloaded.accounts.map((a) => a.id)), relinkDecisions)) {
+    console.log(`[simplefin-sync] account ${q.newId} may be a reconnection of ${q.oldIds.join(', ')} (Wealthfolio ${q.wfAccountId}): confirm it in Settings → Accounts, or nothing is matched or removed`);
+  }
 
   for (const sfErr of accountSet.errors) {
     // SimpleFin returns informational notices (window-size recommendations and
@@ -2439,18 +2460,8 @@ async function runSyncPass(
     ));
   }
 
-  // A connection removed and added again (shared/relink.ts): its accounts come
-  // back under new ids, mapped to the same Wealthfolio accounts as the old ones.
-  // The old ids stay in the mapping and no longer report anything.
-  const relinks = detectRelinks(mapping, new Set(accountSet.accounts.map((a) => a.id)));
-  const relinkOf = new Map(relinks.map((r) => [r.newId, r]));
-  /** Old ids a re-link replaced: not a feed that is late, so nothing waits on them. */
-  const replacedIds = new Set(relinks.flatMap((r) => r.oldIds));
-  /** Every transaction id any account reported on this run. */
+  /** Every transaction id any account reported on this run (retired ids left out). */
   const liveTxIds = new Set(accountSet.accounts.flatMap((a) => (a.transactions ?? []).map((tx) => tx.id)));
-  for (const r of relinks) {
-    console.log(`[simplefin-sync] re-linked connection: account ${r.newId} replaces ${r.oldIds.join(', ')} (Wealthfolio ${r.wfAccountId})`);
-  }
 
   // Which Venmo payment each bank row is, decided for the whole run at once
   // (ruling P3-K): one payment to one row, in any feed order, across accounts.
@@ -3062,62 +3073,96 @@ async function runSyncPass(
       // read unavailable — proceed as if no rows exist
     }
 
-    // ── A re-linked connection (shared/relink.ts) ────────────────────────────
+    // ── A re-linked connection the person confirmed (shared/relink.ts) ───────
     // The old connection's rows are here under ids nothing reports any more.
-    // One that is a transaction of this download is read under its new id, so
-    // the plan updates it in place instead of importing it again; nothing is
-    // written to it for that (a rewritten note on a linked leg is copied onto
-    // its partner). A copy already imported under the new id is the old
-    // duplicate this fixes: heal deletes it, as the duplicate prune below does.
+    // One that is a transaction of this download is read under its new id and
+    // FROZEN: the plan neither imports the transaction again nor updates the
+    // row (a rewritten note on a linked leg is copied onto its partner), and a
+    // linked one stays out of pairing. A copy already imported under the new id
+    // is the duplicate this fixes: heal deletes it, honouring every override
+    // the duplicate prune below honours.
     const relink = relinkOf.get(sfAccount.id);
     if (relink) {
+      const oldKeys = (r: StoredRow) => relink.oldIds.map((id) => accountTxKey(id, r.txId));
+      const isOld = (r: StoredRow) => !liveTxIds.has(r.txId);
+      const linked = (r: StoredRow) => isOld(r)
+        ? relink.oldIds.some((id) => !!gidOfRow(id, r))
+        : !!gidOfRow(sfAccount.id, r);
       const relinkPlan = planRelinkAdoption(
-        existing.map((r) => ({ ...r, description: descriptionFromComment(r.comment), bookkeeping: isInternalMarkerComment(r.comment) })),
+        existing.map((r) => ({
+          ...r, description: descriptionFromComment(r.comment), bookkeeping: isInternalMarkerComment(r.comment), linked: linked(r),
+        })),
         preparedAll.map(({ tx }, i) => ({ ...feed[i], description: tx.description ?? '' })),
         liveTxIds,
       );
+      const rowOf = new Map(existing.map((r) => [r.wfId, r]));
+      /** A row's own tx key, under the account it came from (what Undo reads). */
+      const keyOf = (r: StoredRow) => (isOld(r) ? accountTxKey(relink.oldIds[0], r.txId) : accountTxKey(sfAccount.id, r.txId));
+      /** Every key a row is known by: protected by any override on any of them. */
+      const keysOf = (r: StoredRow) => (isOld(r) ? [...oldKeys(r), accountTxKey(sfAccount.id, r.txId)] : [accountTxKey(sfAccount.id, r.txId)]);
+      const isProtected = (key: string) => hasTxOverride(overrides, key, 'keepDuplicate') || notTransferKey(key) || pairKeys.has(key);
+      let leftAlone = relinkPlan.leftAlone;
+      const deletions = relinkPlan.duplicates.filter((d) => {
+        const rows = [d.keep, ...d.remove].map((x) => rowOf.get(x.wfId)!);
+        const keys = [accountTxKey(sfAccount.id, d.txId), ...rows.flatMap(keysOf)];
+        // An old row is only removed when its own key (for Undo) is certain.
+        const ambiguous = relink.oldIds.length !== 1 && d.remove.some((x) => isOld(rowOf.get(x.wfId)!));
+        if (keys.some(isProtected) || ambiguous) { leftAlone++; return false; }
+        return true;
+      });
+      /** Asked to go: out of this run's snapshot whatever the delete says, so no
+       *  later step (the prune, the plan, the links) can target a row that may be gone. */
       const removeIds = new Set<string>();
-      if (heal && unlinkPrepass.certain && relinkPlan.duplicates.length > 0) {
-        const doomed = relinkPlan.duplicates.map((d) => d.remove.wfId);
+      if (heal && unlinkPrepass.certain && deletions.length > 0) {
+        const doomed = deletions.flatMap((d) => d.remove.map((x) => x.wfId));
+        for (const id of doomed) removeIds.add(id);
         const del = await host.saveMany({ deleteIds: doomed });
         if ((del.errors ?? []).length > 0) {
           for (const err of del.errors ?? []) {
             errors.push(`Account ${wfAccountId} re-link duplicate delete error (${err.action}): ${err.message}`);
           }
         } else {
-          for (const d of relinkPlan.duplicates) {
-            removeIds.add(d.remove.wfId);
-            relinkPlan.adopt.set(d.keep.wfId, d.txId);
-            const row = existing.find((r) => r.wfId === d.remove.wfId)!;
-            const entry = {
-              sfinAccountId: sfAccount.id,
-              accountName: wfNames.get(wfAccountId) || sfAccount.name,
-              txId: row.txId,
-              description: descriptionFromComment(row.comment),
-              date: row.date,
-              amountCents: row.absCents,
-              currency: sfAccount.currency,
-              wfId: row.wfId,
-            };
-            prunedDuplicates.push(entry);
-            console.warn(
-              `[simplefin-sync] ${DUPLICATE_PRUNE_LOG_TAG}: deleted activity ${row.wfId} — a second copy, after a re-linked connection, of the transaction activity ${d.keep.wfId} holds in account ${sfAccount.id}`,
-              entry,
-            );
-            logChange?.(() => duplicateRemovedChange({
-              account: accountRef,
-              txKey: accountTxKey(sfAccount.id, row.txId),
-              activityId: row.wfId,
-              description: entry.description,
-              amountCents: signedCentsOf(row.txId, row.type, entry.amountCents),
-              date: row.date,
-              payload: { ...recreatePayload(row, sfAccount.currency) },
-            }));
+          for (const d of deletions) {
+            for (const gone of d.remove) {
+              const row = rowOf.get(gone.wfId)!;
+              const entry = {
+                sfinAccountId: isOld(row) ? relink.oldIds[0] : sfAccount.id,
+                accountName: wfNames.get(wfAccountId) || sfAccount.name,
+                txId: row.txId,
+                description: descriptionFromComment(row.comment),
+                date: row.date,
+                amountCents: row.absCents,
+                currency: sfAccount.currency,
+                wfId: row.wfId,
+              };
+              prunedDuplicates.push(entry);
+              console.warn(
+                `[simplefin-sync] ${DUPLICATE_PRUNE_LOG_TAG}: deleted activity ${row.wfId} — a second copy, after a re-linked connection, of the transaction activity ${d.keep.wfId} holds in account ${sfAccount.id}`,
+                entry,
+              );
+              logChange?.(() => duplicateRemovedChange({
+                account: accountRef,
+                txKey: keyOf(row),
+                activityId: row.wfId,
+                description: entry.description,
+                amountCents: signedCentsOf(row.txId, row.type, entry.amountCents),
+                date: row.date,
+                payload: { ...recreatePayload(row, sfAccount.currency) },
+              }));
+            }
           }
         }
+        for (const d of deletions) relinkPlan.adopt.set(d.keep.wfId, d.txId);
       }
-      if (relinkPlan.leftAlone > 0) {
-        console.info(`[simplefin-sync] re-linked connection: ${relinkPlan.leftAlone} transaction(s) in account ${sfAccount.id} have more than one stored candidate, or two linked copies — left as they are`);
+      if (leftAlone > 0) {
+        console.info(`[simplefin-sync] re-linked connection: ${leftAlone} transaction(s) in account ${sfAccount.id} have more than one stored candidate, more than one linked copy, or a kept copy — left as they are`);
+      }
+      for (const [wfId, txId] of relinkPlan.adopt) {
+        const row = rowOf.get(wfId)!;
+        if (!isOld(row)) continue;
+        const key = accountTxKey(sfAccount.id, txId);
+        frozenKeys.add(key);
+        if (linked(row)) pairKeys.add(key);
       }
       existing = existing
         .filter((r) => !removeIds.has(r.wfId))

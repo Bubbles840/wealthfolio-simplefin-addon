@@ -7,6 +7,13 @@
  * stored, but nothing matches by transaction id, so the first sync after the
  * reconnect imports the overlap a second time.
  *
+ * One download cannot tell a reconnect apart from two feeds mapped to one
+ * account on purpose, one of them missing for a run (a SimpleFin error). So the
+ * sync acts only on a re-link the PERSON confirmed (`ConfirmedRelink`, asked in
+ * the account mapping when the shape appears); the shape alone (`detectRelinks`)
+ * is only ever a question. A confirmed re-link is remembered: its old ids stay
+ * retired even if one reports again.
+ *
  * Pure: what is a re-link, and which stored rows stand for which new
  * transactions. sync-core does the reading and writing, and imports this module,
  * so nothing here may import sync-core.
@@ -17,15 +24,18 @@ export interface Relink {
   wfAccountId: string;
   /** The SimpleFin account in this run's download. */
   newId: string;
-  /** Mapped to the same Wealthfolio account, and absent from the download. */
+  /** Mapped to the same Wealthfolio account; absent from the download when
+   *  detected, retired once confirmed. */
   oldIds: string[];
 }
 
 /**
- * The re-links in this run: a Wealthfolio account with two or more mapped
- * SimpleFin ids, exactly one of which is in the download. Two in the download
- * (two feeds deliberately mapped to one account) is not a re-link, and neither
- * is one id absent with no other present (a feed that is down).
+ * The re-link SHAPE in this download: a Wealthfolio account with two or more
+ * mapped SimpleFin ids, exactly one of which is in the download. Two in the
+ * download (two feeds deliberately mapped to one account) is not one, and
+ * neither is one id absent with no other present (a feed that is down). The
+ * shape is only a question for the person: a merged account whose other feed is
+ * missing for a run looks exactly the same.
  */
 export function detectRelinks(mapping: Readonly<Record<string, string>>, feedIds: ReadonlySet<string>): Relink[] {
   const byWf = new Map<string, string[]>();
@@ -43,6 +53,66 @@ export function detectRelinks(mapping: Readonly<Record<string, string>>, feedIds
   return out;
 }
 
+export const RELINKS_SECRET_KEY = 'relinks';
+
+/** What the person said about re-link shapes: confirmed ones the sync acts
+ *  on, and declined ones (`declineKey`) the mapping no longer asks about. */
+export interface RelinkDecisions {
+  confirmed: Relink[];
+  declined: string[];
+}
+
+export const emptyRelinkDecisions = (): RelinkDecisions => ({ confirmed: [], declined: [] });
+
+/** The question a shape asks, as a stable key: account, new id, old ids. */
+export const declineKey = (r: Relink): string => [r.wfAccountId, r.newId, ...[...r.oldIds].sort()].join('|');
+
+/** The stored decisions, dropping anything malformed. Absent or corrupt is none. */
+export function parseRelinkDecisions(raw: string | null | undefined): RelinkDecisions {
+  if (!raw) return emptyRelinkDecisions();
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return emptyRelinkDecisions();
+  }
+  if (!parsed || typeof parsed !== 'object') return emptyRelinkDecisions();
+  const doc = parsed as { confirmed?: unknown; declined?: unknown };
+  const str = (v: unknown): v is string => typeof v === 'string' && v.length > 0;
+  const confirmed = (Array.isArray(doc.confirmed) ? doc.confirmed : [])
+    .filter((r): r is Relink => !!r && str(r.wfAccountId) && str(r.newId)
+      && Array.isArray(r.oldIds) && r.oldIds.length > 0 && r.oldIds.every(str) && !r.oldIds.includes(r.newId))
+    .map((r) => ({ wfAccountId: r.wfAccountId, newId: r.newId, oldIds: [...r.oldIds].sort() }));
+  const declined = (Array.isArray(doc.declined) ? doc.declined : []).filter(str);
+  return { confirmed, declined };
+}
+
+/**
+ * The confirmed re-links in force: the new id still feeds the same Wealthfolio
+ * account. Their old ids are retired whatever the download holds: one that
+ * reports again (the new connection was added before the old one was removed),
+ * or reports while the new one misses a run, would import the overlap again.
+ * Matching and removing copies needs the new id's own download, so it happens
+ * only on a run that has it.
+ */
+export function activeRelinks(
+  confirmed: readonly Relink[],
+  mapping: Readonly<Record<string, string>>,
+): Relink[] {
+  return confirmed.filter((r) => mapping[r.newId] === r.wfAccountId);
+}
+
+/** The shapes in this download nobody has answered yet. */
+export function openRelinkQuestions(
+  mapping: Readonly<Record<string, string>>,
+  feedIds: ReadonlySet<string>,
+  decisions: RelinkDecisions,
+): Relink[] {
+  const confirmedNew = new Set(decisions.confirmed.map((r) => r.newId));
+  const declined = new Set(decisions.declined);
+  return detectRelinks(mapping, feedIds).filter((r) => !confirmedNew.has(r.newId) && !declined.has(declineKey(r)));
+}
+
 /** A stored row, as much of it as the plan reads. */
 export interface RelinkRow {
   wfId: string;
@@ -54,7 +124,8 @@ export interface RelinkRow {
   description: string;
   /** One of the sync's own bookkeeping rows (a starting balance or adjustment). */
   bookkeeping: boolean;
-  sourceGroupId?: string | null;
+  /** Linked to a transfer, by the host's group id or the link ledger. */
+  linked: boolean;
 }
 
 /** A transaction in the new account's download. */
@@ -68,12 +139,13 @@ export interface RelinkTx {
 
 export interface RelinkPlan {
   /** Stored rows from the old connection that stand for a new transaction with
-   *  no row of its own: read under the new id, so the sync updates them instead
-   *  of importing the transaction again. Nothing is written for these. */
+   *  no row of its own: read under the new id, so the sync matches them instead
+   *  of importing the transaction again. */
   adopt: Map<string, string>;
-  /** Both copies are stored: the old row and one imported under the new id. */
-  duplicates: Array<{ keep: RelinkRow; remove: RelinkRow; txId: string }>;
-  /** Copies left alone: both linked to a transfer, or more than one candidate. */
+  /** The old row and every copy imported under the new id: one is kept, the
+   *  rest are surplus. */
+  duplicates: Array<{ keep: RelinkRow; remove: RelinkRow[]; txId: string }>;
+  /** Copies left alone: more than one linked, or more than one candidate. */
   leftAlone: number;
 }
 
@@ -94,9 +166,10 @@ const norm = (s: string) => s.replace(/\s+/g, ' ').trim().toUpperCase();
  * when the counts agree, and anything else is left as it is. A wrong match would
  * hide a real transaction.
  *
- * Of two stored copies the old row is kept: it carries what the person did to
- * it (category, notes, transfer link). A new copy that is linked when the old
- * row is not is kept instead; both linked is left alone.
+ * Of the old row and its copies under the new id, the old row is kept: it
+ * carries what the person did to it (category, notes, transfer link). When only
+ * one copy is linked, that one is kept instead; two or more linked are left
+ * alone, since deleting a linked leg strands its partner.
  */
 export function planRelinkAdoption(
   existing: readonly RelinkRow[],
@@ -105,8 +178,10 @@ export function planRelinkAdoption(
 ): RelinkPlan {
   const plan: RelinkPlan = { adopt: new Map(), duplicates: [], leftAlone: 0 };
   const stale = existing.filter((r) => !liveTxIds.has(r.txId) && !r.pending && !r.bookkeeping);
-  const storedByTxId = new Map<string, RelinkRow>();
-  for (const r of existing) if (liveTxIds.has(r.txId)) storedByTxId.set(r.txId, r);
+  const copiesByTxId = new Map<string, RelinkRow[]>();
+  for (const r of existing) {
+    if (liveTxIds.has(r.txId)) copiesByTxId.set(r.txId, [...(copiesByTxId.get(r.txId) ?? []), r]);
+  }
   const posted = feed.filter((t) => !t.pending);
 
   const pairs: Array<[RelinkRow, RelinkTx]> = [];
@@ -146,13 +221,13 @@ export function planRelinkAdoption(
   }
 
   for (const [row, tx] of pairs) {
-    const copy = storedByTxId.get(tx.txId);
-    if (!copy) { plan.adopt.set(row.wfId, tx.txId); continue; }
-    const rowLinked = !!row.sourceGroupId, copyLinked = !!copy.sourceGroupId;
-    if (rowLinked && copyLinked) { plan.leftAlone++; continue; }
-    plan.duplicates.push(copyLinked && !rowLinked
-      ? { keep: copy, remove: row, txId: tx.txId }
-      : { keep: row, remove: copy, txId: tx.txId });
+    const copies = copiesByTxId.get(tx.txId) ?? [];
+    if (copies.length === 0) { plan.adopt.set(row.wfId, tx.txId); continue; }
+    const all = [row, ...copies];
+    const linked = all.filter((r) => r.linked);
+    if (linked.length > 1) { plan.leftAlone++; continue; }
+    const keep = linked[0] ?? row;
+    plan.duplicates.push({ keep, remove: all.filter((r) => r !== keep), txId: tx.txId });
   }
   return plan;
 }

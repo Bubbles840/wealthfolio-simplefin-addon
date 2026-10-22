@@ -12,6 +12,7 @@ import { TRANSFER_NAMES_SECRET_KEY, parseTransferNames, type TransferNames } fro
 import { SKIPPED_TRANSACTIONS_SECRET_KEY, parseSkippedTransactions, type SkippedTransaction } from '../../shared/skipped-transactions.js';
 import { IGNORE_RULES_SECRET_KEY, parseIgnoreRules, type IgnoreRule } from '../../shared/ignore-rules.js';
 import { confirmLoanBalance, linkedLoansOf, LOAN_LINKS_SECRET_KEY, parseLoanLinks, type LinkedLoan, type LoanBalance, type LoanBalanceDecision, type LoanLinks } from '../../shared/loan-balances.js';
+import { parseRelinkDecisions, RELINKS_SECRET_KEY, type RelinkDecisions } from '../../shared/relink.js';
 import { loadSyncOverrides, syncOverridesIgnoredLog, syncOverridesOrEmpty, type LoadedSyncOverrides, type SyncOverrides } from '../../shared/sync-overrides.js';
 import { hostTakesCardTransferOut, WEALTHFOLIO_VERSION_SECRET_KEY } from '../../shared/version.js';
 import type { WealthfolioClient } from './wealthfolio.js';
@@ -421,6 +422,11 @@ export class RestSyncStore implements SyncStore {
   /** Loan accounts linked to a Wealthfolio loan (shared/loan-balances.ts). */
   async getLoanLinks(): Promise<LoanLinks> {
     return parseLoanLinks(await this.client.getAddonSecret(this.addonId, LOAN_LINKS_SECRET_KEY));
+  }
+
+  /** Re-links the person confirmed in the add-on (shared/relink.ts). */
+  async getRelinkDecisions(): Promise<RelinkDecisions> {
+    return parseRelinkDecisions(await this.client.getAddonSecret(this.addonId, RELINKS_SECRET_KEY));
   }
 
   /** The add-on's ignore rules (shared/ignore-rules.ts). Without this a

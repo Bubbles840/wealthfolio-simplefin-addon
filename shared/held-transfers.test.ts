@@ -80,7 +80,7 @@ describe('judgeHeldTransfer mirrors the sync (1.65 C fix round 1)', () => {
     expect(judgeHeldTransfer(WIRE, f, NOW).heldBy).toBe('Harbor Card');
   });
 
-  it('an old id a re-linked connection replaced holds nothing: its new id is the one in the download', () => {
+  it('an old id a CONFIRMED re-link retired holds nothing; an unconfirmed one holds as a down feed does', () => {
     const f: StoredFeeds = {
       mapping: { 'sfin-chk': 'wf-chk', 'sfin-card-old': 'wf-card', 'sfin-card-new': 'wf-card' },
       balances: {
@@ -89,7 +89,9 @@ describe('judgeHeldTransfer mirrors the sync (1.65 C fix round 1)', () => {
       },
       names: { 'sfin-chk': 'Checking', 'sfin-card-old': 'Harbor Card', 'sfin-card-new': 'Harbor Card' },
     };
-    expect(judgeHeldTransfer(WIRE, f, NOW).heldBy).toBeNull();
+    expect(judgeHeldTransfer(WIRE, f, NOW).heldBy).toBe('Harbor Card');
+    const relinks = [{ wfAccountId: 'wf-card', newId: 'sfin-card-new', oldIds: ['sfin-card-old'] }];
+    expect(judgeHeldTransfer(WIRE, { ...f, relinks }, NOW).heldBy).toBeNull();
   });
 
   it('picks the reissued card feed that is in the download as the leg\'s own account', () => {

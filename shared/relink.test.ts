@@ -1,5 +1,8 @@
 import { describe, it, expect } from 'vitest';
-import { detectRelinks, planRelinkAdoption, type RelinkRow, type RelinkTx } from './relink.js';
+import {
+  activeRelinks, declineKey, detectRelinks, openRelinkQuestions, parseRelinkDecisions, planRelinkAdoption,
+  type Relink, type RelinkRow, type RelinkTx,
+} from './relink.js';
 
 describe('detectRelinks', () => {
   it('finds a Wealthfolio account whose old SimpleFin id was replaced by a new one', () => {
@@ -18,7 +21,7 @@ describe('detectRelinks', () => {
 });
 
 const row = (wfId: string, txId: string, description: string, extra: Partial<RelinkRow> = {}): RelinkRow => ({
-  wfId, txId, description, date: '2026-09-02', absCents: 450, pending: false, bookkeeping: false, ...extra,
+  wfId, txId, description, date: '2026-09-02', absCents: 450, pending: false, bookkeeping: false, linked: false, ...extra,
 });
 const tx = (txId: string, description: string, extra: Partial<RelinkTx> = {}): RelinkTx => ({
   txId, description, date: '2026-09-02', absCents: 450, pending: false, ...extra,
@@ -69,19 +72,45 @@ describe('planRelinkAdoption', () => {
     expect(plan.duplicates).toEqual([]);
   });
 
-  it('keeps the old row of two stored copies', () => {
-    const old = row('a1', 'TRN-old', 'COFFEE SHOP'), copy = row('b1', 'TRN-new', 'COFFEE SHOP');
-    const plan = planRelinkAdoption([old, copy], [tx('TRN-new', 'COFFEE SHOP')], live('TRN-new'));
-    expect(plan.duplicates).toEqual([{ keep: old, remove: copy, txId: 'TRN-new' }]);
+  it('keeps the old row, and removes every copy under the new id', () => {
+    const old = row('a1', 'TRN-old', 'COFFEE SHOP'), copy = row('b1', 'TRN-new', 'COFFEE SHOP'), again = row('c1', 'TRN-new', 'COFFEE SHOP');
+    const plan = planRelinkAdoption([old, copy, again], [tx('TRN-new', 'COFFEE SHOP')], live('TRN-new'));
+    expect(plan.duplicates).toEqual([{ keep: old, remove: [copy, again], txId: 'TRN-new' }]);
   });
 
-  it('keeps a linked copy over an unlinked old row, and leaves two linked copies alone', () => {
+  it('keeps the one linked row, and leaves two linked ones alone', () => {
     const old = row('a1', 'TRN-old', 'TRANSFER TO SAVINGS');
-    const linkedCopy = row('b1', 'TRN-new', 'TRANSFER TO SAVINGS', { sourceGroupId: 'g1' });
+    const linkedCopy = row('b1', 'TRN-new', 'TRANSFER TO SAVINGS', { linked: true });
     expect(planRelinkAdoption([old, linkedCopy], [tx('TRN-new', 'TRANSFER TO SAVINGS')], live('TRN-new')).duplicates)
-      .toEqual([{ keep: linkedCopy, remove: old, txId: 'TRN-new' }]);
-    const both = planRelinkAdoption([{ ...old, sourceGroupId: 'g0' }, linkedCopy], [tx('TRN-new', 'TRANSFER TO SAVINGS')], live('TRN-new'));
+      .toEqual([{ keep: linkedCopy, remove: [old], txId: 'TRN-new' }]);
+    const both = planRelinkAdoption([{ ...old, linked: true }, linkedCopy], [tx('TRN-new', 'TRANSFER TO SAVINGS')], live('TRN-new'));
     expect(both.duplicates).toEqual([]);
     expect(both.leftAlone).toBe(1);
+  });
+});
+
+describe('re-link decisions', () => {
+  const R: Relink = { wfAccountId: 'wf', newId: 'new', oldIds: ['old'] };
+
+  it('reads the stored document, dropping anything malformed', () => {
+    expect(parseRelinkDecisions(JSON.stringify({
+      confirmed: [R, { wfAccountId: 'wf', newId: 'x', oldIds: [] }, { wfAccountId: 'wf', newId: 'y', oldIds: ['y'] }, 'junk'],
+      declined: ['wf|a|b', 3],
+    }))).toEqual({ confirmed: [R], declined: ['wf|a|b'] });
+    for (const raw of [null, '', 'nope', '[]', 'null']) expect(parseRelinkDecisions(raw)).toEqual({ confirmed: [], declined: [] });
+  });
+
+  it('keeps a confirmed re-link in force while its new id feeds the same account', () => {
+    expect(activeRelinks([R], { new: 'wf', old: 'wf' })).toEqual([R]);
+    expect(activeRelinks([R], { new: 'other', old: 'wf' })).toEqual([]);
+    expect(activeRelinks([R], { old: 'wf' })).toEqual([]);
+  });
+
+  it('asks only about shapes nobody answered', () => {
+    const mapping = { new: 'wf', old: 'wf' };
+    const feed = new Set(['new']);
+    expect(openRelinkQuestions(mapping, feed, { confirmed: [], declined: [] })).toEqual([R]);
+    expect(openRelinkQuestions(mapping, feed, { confirmed: [R], declined: [] })).toEqual([]);
+    expect(openRelinkQuestions(mapping, feed, { confirmed: [], declined: [declineKey(R)] })).toEqual([]);
   });
 });
