@@ -119,9 +119,11 @@ export function AccountMapper({ ctx, simplefinAccounts, initialMapping, initialL
   /** A link to a loan that no longer exists. Only known once the loans were read. */
   const gone = (sfinId: string) => !!loanLinks[sfinId] && loans !== null && !loans.some((l) => l.id === loanLinks[sfinId]);
   const loanName = (assetId: string) => loans?.find((l) => l.id === assetId)?.name ?? 'the loan';
-  /** The loans a row may pick: one feed per loan, so not another row's. */
+  /** The loans a row may pick: one feed per loan, so not another row's. A link
+   *  from an account no longer in the feed takes no part, as in the sync. */
+  const rowIds = new Set(simplefinAccounts.map((a) => a.id));
   const loansFor = (sfinId: string) =>
-    (loans ?? []).filter((l) => !Object.entries(loanLinks).some(([id, assetId]) => id !== sfinId && assetId === l.id));
+    (loans ?? []).filter((l) => !Object.entries(loanLinks).some(([id, assetId]) => id !== sfinId && rowIds.has(id) && assetId === l.id));
 
   return (
     <div>

@@ -168,6 +168,12 @@ describe('AccountMapper', () => {
     expect((first as HTMLSelectElement).value).toBe('loan:LIAB-1');
   });
 
+  it('offers a loan whose only other link is from an account no longer in the feed', async () => {
+    render(<AccountMapper ctx={loanCtx()} simplefinAccounts={[servicer]} initialMapping={{}}
+      initialLoanLinks={{ 'ACT-gone': 'LIAB-1' }} onSave={vi.fn()} />);
+    expect(await screen.findByRole('option', { name: 'Home Loan' })).toBeTruthy();
+  });
+
   it('still shows a link two rows share (saved before one link per loan)', async () => {
     const other = { ...servicer, id: 'ACT-loan-2', name: 'Servicer (relinked)' };
     render(<AccountMapper ctx={loanCtx()} simplefinAccounts={[servicer, other]} initialMapping={{}}

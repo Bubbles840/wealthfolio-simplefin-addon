@@ -120,6 +120,7 @@ describe('addon enable()', () => {
     const ctx = makeCtx();
     const values: Record<string, string> = {
       simplefin_access_url: 'https://u:p@bridge.simplefin.org/simplefin',
+      account_mapping: '{}',
       loan_links: JSON.stringify({ 'sfin-loan': 'LIAB-1' }),
       sync_schedule_hours: '6',
     };
@@ -236,6 +237,24 @@ describe('SimplefinSyncView', () => {
     );
     await waitFor(() => expect(screen.getByText('SyncPage')).toBeInTheDocument());
     expect(scheduler.start).toHaveBeenCalledWith(6, expect.any(Function), expect.any(Function));
+  });
+
+  it('is not set up with loan links but no stored mapping: the sync would refuse to run', async () => {
+    const scheduler = makeScheduler(false);
+    render(
+      React.createElement(SimplefinSyncView, {
+        ctx: {} as any,
+        store: makeStore({
+          accessUrl: 'https://u:p@bridge.simplefin.org/simplefin',
+          accountMapping: null,
+          loanLinks: { 'sfin-loan': 'LIAB-1' },
+          syncScheduleHours: 6,
+        }),
+        scheduler,
+      }),
+    );
+    await waitFor(() => expect(screen.getByText('SetupPage')).toBeInTheDocument());
+    expect(scheduler.start).not.toHaveBeenCalled();
   });
 
   it('a failed loan-links read leaves the mapping path as it was', async () => {
