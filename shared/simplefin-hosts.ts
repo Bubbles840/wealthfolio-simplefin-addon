@@ -33,11 +33,20 @@ export const ADDON_PROVIDER_HOSTS = [
   '*.lunchflow.app',
 ] as const;
 
-/** The manifest entry that lets the add-on reach `host`: the one to tick when
- *  Wealthfolio refuses it. The host itself when no entry covers it. */
-export function addonHostEntryFor(host: string): string {
+const entryCovers = (entry: string, host: string) => (entry.startsWith('*.')
+  ? host.endsWith(entry.slice(1)) && host !== entry.slice(2)
+  : host === entry);
+
+/**
+ * The manifest entries to tick when Wealthfolio refuses `host`: every entry of
+ * its provider, since a claim on one host can be followed by a download from
+ * another (Lunch Flow's access URL host isn't documented). Empty when no entry
+ * covers the host: then ticking can't help.
+ */
+export function addonHostEntriesFor(host: string): string[] {
   const h = host.toLowerCase();
-  return ADDON_PROVIDER_HOSTS.find((entry) => (entry.startsWith('*.')
-    ? h.endsWith(entry.slice(1)) && h !== entry.slice(2)
-    : h === entry)) ?? h;
+  if (!ADDON_PROVIDER_HOSTS.some((entry) => entryCovers(entry, h))) return [];
+  const onDomain = (name: string, domain: string) => name === domain || name.endsWith(`.${domain}`);
+  const domain = SIMPLEFIN_PROVIDER_DOMAINS.find((d) => onDomain(h, d))!;
+  return ADDON_PROVIDER_HOSTS.filter((entry) => onDomain(entry.replace(/^\*\./, ''), domain));
 }

@@ -14,11 +14,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   setup used to refuse it with "SimpleFin claim URL must be hosted at
   simplefin.org". The add-on may now reach `lunchflow.app` and
   `*.lunchflow.app`. A new install approves them with the other hosts. An
-  add-on updated in place leaves them unticked, as Wealthfolio does with any
-  host an update adds, and setup then says where to tick them (Settings →
-  Add-ons → SimpleFin Sync → View permissions → Network hosts) instead of
-  showing Wealthfolio's bare "host is not approved". Nothing changes for
-  SimpleFin Bridge users, and the in-app Update still works.
+  add-on updated in place leaves them unticked unless they're ticked in the
+  update's permission dialog, as Wealthfolio does with any host an update
+  adds. Setup then says where to tick them (Settings → Add-ons, the eye icon
+  on the SimpleFin Sync card, Network hosts, Save) instead of showing
+  Wealthfolio's bare "host is not approved". Nothing changes for SimpleFin
+  Bridge users, and the in-app Update still works.
 
 ### Fixed
 - **A fresh companion learns transfer names and files bookkeeping (#28,

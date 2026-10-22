@@ -1,7 +1,7 @@
 import type { NetworkAPI } from '@wealthfolio/addon-sdk';
 import type { SimplefinAccountSet } from '../../shared/types';
 import { normalizeAccountSet } from '../../shared/simplefin-payload';
-import { addonHostEntryFor, requireSimplefinProviderHost } from '../../shared/simplefin-hosts';
+import { addonHostEntriesFor, requireSimplefinProviderHost } from '../../shared/simplefin-hosts';
 
 /**
  * What the user is told when the request to SimpleFin never completed.
@@ -71,8 +71,19 @@ function requireHttps(url: string, label: string): void {
 export function hostNotApprovedMessage(err: unknown): string | null {
   const match = /host '([^']+)' is not approved/.exec(String((err as Error)?.message ?? err));
   if (!match) return null;
-  return `Wealthfolio hasn't approved this add-on to connect to ${match[1]}. `
-    + `Open Settings → Add-ons → SimpleFin Sync → View permissions, tick ${addonHostEntryFor(match[1])} under Network hosts, and try again.`;
+  const host = match[1];
+  const entries = addonHostEntriesFor(host);
+  if (entries.length === 0) {
+    // Wealthfolio says the same of a host the manifest never declared, and
+    // no tick fixes that.
+    return `This add-on can't reach ${host}: it isn't one of the hosts the add-on may connect to. `
+      + 'Please report it at https://github.com/Bubbles840/wealthfolio-simplefin-addon/issues.';
+  }
+  // The button is an eye icon on the add-on's card (its "View permissions"
+  // label is for screen readers), shown on hover; a tick holds only once saved.
+  return `Wealthfolio hasn't approved this add-on to connect to ${host}. `
+    + 'In Wealthfolio, go to Settings → Add-ons, hover over the SimpleFin Sync card and click its eye icon (View permissions), '
+    + `tick ${entries.join(' and ')} under Network hosts, click Save, and try again.`;
 }
 
 export async function claimToken(setupToken: string, network: NetworkAPI): Promise<string> {
@@ -87,7 +98,7 @@ export async function claimToken(setupToken: string, network: NetworkAPI): Promi
     // encoded") says nothing about what to do. The usual cause is pasting the
     // access URL, or only part of the token.
     throw new Error(
-      'That does not look like a SimpleFin setup token. Copy the whole token from SimpleFin Bridge '
+      'That does not look like a SimpleFin setup token. Copy the whole token from SimpleFin Bridge or Lunch Flow '
       + '(a long string of letters and numbers), not the access URL or your login.',
     );
   }
@@ -108,7 +119,7 @@ export async function claimToken(setupToken: string, network: NetworkAPI): Promi
     // reused from notes) gets a bare 403.
     throw new Error(
       'SimpleFin claim failed (403): this setup token was already used — each one can be claimed only once. '
-      + 'Create a new setup token in SimpleFin Bridge and paste that. '
+      + 'Create a new setup token in SimpleFin Bridge or Lunch Flow and paste that. '
       + 'Note that creating a new token can disconnect any app still using the old one.',
     );
   }

@@ -3,7 +3,7 @@ import { join } from 'node:path';
 import { describe, it, expect } from 'vitest';
 import {
   ADDON_PROVIDER_HOSTS,
-  addonHostEntryFor,
+  addonHostEntriesFor,
   isSimplefinProviderHost,
   requireSimplefinProviderHost,
 } from './simplefin-hosts.js';
@@ -28,20 +28,29 @@ describe('requireSimplefinProviderHost', () => {
       .toThrow('SimpleFin claim URL must be hosted at simplefin.org or lunchflow.app — got evil.com');
   });
 
+  it('reads the real host of a crafted URL, not text that looks like one', () => {
+    expect(() => requireSimplefinProviderHost('https://www.lunchflow.app@evil.com/claim/x', 'SimpleFin claim URL')).toThrow('got evil.com');
+    expect(() => requireSimplefinProviderHost('https://www.lunchflow.app./claim/x', 'SimpleFin claim URL')).toThrow('must be hosted at');
+  });
+
   it('lets a Lunch Flow URL through', () => {
     expect(() => requireSimplefinProviderHost('https://u:p@www.lunchflow.app/simplefin', 'SimpleFin access URL')).not.toThrow();
   });
 });
 
-describe('addonHostEntryFor', () => {
-  it('names the manifest entry that covers a host, as the permission dialog lists it', () => {
-    expect(addonHostEntryFor('www.lunchflow.app')).toBe('*.lunchflow.app');
-    expect(addonHostEntryFor('lunchflow.app')).toBe('lunchflow.app');
-    expect(addonHostEntryFor('bridge.simplefin.org')).toBe('bridge.simplefin.org');
+describe('addonHostEntriesFor', () => {
+  it("names every manifest entry of the refused host's provider, as the permission dialog lists them", () => {
+    // Both Lunch Flow entries: its access URL host isn't documented, so a claim
+    // on www.lunchflow.app may be followed by a fetch on the bare domain.
+    expect(addonHostEntriesFor('www.lunchflow.app')).toEqual(['lunchflow.app', '*.lunchflow.app']);
+    expect(addonHostEntriesFor('lunchflow.app')).toEqual(['lunchflow.app', '*.lunchflow.app']);
+    expect(addonHostEntriesFor('bridge.simplefin.org')).toEqual(['bridge.simplefin.org', 'beta-bridge.simplefin.org']);
   });
 
-  it('falls back to the host itself when no entry covers it', () => {
-    expect(addonHostEntryFor('other.example')).toBe('other.example');
+  it('names none when no entry covers the host, even on a provider domain', () => {
+    expect(addonHostEntriesFor('simplefin.org')).toEqual([]);
+    expect(addonHostEntriesFor('other.simplefin.org')).toEqual([]);
+    expect(addonHostEntriesFor('other.example')).toEqual([]);
   });
 });
 

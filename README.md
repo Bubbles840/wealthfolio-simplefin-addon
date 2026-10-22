@@ -31,10 +31,12 @@ in Wealthfolio's encrypted secret storage; the token itself is not kept.
 **Using Lunch Flow instead of SimpleFin Bridge?** [Lunch Flow](https://www.lunchflow.app)
 runs a SimpleFIN server too: add an **Actual Budget** destination there, and
 paste the setup token it gives you in step 2. An add-on installed before it
-supported Lunch Flow updates with the Lunch Flow hosts unticked, as Wealthfolio
-does with any host an update adds: tick `lunchflow.app` and `*.lunchflow.app`
-under **Settings → Add-ons → SimpleFin Sync → View permissions → Network
-hosts** first (setup tells you so if you forget).
+supported Lunch Flow leaves the Lunch Flow hosts unticked when it updates,
+unless you tick them in the update's permission dialog, as Wealthfolio does
+with any host an update adds. To tick them later: in **Settings → Add-ons**,
+hover over the SimpleFin Sync card and click its eye icon (View permissions),
+tick `lunchflow.app` and `*.lunchflow.app` under **Network hosts**, and click
+**Save**. Setup tells you so if you forget.
 
 ## What you get
 
