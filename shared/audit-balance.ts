@@ -34,6 +34,7 @@
  *    the leg's amount, in the direction the money went, equals what is left
  *    of exactly one account's gap, and only one such leg points at it.
  */
+import type { Relink } from './relink.js';
 import { changeDay, changeMoney } from './change-entries.js';
 import { isTransferType } from './sync-core.js';
 import {
@@ -65,6 +66,8 @@ export interface BalanceFacts {
   balances?: Record<string, { balance?: unknown; date?: unknown } | null | undefined>;
   /** account_names: SimpleFin account id → name. */
   names?: Record<string, string>;
+  /** Re-links the person confirmed (shared/relink.ts). */
+  relinks?: Relink[];
   /** Account type (upper-case) by Wealthfolio account id, from the accounts
    *  REST route. When present it is authoritative: an id missing from it, or
    *  with a blank type, has no type here (so is not treated as a card). That

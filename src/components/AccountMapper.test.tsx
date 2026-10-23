@@ -1,6 +1,7 @@
 import React from 'react';
 import { describe, it, expect, vi } from 'vitest';
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import type { RelinkDecisions } from '../../shared/relink';
 import { AccountMapper } from './AccountMapper';
 
 describe('AccountMapper', () => {
@@ -225,5 +226,85 @@ describe('AccountMapper', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Link to the loan' }));
     fireEvent.click(screen.getByRole('button', { name: 'Save Mapping' }));
     expect(onSave).toHaveBeenLastCalledWith({}, { 'ACT-loan': 'LIAB-2' });
+  });
+
+  describe('a reconnection', () => {
+    const ctx = () => ({ api: { accounts: { getAll: vi.fn(async () => [{ id: 'wf-chk', name: 'Checking' }]) } } }) as any;
+    const newFeed = { id: 'ACT-new', name: 'Checking', currency: 'USD', balance: '10', 'balance-date': 1, transactions: [] } as any;
+    const mapping = { 'ACT-old': 'wf-chk', 'ACT-new': 'wf-chk' };
+    const none = (): RelinkDecisions => ({ confirmed: [], declined: [] });
+    /** A store that applies each answer to what it holds, as SecretsStore.updateRelinkDecisions does. */
+    const store = (start: RelinkDecisions = none()) => {
+      let held = start;
+      return { save: vi.fn(async (change: (d: RelinkDecisions) => RelinkDecisions) => (held = change(held))), now: () => held };
+    };
+
+    it('asks per account, with when it last reported, and saves a confirmed one', async () => {
+      const st = store();
+      render(<AccountMapper ctx={ctx()} simplefinAccounts={[newFeed]} initialMapping={mapping} onSave={vi.fn()}
+        relinkDecisions={none()} onRelinkDecisions={st.save} sfinNames={{ 'ACT-old': 'Old Checking' }}
+        lastSeen={{ 'ACT-old': Date.parse('2020-02-10T12:00:00Z') / 1000 }} />);
+      await screen.findByText(/Old Checking \(last reported Feb 10, 2020\) is also mapped here/);
+      fireEvent.click(screen.getByRole('button', { name: 'Yes, it replaces it' }));
+      await waitFor(() => expect(st.now()).toEqual({
+        confirmed: [{ wfAccountId: 'wf-chk', newId: 'ACT-new', oldIds: ['ACT-old'] }], declined: [],
+      }));
+      await screen.findByText(/Reconnection of Old Checking/);
+      screen.getByText(/doesn't bring back copies already removed/);
+    });
+
+    it('asks about two absent accounts one at a time', async () => {
+      const st = store();
+      render(<AccountMapper ctx={ctx()} simplefinAccounts={[newFeed]} initialMapping={{ ...mapping, 'ACT-other': 'wf-chk' }} onSave={vi.fn()}
+        relinkDecisions={none()} onRelinkDecisions={st.save} sfinNames={{ 'ACT-old': 'Old Checking', 'ACT-other': 'Savings' }} />);
+      await screen.findByText(/Savings \(not reported recently\)/);
+      const [first] = screen.getAllByRole('button', { name: 'No, both feed this account' });
+      fireEvent.click(first);
+      await waitFor(() => expect(st.now().declined).toEqual(['wf-chk|ACT-new|ACT-old']));
+      fireEvent.click(screen.getByRole('button', { name: 'Yes, it replaces it' }));
+      await waitFor(() => expect(st.now().confirmed).toEqual([{ wfAccountId: 'wf-chk', newId: 'ACT-new', oldIds: ['ACT-other'] }]));
+    });
+
+    it('remembers a no, asks nothing more, and can take it back', async () => {
+      const st = store();
+      render(<AccountMapper ctx={ctx()} simplefinAccounts={[newFeed]} initialMapping={mapping} onSave={vi.fn()}
+        relinkDecisions={none()} onRelinkDecisions={st.save} />);
+      fireEvent.click(await screen.findByRole('button', { name: 'No, both feed this account' }));
+      await waitFor(() => expect(st.now()).toEqual({ confirmed: [], declined: ['wf-chk|ACT-new|ACT-old'] }));
+      await waitFor(() => expect(screen.queryByText(/is also mapped here/)).toBeNull());
+      fireEvent.click(screen.getByRole('button', { name: 'Ask again' }));
+      await screen.findByText(/is also mapped here/);
+      expect(st.now()).toEqual(none());
+    });
+
+    it('keeps an answer saved elsewhere since the screen read the document', async () => {
+      const st = store({ confirmed: [], declined: ['wf-sav|ACT-x|ACT-y'] });
+      render(<AccountMapper ctx={ctx()} simplefinAccounts={[newFeed]} initialMapping={mapping} onSave={vi.fn()}
+        relinkDecisions={none()} onRelinkDecisions={st.save} />);
+      fireEvent.click(await screen.findByRole('button', { name: 'Yes, it replaces it' }));
+      await waitFor(() => expect(st.now().declined).toEqual(['wf-sav|ACT-x|ACT-y']));
+      expect(st.now().confirmed).toHaveLength(1);
+    });
+
+    it('asks nothing without a writer, and offers no answer until the companion reads them', async () => {
+      const { unmount } = render(<AccountMapper ctx={ctx()} simplefinAccounts={[newFeed]} initialMapping={mapping} onSave={vi.fn()} />);
+      await screen.findByRole('option', { name: 'Checking' });
+      expect(screen.queryByText(/is also mapped here/)).toBeNull();
+      unmount();
+
+      render(<AccountMapper ctx={ctx()} simplefinAccounts={[newFeed]} initialMapping={mapping} onSave={vi.fn()}
+        relinkDecisions={none()} onRelinkDecisions={store().save} companionVersion="1.67.1" />);
+      await screen.findByText(/Update the companion to/);
+      expect(screen.queryByRole('button', { name: /Yes, it replaces/ })).toBeNull();
+    });
+
+    it('can undo a confirmation', async () => {
+      const confirmed = { confirmed: [{ wfAccountId: 'wf-chk', newId: 'ACT-new', oldIds: ['ACT-old'] }], declined: [] };
+      const st = store(confirmed);
+      render(<AccountMapper ctx={ctx()} simplefinAccounts={[newFeed]} initialMapping={mapping} onSave={vi.fn()}
+        relinkDecisions={confirmed} onRelinkDecisions={st.save} />);
+      fireEvent.click(await screen.findByRole('button', { name: 'Undo' }));
+      await waitFor(() => expect(st.now()).toEqual(none()));
+    });
   });
 });

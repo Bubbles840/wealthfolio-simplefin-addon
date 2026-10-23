@@ -20,6 +20,7 @@ import type { SecretsStore, CategoryCatalogEntry, AccountBalanceInfo } from '../
 import type { Scheduler } from '../utils/scheduler';
 import type { MappingRule, SimplefinAccount, AccountMapping } from '../../shared/types';
 import type { LoanLinks } from '../../shared/loan-balances';
+import type { RelinkDecisions } from '../../shared/relink';
 import { accountCreatedChange } from '../../shared/change-entries';
 import { directCallLine } from '../../shared/simplefin-budget';
 import { ChangeLogCard, syncNowSentence } from '../components/ChangeLogCard';
@@ -152,6 +153,9 @@ export function SettingsTab({
   const [sfAccounts, setSfAccounts] = useState<SimplefinAccount[] | null>(null);
   const [mapping, setMapping] = useState<AccountMapping>({});
   const [loanLinks, setLoanLinks] = useState<LoanLinks>({});
+  /** null until read, and when the read fails: the mapper then asks nothing,
+   *  since saving answers over an unread document would drop the others. */
+  const [relinkDecisions, setRelinkDecisions] = useState<RelinkDecisions | null>(null);
   /**
    * Whether the stored mapping has actually been READ yet — `{}` alone cannot
    * say, and the difference is destructive here. `AccountMapper` snapshots
@@ -191,6 +195,7 @@ export function SettingsTab({
       store.getIgnoredAccounts?.() ?? [],
       store.getLoanLinks?.() ?? {},
     ]).then(([hours, heal, adjust, r, m, ignored, links]) => {
+      Promise.resolve().then(() => store.readRelinkDecisions()).then(setRelinkDecisions).catch(() => setRelinkDecisions(null));
       setScheduleHours(hours);
       setAutoHeal(heal);
       setAutoAdjust(adjust);
@@ -509,6 +514,10 @@ export function SettingsTab({
               initialLoanLinks={loanLinks}
               companionVersion={companionVersion}
               onSave={saveMapping}
+              relinkDecisions={relinkDecisions ?? undefined}
+              onRelinkDecisions={relinkDecisions ? (change) => store.updateRelinkDecisions(change) : undefined}
+              sfinNames={sfinNames}
+              lastSeen={Object.fromEntries(Object.entries(balances).map(([id, b]) => [id, b.date]))}
               onAccountCreated={(created) => { void store.recordChange?.(accountCreatedChange(created)); }}
             />
             <div style={{ marginTop: 12, display: 'flex', gap: 8, alignItems: 'center' }}>

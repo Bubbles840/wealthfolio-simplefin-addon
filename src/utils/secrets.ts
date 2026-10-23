@@ -3,6 +3,10 @@ import { SIMPLEFIN_REQUESTS_SECRET_KEY } from '../../shared/simplefin-budget';
 import { TRANSFER_NAMES_SECRET_KEY, parseTransferNames, type TransferNames } from '../../shared/transfer-names';
 import { SKIPPED_TRANSACTIONS_SECRET_KEY, parseSkippedTransactions, parseSkippedTransactionsStrict, type ParsedSkippedTransactions, type SkippedTransaction } from '../../shared/skipped-transactions';
 import { LOAN_LINKS_SECRET_KEY, parseLoanLinks, type LoanLinks } from '../../shared/loan-balances';
+import {
+  RELINKS_SECRET_KEY, RelinkDecisionsUnreadableError, emptyRelinkDecisions, parseRelinkDecisions, parseRelinkDecisionsStrict,
+  type RelinkDecisions,
+} from '../../shared/relink';
 import { IGNORE_RULES_SECRET_KEY, IgnoreRulesUnreadableError, IGNORE_PROBLEM_TEXT, ignoreRuleProblem, normalizeIgnoreRules, parseIgnoreRules, parseIgnoreRulesStrict, type IgnoreRule, type ParsedIgnoreRules } from '../../shared/ignore-rules';
 import type { AddonContext } from '@wealthfolio/addon-sdk';
 import { AMAZON_LEDGER_SECRET_KEY } from '../../shared/amazon-ledger';
@@ -122,6 +126,7 @@ const KEYS = {
   skippedTransactions: SKIPPED_TRANSACTIONS_SECRET_KEY,
   ignoreRules: IGNORE_RULES_SECRET_KEY,
   loanLinks: LOAN_LINKS_SECRET_KEY,
+  relinks: RELINKS_SECRET_KEY,
   // Companion-published, add-on-read-only; the companion recomputes it, so Reset clears it.
   transferNames: TRANSFER_NAMES_SECRET_KEY,
   autoHeal: 'auto_heal',
@@ -656,6 +661,26 @@ export class SecretsStore {
   }
   async setLoanLinks(links: LoanLinks): Promise<void> {
     await this.ctx.api.secrets.set(KEYS.loanLinks, JSON.stringify(links));
+  }
+  /** Re-links the person confirmed or declined (shared/relink.ts). What the
+   *  sync obeys: unreadable reads as none. */
+  async getRelinkDecisions(): Promise<RelinkDecisions> {
+    return parseRelinkDecisions(await this.ctx.api.secrets.get(KEYS.relinks));
+  }
+  /** The same, for the account mapping: a document it cannot read throws, so
+   *  no question is asked over it. */
+  async readRelinkDecisions(): Promise<RelinkDecisions> {
+    const read = parseRelinkDecisionsStrict(await this.ctx.api.secrets.get(KEYS.relinks));
+    if (read.kind === 'corrupt') throw new RelinkDecisionsUnreadableError();
+    return read.kind === 'ok' ? read.decisions : emptyRelinkDecisions();
+  }
+  /** One answer, merged into what is stored NOW (read again, strictly), so an
+   *  answer given elsewhere since this screen read the document is kept.
+   *  Writes nothing over a document it cannot read. Returns what was stored. */
+  async updateRelinkDecisions(change: (current: RelinkDecisions) => RelinkDecisions): Promise<RelinkDecisions> {
+    const next = change(await this.readRelinkDecisions());
+    await this.ctx.api.secrets.set(KEYS.relinks, JSON.stringify(next));
+    return next;
   }
 
   /** The learned transfer names the companion publishes (null when absent or unreadable). */

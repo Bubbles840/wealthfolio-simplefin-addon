@@ -90,6 +90,27 @@ describe('runAudit', () => {
     expect([out.balances.notes, out.headline.notes, out.health.notes]).toEqual(notes());
   });
 
+  it('judges a held transfer with the confirmed reconnections the add-on stored (#26)', async () => {
+    const wire = {
+      id: 'ph-1', description: 'WIRE TRANSFER TO ACME LLC', amount: 250, ageDays: 23, wfAccountId: 'wf-chk', date: '2026-09-20', txId: 'w-old', direction: 'out' as const,
+    };
+    const day = (d: string) => Date.parse(`${d}T12:00:00Z`) / 1000;
+    const secrets: Record<string, string> = {
+      ...SECRETS,
+      account_mapping: JSON.stringify({ 'sfin-chk': 'wf-chk', 'sfin-old': 'wf-ally', 'sfin-new': 'wf-ally' }),
+      account_balances: JSON.stringify({
+        'sfin-chk': { balance: 2481.07, date: day('2026-10-13'), aliveThrough: day('2026-10-13') },
+        'sfin-old': { balance: 5, date: day('2026-09-24'), aliveThrough: day('2026-09-24') },
+        'sfin-new': { balance: 5, date: day('2026-10-13'), aliveThrough: day('2026-10-13') },
+      }),
+      account_names: JSON.stringify({ 'sfin-chk': 'PNC Checking', 'sfin-old': 'Ally', 'sfin-new': 'Ally' }),
+    };
+    const run = (extra: Record<string, string>) => runAudit(readers({ heldRows: () => [wire], secret: async (k) => ({ ...secrets, ...extra })[k] ?? null }), NOW);
+    expect((await run({})).held?.[0].heldBy).toBe('Ally');
+    const relinks = JSON.stringify({ confirmed: [{ wfAccountId: 'wf-ally', newId: 'sfin-new', oldIds: ['sfin-old'] }], declined: [] });
+    expect((await run({ relinks })).held?.[0].heldBy).toBeNull();
+  });
+
   it('lists the transfers held past 14 days for the app, with the feed that holds each, and which are marked (1.65 C)', async () => {
     const wire = {
       id: 'ph-1', description: 'WIRE TRANSFER TO ACME LLC', amount: 250, ageDays: 23, wfAccountId: 'wf-chk', date: '2026-09-20', txId: 'w-old', direction: 'out' as const,

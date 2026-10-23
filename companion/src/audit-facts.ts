@@ -27,6 +27,7 @@ import { AUDIT_SNAPSHOT_SECRET_KEY, buildAuditSnapshot, type AuditResults } from
 import { monthlySpendTotals, parseReportCube, REPORT_CUBE_SECRET_KEY } from '../../shared/report-cube.js';
 import { HELD_MIN_AGE_DAYS, judgeHeldTransfer, type HeldRow, type HeldTransfer } from '../../shared/held-transfers.js';
 import { hasTxOverride, loadSyncOverrides } from '../../shared/sync-overrides.js';
+import { parseRelinkDecisions, RELINKS_SECRET_KEY } from '../../shared/relink.js';
 import { getHeldRows } from './ledger-facts.js';
 import { getNativeAuditLedger, getNativeAuditSettings, getNativeHeadlineRows } from './sqlite-audit.js';
 import type { WealthfolioClient } from './wealthfolio.js';
@@ -120,6 +121,10 @@ export async function gatherBalanceFacts(r: AuditReaders, ledger: AuditLedger | 
   const names = await readJson<Record<string, string>>(r, 'account_names');
   if (names.ok) facts.names = names.value ?? {};
   else failed.push('names');
+  // Confirmed re-links only retire old ids from the held-transfer judgement:
+  // an unreadable document confirms none, which is what the sync does too.
+  const relinks = await readJson<unknown>(r, RELINKS_SECRET_KEY);
+  if (relinks.ok) facts.relinks = parseRelinkDecisions(JSON.stringify(relinks.value ?? null)).confirmed;
   // The type comes from REST, so a database that is down costs only the
   // ledger part. An account of unknown type (no type given, or the whole list
   // unread) is left uncompared: its valuation is dropped, so a card's debt is
@@ -236,7 +241,7 @@ function readHeld(r: AuditReaders, now: Date, balanceFacts: BalanceFacts, marked
     return undefined;
   }
   const feeds = balanceFacts.mapping
-    ? { mapping: balanceFacts.mapping, balances: balanceFacts.balances ?? {}, names: balanceFacts.names ?? {} }
+    ? { mapping: balanceFacts.mapping, balances: balanceFacts.balances ?? {}, names: balanceFacts.names ?? {}, relinks: balanceFacts.relinks ?? [] }
     : undefined;
   return rows
     .filter((row) => Number.isFinite(row.ageDays) && row.ageDays >= HELD_MIN_AGE_DAYS)
