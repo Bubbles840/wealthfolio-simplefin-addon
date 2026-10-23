@@ -2242,20 +2242,23 @@ async function runSyncPass(
     console.log(`[simplefin-sync] account ${q.newId} may be a reconnection of ${q.oldIds.join(', ')} (Wealthfolio ${q.wfAccountId}): confirm it in Settings → Accounts, or nothing is matched or removed`);
   }
 
-  /** SimpleFin reported a real error this run (not a notice): a feed may be
-   *  missing for it, so nothing is deleted on a re-link's behalf. */
-  let simplefinFailed = false;
-  for (const sfErr of accountSet.errors) {
+  /** The account each real SimpleFin error this run (not a notice) names, null
+   *  for one that names none (or a payload without the structured list). A
+   *  feed may be partial for it, so a re-link deletes nothing on an account
+   *  the error may reach. `errors` is built from `errorList`, one per entry. */
+  const feedErrorAccounts: Array<string | null> = [];
+  const errorEntries = accountSet.errorList?.length === accountSet.errors.length ? accountSet.errorList : undefined;
+  accountSet.errors.forEach((sfErr, i) => {
     // SimpleFin returns informational notices (window-size recommendations and
     // caps) in the same `errors` array. A wide heal re-scan always trips these,
     // and the data still comes back — so they aren't failures. Drop them so
     // only genuine problems (auth, connection) reach the Sync page.
     if (/\b(exceeds|recommended|was capped|date range|will be capped|may be capped)\b/i.test(String(sfErr))) {
-      continue;
+      return;
     }
     errors.push(`SimpleFin: ${sfErr}`);
-    simplefinFailed = true;
-  }
+    feedErrorAccounts.push(errorEntries?.[i]?.accountId ?? null);
+  });
 
   let imported = 0;
   let skipped = 0;
@@ -3180,12 +3183,16 @@ async function runSyncPass(
       // A row reads as old when no feed reported its transaction, which is also
       // every row of a feed that is down this run. So nothing is deleted while
       // another feed of this account (not one the re-link retired) is missing,
-      // or SimpleFin reported an error: the next run decides.
+      // or SimpleFin reported an error that may reach one: an error naming no
+      // account, or a feed of this account. One on another account's connection
+      // (a card that needs attention for weeks), or on a retired id, does not
+      // block. The next run decides.
       const otherFeedMissing = Object.entries(mapping).some(([id, wf]) => wf === wfAccountId && id !== sfAccount.id
         && !replacedIds.has(id) && !downloaded.accounts.some((a) => a.id === id));
-      const deleteBlocked = otherFeedMissing || simplefinFailed;
+      const feedFailed = feedErrorAccounts.some((id) => id === null || (mapping[id] === wfAccountId && !replacedIds.has(id)));
+      const deleteBlocked = otherFeedMissing || feedFailed;
       if (deleteBlocked && relinkPlan.duplicates.length > 0) {
-        console.info(`[simplefin-sync] re-linked connection: copies in account ${sfAccount.id} left for a later run — ${otherFeedMissing ? 'another feed of this account is missing' : 'SimpleFin reported an error'}`);
+        console.info(`[simplefin-sync] re-linked connection: copies in account ${sfAccount.id} left for a later run — ${otherFeedMissing ? 'another feed of this account is missing' : 'SimpleFin reported an error for this account'}`);
       }
       const deletions = deleteBlocked ? [] : relinkPlan.duplicates.filter((d) => {
         const rows = [d.keep, ...d.remove].map((x) => rowOf.get(x.wfId)!);

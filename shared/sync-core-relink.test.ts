@@ -410,6 +410,42 @@ describe('a re-linked connection', () => {
       expect(r2.prunedDuplicates).toEqual([]);
     });
 
+    /** One structured Bridge error naming `accountId`, as `normalizeAccountSet` builds it. */
+    const bridgeError = (accountId: string, name: string) => ({
+      error: `${name}: Connection to institution failed`,
+      entry: { code: 'CONN_FAILED', msg: 'Connection to institution failed', connId: `c-${accountId}`, accountId, key: `CONN_FAILED:c-${accountId}` },
+    });
+    const withErrors = (accounts: ReturnType<typeof newFeed>[], ...errs: Array<ReturnType<typeof bridgeError>>) =>
+      ({ accounts, errors: errs.map((e) => e.error), errorList: errs.map((e) => e.entry) });
+
+    it('an error on another account\'s connection, or on the retired id, blocks nothing here', async () => {
+      // A card that needs attention for weeks, and the old connection left at the Bridge.
+      const seed = reconnected([...oldRows(), copy()], {
+        ...confirmed,
+        mapping: { 'sfin-old': 'wf-chk', 'sfin-new': 'wf-chk', 'sfin-card': 'wf-card' },
+        accountSet: withErrors([newFeed()], bridgeError('sfin-card', 'Discover it Card'), bridgeError('sfin-old', 'Old Checking')),
+      });
+      const { host, store } = createFakeHost(seed);
+      const result = await runSyncCore(host, store, { heal: true });
+      expect(result.errors.join(' ')).toMatch(/Discover it Card: Connection to institution failed/);
+      expect(result.prunedDuplicates.map((d) => d.wfId)).toEqual(['b-coffee']);
+    });
+
+    it('an error on another feed of the same account, or on the new id itself, still blocks', async () => {
+      const savings = { ...newFeed(), id: 'sfin-sav', name: 'Savings', transactions: [] };
+      for (const [failing, name] of [['sfin-sav', 'Savings'], ['sfin-new', 'Checking']] as const) {
+        const seed = reconnected([...oldRows(), copy()], {
+          ...confirmed,
+          mapping: { 'sfin-old': 'wf-chk', 'sfin-new': 'wf-chk', 'sfin-sav': 'wf-chk' },
+          accountSet: withErrors([newFeed(), savings], bridgeError(failing, name)),
+        });
+        const { host, store, activities } = createFakeHost(seed);
+        const result = await runSyncCore(host, store, { heal: true });
+        expect(result.prunedDuplicates).toEqual([]);
+        expect(activities.get('wf-chk')?.map((r) => r.id)).toContain('b-coffee');
+      }
+    });
+
     it('counts the rows it matched', async () => {
       const { host, store } = createFakeHost(reconnected(oldRows(), confirmed));
       const result = await runSyncCore(host, store, { force: true });
