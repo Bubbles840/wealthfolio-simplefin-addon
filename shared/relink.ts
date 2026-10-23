@@ -199,15 +199,20 @@ export function isDeclined(declined: readonly string[], q: Relink): boolean {
 /**
  * The questions in this download nobody has answered yet: one per old id, so
  * each absent account is its own Yes or No (two absent ids may be one
- * reconnection and one feed that is down).
+ * reconnection and one feed that is down). None whose new id a confirmed
+ * re-link already retired: after "B replaces A", A reporting while B misses a
+ * run would ask whether A replaces B, and a Yes would retire both, so nothing
+ * would import into the account.
  */
 export function openRelinkQuestions(
   mapping: Readonly<Record<string, string>>,
   feedIds: ReadonlySet<string>,
   decisions: RelinkDecisions,
 ): Relink[] {
+  const retired = retiredIds(activeRelinks(decisions.confirmed, mapping), mapping);
   const out: Relink[] = [];
   for (const shape of detectRelinks(mapping, feedIds)) {
+    if (retired.has(shape.newId)) continue;
     for (const oldId of shape.oldIds) {
       const q = { wfAccountId: shape.wfAccountId, newId: shape.newId, oldIds: [oldId] };
       if (decisions.confirmed.some((c) => c.newId === q.newId && c.oldIds.includes(oldId))) continue;

@@ -129,6 +129,16 @@ describe('the answers', () => {
     expect(openRelinkQuestions(mapping, new Set(['n']), both)).toEqual([]);
   });
 
+  it('never asks whether a retired id replaces the one that replaced it', () => {
+    // n replaced a; a reports while n misses a run. A Yes would retire both,
+    // and nothing would import into the account.
+    const d = withConfirmed(d0(), Q('a'));
+    expect(openRelinkQuestions({ a: 'wf', n: 'wf' }, new Set(['a']), d)).toEqual([]);
+    // Once n no longer feeds the account, a is not retired, and may be asked about.
+    expect(openRelinkQuestions({ a: 'wf', n: 'wf-other', b: 'wf' }, new Set(['a']), d))
+      .toEqual([{ wfAccountId: 'wf', newId: 'a', oldIds: ['b'] }]);
+  });
+
   it('an older No naming several ids still covers each, and one can be taken back', () => {
     const old = { confirmed: [], declined: ['wf|n|a|b'] };
     expect(isDeclined(old.declined, Q('a'))).toBe(true);
