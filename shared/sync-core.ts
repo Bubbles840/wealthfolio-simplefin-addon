@@ -290,14 +290,18 @@ export function planOverwrittenLegAdoptions<R extends ExistingRow>(
  * in-transit placeholder, or past ten days as a plain deposit or withdrawal. Each
  * rewrite is an update, and Wealthfolio copies an updated leg's note and date onto
  * its partner: the start of every overwritten leg `planOverwrittenLegAdoptions`
- * has to recover. A real change of amount still goes through. A leg still noted
- * as in transit (a placeholder the person linked by hand) keeps that note too.
+ * has to recover. A real change of amount still goes through.
+ *
+ * A leg still noted as in transit (a placeholder the person linked by hand)
+ * loses that note, in one update whose note Wealthfolio copies onto its partner
+ * once. Kept, the note would be there for good, and every reader of "in
+ * flight" (ledger-total, the companion's card balances, the daily findings,
+ * the tx story) would treat the account as unmeasurable forever.
  */
 export function keepLinkedLegAsStored(tx: FeedTx, row: ExistingRow | undefined, linked: boolean): FeedTx {
   if (!row || !linked || !isTransferType(row.type) || row.pending || tx.pending) return tx;
   const { inTransit: _inTransit, needsReview: _needsReview, subtype: _subtype, ...rest } = tx;
-  return { ...rest, type: row.type, date: row.date,
-    ...((row.comment ?? '').startsWith(IN_TRANSIT_COMMENT_PREFIX) ? { inTransit: true as const } : {}) };
+  return { ...rest, type: row.type, date: row.date };
 }
 
 export function dedupeAccountTransactions(
@@ -1207,9 +1211,10 @@ type LinkableRow = ExistingRow & {
  * followed by a ` · pending` marker — parse both back out so a row can be
  * matched by identity (independent of type) and recognised as still-pending.
  *
- * `sourceGroupId` rides along verbatim for the link step; on a host whose
- * `readsSourceGroupId` capability is false it is meaningless (always null) and
- * the ledger stands in for it.
+ * `sourceGroupId` rides along verbatim for the link step. On a host whose
+ * `readsSourceGroupId` capability is false the ledger stands in for it in
+ * everything the sync does to a link; there the group only keeps a leg that
+ * something else linked as it is (`linkedElsewhere`).
  */
 type StoredRow = ExistingRow & { sourceGroupId?: string | null; flowExternal?: boolean | null };
 
@@ -3413,7 +3418,7 @@ async function runSyncPass(
       wfAccountId, sfinAccountId: sfAccount.id, accountType: wfTypes.get(wfAccountId) ?? '',
       // Every feed mapped to this account: a reissued card has two, both in the download.
       feedTxIds: new Set([...preparedByAccount].filter(([id]) => mapping[id] === wfAccountId).flatMap(([, ps]) => ps.map((p) => p.tx.id))), nowSec, mappedSfinIds, feedAliveEpoch, nameWords,
-      leaveAlone: (r) => isLinkedRow(r) || linkedElsewhere(r) || frozenKeys.has(accountTxKey(sfAccount.id, r.txId)) || skippedTxKeys.has(accountTxKey(sfAccount.id, r.txId))
+      leaveAlone: (r) => isLinkedRow(r) || frozenKeys.has(accountTxKey(sfAccount.id, r.txId)) || skippedTxKeys.has(accountTxKey(sfAccount.id, r.txId))
         || hasTxOverride(overrides, accountTxKey(sfAccount.id, r.txId), 'asReimbursement'),
       notTransfer: (txId) => notTransferKey(accountTxKey(sfAccount.id, txId)),
     });

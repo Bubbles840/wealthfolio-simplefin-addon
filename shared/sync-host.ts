@@ -249,7 +249,9 @@ export interface SyncHost {
    *  whether a linked one still exists. With `confirmLoanBalance`, or neither. */
   listLoans?(): Promise<LinkedLoan[]>;
   readonly capabilities: {
-    /** True when listActivities returns a trustworthy sourceGroupId. */
+    /** True when the sync acts on listActivities' sourceGroupId (links,
+     *  unlinks, adoptions). False: it acts on its own ledger, and a group only
+     *  keeps a leg something else linked as it is. */
     readsSourceGroupId: boolean;
     /** Wealthfolio takes TRANSFER_OUT on a credit card (3.10+): the sync
      *  writes a card's bookkeeping outflows as one. Absent: it does not. */
