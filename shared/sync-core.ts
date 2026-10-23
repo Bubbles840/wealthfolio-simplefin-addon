@@ -291,6 +291,12 @@ export function planOverwrittenLegAdoptions<R extends ExistingRow>(
  * rewrite is an update, and Wealthfolio copies an updated leg's note and date onto
  * its partner: the start of every overwritten leg `planOverwrittenLegAdoptions`
  * has to recover. A real change of amount still goes through.
+ *
+ * A leg still noted as in transit (a placeholder the person linked by hand)
+ * loses that note, in one update whose note Wealthfolio copies onto its partner
+ * once. Kept, the note would be there for good, and every reader of "in
+ * flight" (ledger-total, the companion's card balances, the daily findings,
+ * the tx story) would treat the account as unmeasurable forever.
  */
 export function keepLinkedLegAsStored(tx: FeedTx, row: ExistingRow | undefined, linked: boolean): FeedTx {
   if (!row || !linked || !isTransferType(row.type) || row.pending || tx.pending) return tx;
@@ -1205,9 +1211,10 @@ type LinkableRow = ExistingRow & {
  * followed by a ` · pending` marker — parse both back out so a row can be
  * matched by identity (independent of type) and recognised as still-pending.
  *
- * `sourceGroupId` rides along verbatim for the link step; on a host whose
- * `readsSourceGroupId` capability is false it is meaningless (always null) and
- * the ledger stands in for it.
+ * `sourceGroupId` rides along verbatim for the link step. On a host whose
+ * `readsSourceGroupId` capability is false the ledger stands in for it in
+ * everything the sync does to a link; there the group only keeps a leg that
+ * something else linked as it is (`linkedElsewhere`).
  */
 type StoredRow = ExistingRow & { sourceGroupId?: string | null; flowExternal?: boolean | null };
 
@@ -3321,6 +3328,12 @@ async function runSyncPass(
       ? !!row.sourceGroupId
       : !staleKeys.has(accountTxKey(sfAccount.id, row.txId))
         && (ledger[accountTxKey(sfAccount.id, row.txId)] !== undefined || ledger[row.txId] !== undefined);
+    // A link the ledger does not know — the person linked it in Wealthfolio.
+    // The add-on's search does return the group, but only this app's own
+    // links are acted on; this one is just kept as stored, like any linked
+    // leg (an update to it is copied onto its partner, note and all).
+    const linkedElsewhere = (row: ExistingRow & { sourceGroupId?: string | null }) => !readsGroups
+      && !!row.sourceGroupId && !staleKeys.has(accountTxKey(sfAccount.id, row.txId));
     const isNotTransferLeg = (r: ExistingRow) => isTransferType(r.type)
       && hasTxOverride(overrides, accountTxKey(sfAccount.id, r.txId), 'notTransfer');
     // A host that cannot read groups only knows the links its own ledger
@@ -3398,7 +3411,7 @@ async function runSyncPass(
       .filter((t) => !adoptedTxIds.has(t.txId) && !unlinkingTxIds.has(t.txId) && !foreignTxIds.has(t.txId))
       .map((t) => {
         const row = storedByTxId.get(t.txId);
-        return keepLinkedLegAsStored(t, row, !!row && isLinkedRow(row));
+        return keepLinkedLegAsStored(t, row, !!row && (isLinkedRow(row) || linkedElsewhere(row)));
       });
     // ── 1.65 A: in-transit rows outside this download ──
     const staleTransit = planStaleInTransit(planExisting.filter((r) => !unlinkingIds.has(r.wfId)), {

@@ -80,9 +80,8 @@ function fromSearchRow(a: any, wfAccountId: string): HostActivity {
 }
 
 /** Normalize an Activity echoed back by saveMany. The host names the comment
- *  field `notes` on the echo, and it is the only channel that reports the
- *  persisted `sourceGroupId` (ActivityDetails from search omits it). Also the
- *  only channel that confirms a just-written `subtype` actually persisted -
+ *  field `notes` on the echo, which reports the just-persisted
+ *  `sourceGroupId`. Also the only channel that confirms a just-written `subtype` actually persisted -
  *  worth copying here too so a caller inspecting a saveMany result sees the
  *  same truth `listActivities` would. */
 function fromSdkEcho(a: any): HostActivity {
@@ -110,8 +109,10 @@ const CARD_HISTORY_MAX_PAGES = 40;
  * sync core. The Docker companion implements the same interface over REST.
  */
 export class AddonSyncHost implements SyncHost {
-  /** ActivityDetails (what `activities.search` returns) has no sourceGroupId,
-   *  so links can only be read back from a saveMany echo. `cardTransferOut`:
+  /** `readsSourceGroupId` is false: the search does carry each row's
+   *  sourceGroupId (Wealthfolio 3.8+), but the add-on acts only on the links
+   *  its own ledger recorded, and uses the group just to keep a leg something
+   *  else linked as it is. `cardTransferOut`:
    *  the host is Wealthfolio 3.10+, as the companion published it — the SDK
    *  has no version call. */
   readonly capabilities: { readsSourceGroupId: boolean; cardTransferOut: boolean };
