@@ -1064,20 +1064,28 @@ async function keepStartingBalanceOldest(
 }
 
 /**
- * A confirmed re-link's heal removed copies of transactions the account already
+ * A confirmed re-link's heal removes copies of transactions the account already
  * held. The new id's first sync, before the person said Yes, booked a starting
  * balance that cancelled exactly those copies (the bank's balance less a ledger
  * that held them twice). With the copies gone that starting balance counts the
- * same money again, so it is restated by what was removed, and removed outright
+ * same money again, so it is restated by what is removed, and removed outright
  * when that leaves nothing. That leaves the balance unchanged whatever baseline
  * the old id has, and is right whenever the new id's was booked after its
- * copies. `removedSigned` is the signed total of the rows removed this run.
+ * copies. `removedSigned` is the signed total of the rows being removed.
+ *
+ * Planned, not written: the heal sends it in the same request as the copy
+ * deletes, which Wealthfolio applies all-or-nothing, so a refused restatement
+ * leaves the copies too and the next Deep scan tries again. Null when there is
+ * nothing to restate (no starting balance under the new id).
  */
-async function restateRelinkStartingBalance(
+async function planRelinkStartingBalance(
   host: SyncHost,
   args: { wfAccountId: string; sfinAccountId: string; currency: string; accountType: string; removedSigned: number;
     recent?: ReadonlyArray<{ wfId: string; comment?: string; date: string; type: string; absCents: number }> },
-): Promise<{ removed: { activityId: string; amountCents: number; date: string; activityType: string; comment: string } } | { moved: BaselineMove } | null> {
+): Promise<{
+  write: Pick<SaveManyRequest, 'deleteIds' | 'updates'>;
+  outcome: { removed: { activityId: string; amountCents: number; date: string; activityType: string; comment: string } } | { moved: BaselineMove };
+} | null> {
   const { wfAccountId, sfinAccountId, currency, accountType, removedSigned } = args;
   if (!Number.isFinite(removedSigned) || Math.abs(removedSigned) < 0.005) return null;
   const sb = await fetchStartingBalance(host, wfAccountId, sfinAccountId, args.recent);
@@ -1085,24 +1093,26 @@ async function restateRelinkStartingBalance(
   const nextSigned = Math.round((sb.signed + removedSigned) * 100) / 100;
   const comment = `${STARTING_BALANCE_COMMENT_PREFIX}${sfinAccountId}`;
   if (Math.abs(nextSigned) < 0.005) {
-    const res = await host.saveMany({ deleteIds: [sb.id] });
-    if ((res.errors ?? []).length > 0) return null;
-    return { removed: { activityId: sb.id, amountCents: Math.round(sb.signed * 100), date: sb.date, activityType: sb.activityType, comment } };
+    return {
+      write: { deleteIds: [sb.id] },
+      outcome: { removed: { activityId: sb.id, amountCents: Math.round(sb.signed * 100), date: sb.date, activityType: sb.activityType, comment } },
+    };
   }
   const activityType = keepBookkeepingOutflow(accountType, sb.activityType, startingBalanceFields(accountType, nextSigned, bookkeepingShapeOf(host)).activityType);
-  const res = await host.saveMany({
-    updates: [{
-      id: sb.id, accountId: wfAccountId, activityType, activityDate: bankDayInstant(sb.date),
-      ...(!isTransferType(activityType) ? { symbol: { symbol: `$CASH-${currency}` } } : {}),
-      amount: Math.abs(nextSigned), currency, comment,
-    }],
-  });
-  if ((res.errors ?? []).length > 0) return null;
-  return { moved: {
-    activityId: sb.id,
-    before: { amountCents: Math.round(sb.signed * 100), date: sb.date, activityType: sb.activityType },
-    after: { amountCents: Math.round(nextSigned * 100), date: sb.date, activityType },
-  } };
+  return {
+    write: {
+      updates: [{
+        id: sb.id, accountId: wfAccountId, activityType, activityDate: bankDayInstant(sb.date),
+        ...(!isTransferType(activityType) ? { symbol: { symbol: `$CASH-${currency}` } } : {}),
+        amount: Math.abs(nextSigned), currency, comment,
+      }],
+    },
+    outcome: { moved: {
+      activityId: sb.id,
+      before: { amountCents: Math.round(sb.signed * 100), date: sb.date, activityType: sb.activityType },
+      after: { amountCents: Math.round(nextSigned * 100), date: sb.date, activityType },
+    } },
+  };
 }
 
 /**
@@ -3191,11 +3201,33 @@ async function runSyncPass(
       if (heal && unlinkPrepass.certain && deletions.length > 0) {
         const doomed = deletions.flatMap((d) => d.remove.map((x) => x.wfId));
         for (const id of doomed) removeIds.add(id);
-        const del = await host.saveMany({ deleteIds: doomed });
+        // The new id's starting balance, booked before the Yes, cancelled these
+        // copies; with them gone it counts the same money again. Restated by what
+        // is removed, the balance stays where it was, whatever baseline the old
+        // id has: that one was booked before the copies existed. In the same
+        // request as the deletes, so a refusal leaves both and the next heal
+        // tries again, instead of books off by the copies with nothing to retry.
+        const removedSigned = deletions
+          .flatMap((d) => d.remove.map((x) => rowOf.get(x.wfId)!))
+          .reduce((sum, row) => sum + signedCentsOf(row.txId, row.type, row.absCents), 0) / 100;
+        let restate: Awaited<ReturnType<typeof planRelinkStartingBalance>> = null;
+        let del: SaveManyResult;
+        try {
+          restate = await planRelinkStartingBalance(host, {
+            wfAccountId, sfinAccountId: sfAccount.id, currency: sfAccount.currency,
+            accountType: wfTypes.get(wfAccountId) ?? '', removedSigned, recent: existing,
+          });
+          del = await attemptSave(host, {
+            deleteIds: [...doomed, ...(restate?.write.deleteIds ?? [])],
+            ...(restate?.write.updates ? { updates: restate.write.updates } : {}),
+          });
+        } catch (e: any) {
+          // The starting balance could not be read: nothing is removed without it.
+          del = { created: [], updated: [], errors: [{ action: 'read', message: String(e?.message ?? e) }] };
+        }
         if ((del.errors ?? []).length > 0) {
-          for (const err of del.errors ?? []) {
-            errors.push(`Account ${wfAccountId} re-link duplicate delete error (${err.action}): ${err.message}`);
-          }
+          const why = (del.errors ?? []).map((err) => `${err.action}: ${err.message}`).join('; ');
+          errors.push(`Re-link clean-up in ${wfNames.get(wfAccountId) || sfAccount.name} could not be done, so nothing was changed; the next Deep scan tries again (${why})`);
         } else {
           for (const d of deletions) {
             for (const gone of d.remove) {
@@ -3226,31 +3258,15 @@ async function runSyncPass(
               }));
             }
           }
-        }
-        for (const d of deletions) relinkPlan.adopt.set(d.keep.wfId, d.txId);
-        // The new id's starting balance, booked before the Yes, cancelled these
-        // copies; with them gone it counts the same money again. Restated by what
-        // was removed, the balance stays where it was, whatever baseline the old
-        // id has: that one was booked before the copies existed.
-        const removedSigned = (del.errors ?? []).length > 0 ? 0 : deletions
-          .flatMap((d) => d.remove.map((x) => rowOf.get(x.wfId)!))
-          .reduce((sum, row) => sum + signedCentsOf(row.txId, row.type, row.absCents), 0) / 100;
-        if (removedSigned !== 0) {
-          try {
-            const restated = await restateRelinkStartingBalance(host, {
-              wfAccountId, sfinAccountId: sfAccount.id, currency: sfAccount.currency,
-              accountType: wfTypes.get(wfAccountId) ?? '', removedSigned, recent: existing,
-            });
-            if (restated && 'removed' in restated) {
-              removeIds.add(restated.removed.activityId);
-              logChange?.(() => startingBalanceRemovedChange({ account: accountRef, ...restated.removed }));
-            } else if (restated) {
-              logChange?.(() => startingBalanceMovedChange({ account: accountRef, actor: 'auto', ...restated.moved }));
-            }
-          } catch (e: any) {
-            errors.push(`Account ${wfAccountId} re-link starting-balance fix failed: ${e?.message ?? e}`);
+          const outcome = restate?.outcome;
+          if (outcome && 'removed' in outcome) {
+            removeIds.add(outcome.removed.activityId);
+            logChange?.(() => startingBalanceRemovedChange({ account: accountRef, ...outcome.removed }));
+          } else if (outcome) {
+            logChange?.(() => startingBalanceMovedChange({ account: accountRef, actor: 'auto', ...outcome.moved }));
           }
         }
+        for (const d of deletions) relinkPlan.adopt.set(d.keep.wfId, d.txId);
       }
       if (leftAlone > 0) {
         console.info(`[simplefin-sync] re-linked connection: ${leftAlone} transaction(s) in account ${sfAccount.id} have more than one stored candidate, more than one linked copy, or a kept copy — left as they are`);

@@ -318,6 +318,39 @@ describe('a re-linked connection', () => {
       expect(net(activities.get('wf-chk'))).toBe(2435.5);
     });
 
+    it('a refused starting-balance fix removes nothing, says so, and the next Deep scan finishes it', async () => {
+      // 4.50 is deleted outright, 10.00 restated to 5.50: one write each way.
+      for (const [sbAmount, how] of [['4.50', 'errors'], ['10.00', 'errors'], ['4.50', 'throws']] as const) {
+        const rows = [...oldRows(), copy(), stored('sb-new', 'Starting balance · sfin-new', sbAmount, 6, { activityType: 'CREDIT' })];
+        const before = net(rows);
+        let refuse = true;
+        const fake = createFakeHost(reconnected(rows, { ...confirmed, accountSet: bankAt('2435.50') }));
+        const touchesBaseline = (req: { deleteIds?: string[]; updates?: Array<{ id?: string }> }) =>
+          (req.deleteIds ?? []).includes('sb-new') || (req.updates ?? []).some((u) => u.id === 'sb-new');
+        const host: SyncHost = {
+          ...fake.host,
+          // Wealthfolio's bulk endpoint applies nothing when it refuses a row.
+          saveMany: async (req) => {
+            if (refuse && touchesBaseline(req)) {
+              if (how === 'throws') throw new Error('Activity is locked');
+              return { created: [], updated: [], errors: [{ action: 'update', message: 'Activity is locked' }] };
+            }
+            return fake.host.saveMany(req);
+          },
+        };
+        const r1 = await runSyncCore(host, fake.store, { heal: true });
+        expect(r1.errors.join(' ')).toMatch(/Activity is locked/);
+        expect(r1.errors.join(' ')).toMatch(/Checking/);
+        expect(fake.activities.get('wf-chk')?.map((r) => r.id)).toEqual(expect.arrayContaining(['b-coffee', 'sb-new']));
+        expect(net(fake.activities.get('wf-chk'))).toBe(Math.round((before - 60) * 100) / 100);
+
+        refuse = false;
+        await runSyncCore(host, fake.store, { heal: true });
+        expect(fake.activities.get('wf-chk')?.map((r) => r.id)).not.toContain('b-coffee');
+        expect(net(fake.activities.get('wf-chk'))).toBe(Math.round((before - 60) * 100) / 100);
+      }
+    });
+
     it('matches a purchase and its refund by direction, never one for the other', async () => {
       const feed = { ...newFeed(), transactions: [
         { id: 'TRN-n5', posted: posted(3), amount: '-25.00', description: 'HARDWARE STORE' },
