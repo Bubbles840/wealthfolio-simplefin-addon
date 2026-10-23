@@ -156,7 +156,9 @@ export function retiredIds(
  * Where each retired id's account lives now: the id that replaced it, followed
  * through every later re-link while that id is itself retired (A→B, then B→C,
  * reaches C). An id retired into two accounts reaches both. Built on
- * `retiredIds`, so it agrees with what the sync drops. `relinks`: the ones in
+ * `retiredIds`, so it agrees with what the sync drops, and asked per re-link:
+ * one that no longer retires an id (mapped to another account since) gives it
+ * no successor, even while another re-link retires it. `relinks`: the ones in
  * force (`activeRelinks`).
  */
 export function relinkSuccessors(
@@ -164,9 +166,9 @@ export function relinkSuccessors(
   mapping: Readonly<Record<string, string>>,
   loanLinks: Readonly<Record<string, string>> = {},
 ): Map<string, Set<string>> {
-  const retired = retiredIds(relinks, mapping, loanLinks);
   const next = new Map<string, string[]>();
   for (const r of relinks) {
+    const retired = retiredIds([r], mapping, loanLinks);
     for (const old of r.oldIds) if (retired.has(old)) next.set(old, [...(next.get(old) ?? []), r.newId]);
   }
   const out = new Map<string, Set<string>>();

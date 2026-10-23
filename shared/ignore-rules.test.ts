@@ -200,6 +200,18 @@ describe('a re-linked connection', () => {
     expect([both('sfin-a', 'sfin-x'), both('sfin-a', 'sfin-y')]).toEqual([true, true]);
   });
 
+  it('a re-link that no longer retires an id gives it no successor, though another re-link retires it', () => {
+    // A was replaced by X in wf-1, then mapped to wf-2 and replaced by Y there:
+    // only the second re-link still retires it.
+    const relinks2 = [
+      { wfAccountId: 'wf-1', newId: 'X', oldIds: ['A'] },
+      { wfAccountId: 'wf-2', newId: 'Y', oldIds: ['A'] },
+    ];
+    const same = relinkedRuleAccount(relinks2, { A: 'wf-2', X: 'wf-1', Y: 'wf-2' });
+    expect(same('A', 'X')).toBe(false);
+    expect(same('A', 'Y')).toBe(true);
+  });
+
   it('an old id mapped elsewhere since is its own account again', () => {
     const moved = { ...mapping, 'sfin-old': 'wf-chk' };
     expect(relinkedRuleAccount(relinks, moved)('sfin-old', 'sfin-new')).toBe(false);
