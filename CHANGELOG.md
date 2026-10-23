@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.68.0] - 2026-10-23
+
 Update both halves. The add-on asks for more permissions (assets, quotes,
 your loans, and reading an account's holdings), so in-app Update refuses it:
 use **Install from File** over the installed add-on, then pull the companion
