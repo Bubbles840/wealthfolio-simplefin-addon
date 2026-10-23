@@ -649,6 +649,23 @@ describe('SettingsTab', () => {
         vi.mocked(fetchAccounts).mockClear();
       });
 
+      it('says so when the stored answers cannot be read, instead of quietly hiding the questions and Undo', async () => {
+        const { RelinkDecisionsUnreadableError } = await import('../../shared/relink');
+        const props = reconnected(null);
+        (props.store as any).readRelinkDecisions = vi.fn(async () => { throw new RelinkDecisionsUnreadableError(); });
+        try {
+          render(<SyncPage {...props} />);
+          await switchTab(/settings/i);
+          await openMapper();
+          expect(await screen.findByText(/Your answers about reconnected accounts can.t be read/)).toBeInTheDocument();
+          expect(screen.queryByText(/is also mapped here/)).toBeNull();
+        } finally {
+          const { fetchAccounts } = await import('../utils/simplefin');
+          // The Accounts card's tests count this mock's calls from zero.
+          vi.mocked(fetchAccounts).mockClear();
+        }
+      });
+
       it('asks nothing when the SimpleFin read behind the mapping reported an error: the old id may only be down', async () => {
         const { fetchAccounts } = await import('../utils/simplefin');
         vi.mocked(fetchAccounts).mockResolvedValueOnce({

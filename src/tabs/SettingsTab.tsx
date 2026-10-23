@@ -159,6 +159,9 @@ export function SettingsTab({
   /** null until read, and when the read fails: the mapper then asks nothing,
    *  since saving answers over an unread document would drop the others. */
   const [relinkDecisions, setRelinkDecisions] = useState<RelinkDecisions | null>(null);
+  /** That read failed (a document it cannot read, most often): said above the
+   *  mapper, which would otherwise just show no questions and no Undo. */
+  const [relinkDecisionsUnreadable, setRelinkDecisionsUnreadable] = useState(false);
   /**
    * Whether the stored mapping has actually been READ yet — `{}` alone cannot
    * say, and the difference is destructive here. `AccountMapper` snapshots
@@ -198,7 +201,16 @@ export function SettingsTab({
       store.getIgnoredAccounts?.() ?? [],
       store.getLoanLinks?.() ?? {},
     ]).then(([hours, heal, adjust, r, m, ignored, links]) => {
-      Promise.resolve().then(() => store.readRelinkDecisions()).then(setRelinkDecisions).catch(() => setRelinkDecisions(null));
+      // Optional-called: a store without it (an older build, a test double) reads none, quietly.
+      if (typeof store.readRelinkDecisions === 'function') {
+        Promise.resolve().then(() => store.readRelinkDecisions()).then((d) => {
+          setRelinkDecisions(d);
+          setRelinkDecisionsUnreadable(false);
+        }).catch(() => {
+          setRelinkDecisions(null);
+          setRelinkDecisionsUnreadable(true);
+        });
+      }
       setScheduleHours(hours);
       setAutoHeal(heal);
       setAutoAdjust(adjust);
@@ -519,6 +531,13 @@ export function SettingsTab({
           </Button>
         ) : (
           <>
+            {relinkDecisionsUnreadable && (
+              <ErrorBox>
+                Your answers about reconnected accounts can&rsquo;t be read, so no reconnection is asked
+                about or can be undone here: saving would drop the answers that weren&rsquo;t understood.
+                The sync acts only on the ones it can read.
+              </ErrorBox>
+            )}
             <AccountMapper
               ctx={ctx}
               simplefinAccounts={sfAccounts}
