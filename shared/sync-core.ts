@@ -4362,14 +4362,11 @@ async function runSyncPass(
     // ledgers, so ask Wealthfolio itself whether a correction already exists
     // before creating one — "at most one starting-balance entry per account,
     // ever" holds even if local state is lost or the companion did the work.
-    // A re-linked account's baseline was set under its old id: the ledger already
-    // holds the opening balance, and a second one would count it twice.
-    // The old id's row counts as well as its flag, as `hasExistingStartingBalance`
-    // reads it for the account's own id below.
-    const baselineSet = balanceInitialized.includes(sfAccount.id)
-      || (relink?.oldIds ?? []).some((id) => balanceInitialized.includes(id))
-      || (relink !== undefined && canReadBalance
-        && (await Promise.all(relink.oldIds.map((id) => hasExistingStartingBalance(host, wfAccountId, id).catch(() => false)))).some(Boolean));
+    // A re-linked account's new id decides its own baseline, never inheriting
+    // the old id's: when the matcher misses an overlap row (the bank re-worded
+    // it), the copy is imported, and only this baseline cancels it. With books
+    // that already match the bank it nets to nothing, so none is booked.
+    const baselineSet = balanceInitialized.includes(sfAccount.id);
     let alreadyCorrected = false;
     if (canReadBalance && !baselineSet) {
       try {
@@ -4429,7 +4426,7 @@ async function runSyncPass(
 
     // Mark done only when the balance was readable for this account, so a
     // skipped correction retries on a later run
-    if (canReadBalance || (baselineSet && !balanceInitialized.includes(sfAccount.id))) {
+    if (canReadBalance) {
       await store.addBalanceInitialized(sfAccount.id);
     } else if (wfBalances !== null && !baselineSet) {
       // No valuation row yet (brand-new account) — queue for the same-run

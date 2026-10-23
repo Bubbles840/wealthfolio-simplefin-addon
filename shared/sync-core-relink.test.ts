@@ -61,6 +61,13 @@ describe('a re-linked connection', () => {
   ];
   const copy = (extra: Partial<HostActivity> = {}) => stored('b-coffee', 'COFFEE SHOP · TRN-n1', '-4.50', 5, extra);
   const comments = (rows: HostActivity[] | undefined) => (rows ?? []).map((r) => r.comment).sort();
+  /** The books: every stored row, signed by its type. */
+  const net = (rows: HostActivity[] | undefined) => Math.round((rows ?? [])
+    .reduce((sum, r) => sum + (['WITHDRAWAL', 'TRANSFER_OUT', 'FEE', 'TAX'].includes(String(r.activityType)) ? -1 : 1) * Number(r.amount), 0) * 100) / 100;
+  /** A ledger that agrees with the bank: the old rows are 2495.50, and the bank
+   *  is that less the grocery bought since. */
+  const consistent = { valuations: new Map([['wf-chk', 2495.5]]) };
+  const bankAt = (balance: string, transactions = newFeed().transactions) => ({ errors: [], accounts: [{ ...newFeed(), balance, transactions }] });
 
   describe('confirmed', () => {
     it('does not import the overlap a second time, and leaves the old rows as they are', async () => {
@@ -211,14 +218,29 @@ describe('a re-linked connection', () => {
       expect(activities.get('wf-chk')?.map((r) => r.id).sort()).toEqual(['a-1', 'a-2']);
     });
 
-    it('does not add a second starting balance under the new id', async () => {
-      const seed = reconnected(oldRows(), { ...confirmed, valuations: new Map([['wf-chk', 0]]) });
+    it('does not add a second starting balance under the new id when the books already match the bank', async () => {
+      const seed = reconnected(oldRows(), { ...confirmed, ...consistent, accountSet: bankAt('2435.50') });
       const { host, store, activities } = createFakeHost(seed);
       await store.addBalanceInitialized('sfin-old');
       await runSyncCore(host, store, { force: true });
 
       expect((activities.get('wf-chk') ?? []).filter((r) => r.comment?.startsWith('Starting balance'))).toEqual([]);
       expect(await store.getBalanceInitialized()).toContain('sfin-new');
+      expect(net(activities.get('wf-chk'))).toBe(2435.5);
+    });
+
+    it('books a starting balance under the new id when the bank re-worded an overlap row, so the books match the bank', async () => {
+      // The Yes came before the new id's first sync, but the bank re-worded the
+      // coffee: no match, so it is imported again. Only the new id's own
+      // starting balance cancels that copy.
+      const reworded = newFeed().transactions.map((t) => (t.id === 'TRN-n1' ? { ...t, description: 'POS PURCHASE COFFEE SHOP 4411' } : t));
+      const seed = reconnected(oldRows(), { ...confirmed, ...consistent, accountSet: bankAt('2435.50', reworded) });
+      const { host, store, activities } = createFakeHost(seed);
+      await store.addBalanceInitialized('sfin-old');
+      await runSyncCore(host, store, { force: true });
+
+      expect(comments(activities.get('wf-chk'))).toContain('POS PURCHASE COFFEE SHOP 4411 · TRN-n1');
+      expect(net(activities.get('wf-chk'))).toBe(2435.5);
     });
   });
 
@@ -262,8 +284,6 @@ describe('a re-linked connection', () => {
       const batches: ChangeEntry[][] = [];
       return { writer: 'addon', run: 'aRUN1', append: vi.fn(async (e: ChangeEntry[]) => { batches.push(e); }), entries: () => batches.flat() };
     };
-    const net = (rows: HostActivity[] | undefined) => Math.round((rows ?? [])
-      .reduce((sum, r) => sum + (['WITHDRAWAL', 'TRANSFER_OUT', 'FEE', 'TAX'].includes(String(r.activityType)) ? -1 : 1) * Number(r.amount), 0) * 100) / 100;
 
     it('a late Yes: heal removes the new id\'s starting balance that cancelled the copies, with its own Undo', async () => {
       // Before the Yes, the new id's first sync imported the copy and booked a
