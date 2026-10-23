@@ -290,12 +290,14 @@ export function planOverwrittenLegAdoptions<R extends ExistingRow>(
  * in-transit placeholder, or past ten days as a plain deposit or withdrawal. Each
  * rewrite is an update, and Wealthfolio copies an updated leg's note and date onto
  * its partner: the start of every overwritten leg `planOverwrittenLegAdoptions`
- * has to recover. A real change of amount still goes through.
+ * has to recover. A real change of amount still goes through. A leg still noted
+ * as in transit (a placeholder the person linked by hand) keeps that note too.
  */
 export function keepLinkedLegAsStored(tx: FeedTx, row: ExistingRow | undefined, linked: boolean): FeedTx {
   if (!row || !linked || !isTransferType(row.type) || row.pending || tx.pending) return tx;
   const { inTransit: _inTransit, needsReview: _needsReview, subtype: _subtype, ...rest } = tx;
-  return { ...rest, type: row.type, date: row.date };
+  return { ...rest, type: row.type, date: row.date,
+    ...((row.comment ?? '').startsWith(IN_TRANSIT_COMMENT_PREFIX) ? { inTransit: true as const } : {}) };
 }
 
 export function dedupeAccountTransactions(
@@ -3321,6 +3323,12 @@ async function runSyncPass(
       ? !!row.sourceGroupId
       : !staleKeys.has(accountTxKey(sfAccount.id, row.txId))
         && (ledger[accountTxKey(sfAccount.id, row.txId)] !== undefined || ledger[row.txId] !== undefined);
+    // A link the ledger does not know — the person linked it in Wealthfolio.
+    // The add-on's search does return the group, but only this app's own
+    // links are acted on; this one is just kept as stored, like any linked
+    // leg (an update to it is copied onto its partner, note and all).
+    const linkedElsewhere = (row: ExistingRow & { sourceGroupId?: string | null }) => !readsGroups
+      && !!row.sourceGroupId && !staleKeys.has(accountTxKey(sfAccount.id, row.txId));
     const isNotTransferLeg = (r: ExistingRow) => isTransferType(r.type)
       && hasTxOverride(overrides, accountTxKey(sfAccount.id, r.txId), 'notTransfer');
     // A host that cannot read groups only knows the links its own ledger
@@ -3398,14 +3406,14 @@ async function runSyncPass(
       .filter((t) => !adoptedTxIds.has(t.txId) && !unlinkingTxIds.has(t.txId) && !foreignTxIds.has(t.txId))
       .map((t) => {
         const row = storedByTxId.get(t.txId);
-        return keepLinkedLegAsStored(t, row, !!row && isLinkedRow(row));
+        return keepLinkedLegAsStored(t, row, !!row && (isLinkedRow(row) || linkedElsewhere(row)));
       });
     // ── 1.65 A: in-transit rows outside this download ──
     const staleTransit = planStaleInTransit(planExisting.filter((r) => !unlinkingIds.has(r.wfId)), {
       wfAccountId, sfinAccountId: sfAccount.id, accountType: wfTypes.get(wfAccountId) ?? '',
       // Every feed mapped to this account: a reissued card has two, both in the download.
       feedTxIds: new Set([...preparedByAccount].filter(([id]) => mapping[id] === wfAccountId).flatMap(([, ps]) => ps.map((p) => p.tx.id))), nowSec, mappedSfinIds, feedAliveEpoch, nameWords,
-      leaveAlone: (r) => isLinkedRow(r) || frozenKeys.has(accountTxKey(sfAccount.id, r.txId)) || skippedTxKeys.has(accountTxKey(sfAccount.id, r.txId))
+      leaveAlone: (r) => isLinkedRow(r) || linkedElsewhere(r) || frozenKeys.has(accountTxKey(sfAccount.id, r.txId)) || skippedTxKeys.has(accountTxKey(sfAccount.id, r.txId))
         || hasTxOverride(overrides, accountTxKey(sfAccount.id, r.txId), 'asReimbursement'),
       notTransfer: (txId) => notTransferKey(accountTxKey(sfAccount.id, txId)),
     });
