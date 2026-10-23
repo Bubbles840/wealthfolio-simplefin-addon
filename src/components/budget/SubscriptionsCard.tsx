@@ -77,24 +77,23 @@ const REMIND_CHIPS: Array<{ label: 'Off' | '1d' | '3d' | '7d'; days: RemindDays 
 function RenameField({ entry, onRename }: { entry: RosterEntry; onRename: (name: string) => void }) {
   const [draft, setDraft] = React.useState(entry.displayName);
   const [error, setError] = React.useState<string | null>(null);
+  const save = () => {
+    const name = parseSubscriptionName(draft);
+    if (name === null) {
+      setError(SUB_NAME_HINT);
+      return;
+    }
+    setError(null);
+    onRename(name);
+  };
+  // Not a <form>: the add-on's frame is sandboxed without allow-forms (see WhyCard).
   return (
-    <form
-      className="sfin-subs-rename"
-      onSubmit={(ev) => {
-        ev.preventDefault();
-        const name = parseSubscriptionName(draft);
-        if (name === null) {
-          setError(SUB_NAME_HINT);
-          return;
-        }
-        setError(null);
-        onRename(name);
-      }}
-    >
-      <Input aria-label={`New name for ${entry.displayName}`} value={draft} onChange={(ev) => setDraft(ev.target.value)} />
-      <Button type="submit" variant="outline">Save name</Button>
+    <div className="sfin-subs-rename">
+      <Input aria-label={`New name for ${entry.displayName}`} value={draft} onChange={(ev) => setDraft(ev.target.value)}
+        onKeyDown={(ev) => { if (ev.key === 'Enter') save(); }} />
+      <Button variant="outline" onClick={save}>Save name</Button>
       {error && <div className="sfin-subs-error" role="alert">{error}</div>}
-    </form>
+    </div>
   );
 }
 
@@ -112,8 +111,7 @@ function ManualForm({ mode, initial, onSave, onCancel }: {
   const [draft, setDraft] = React.useState<ManualDraft>(initial);
   const [errors, setErrors] = React.useState<{ name?: string; amount?: string; date?: string }>({});
   const set = <K extends keyof ManualDraft>(key: K, value: ManualDraft[K]) => setDraft((d) => ({ ...d, [key]: value }));
-  const submit = (ev: React.FormEvent) => {
-    ev.preventDefault();
+  const submit = () => {
     const now = new Date();
     const name = parseSubscriptionName(draft.name);
     const cents = parseAmountCents(draft.amount);
@@ -127,7 +125,9 @@ function ManualForm({ mode, initial, onSave, onCancel }: {
     onSave({ name, cents, cadence: draft.cadence, nextDate, remind: draft.remind });
   };
   return (
-    <form className="sfin-subs-form" aria-label={mode === 'add' ? 'Add a subscription' : 'Edit subscription'} onSubmit={submit}>
+    // Not a <form>: the add-on's frame is sandboxed without allow-forms (see WhyCard).
+    <div className="sfin-subs-form" role="form" aria-label={mode === 'add' ? 'Add a subscription' : 'Edit subscription'}
+      onKeyDown={(ev) => { if (ev.key === 'Enter' && (ev.target as HTMLElement).tagName === 'INPUT') submit(); }}>
       {mode === 'add' && (
         <>
           <label>Name<Input value={draft.name} placeholder="Hulu" onChange={(ev) => set('name', ev.target.value)} /></label>
@@ -156,10 +156,10 @@ function ManualForm({ mode, initial, onSave, onCancel }: {
         </div>
       )}
       <div className="sfin-subs-actions">
-        <Button type="submit">{mode === 'add' ? 'Save' : 'Save changes'}</Button>
+        <Button onClick={submit}>{mode === 'add' ? 'Save' : 'Save changes'}</Button>
         <Button variant="ghost" onClick={onCancel}>Cancel</Button>
       </div>
-    </form>
+    </div>
   );
 }
 

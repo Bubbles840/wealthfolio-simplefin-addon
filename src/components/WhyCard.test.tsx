@@ -127,11 +127,16 @@ describe('WhyCard', () => {
     expect(search).not.toHaveBeenCalled();
   });
 
-  it('searches on submit, as Enter does, without clicking Find', async () => {
+  it('renders no <form>, which the sandboxed add-on frame would block', () => {
+    const { container } = mount(vi.fn(async () => found(1)));
+    expect(container.querySelector('form')).toBeNull();
+  });
+
+  it('searches on Enter, without clicking Find', async () => {
     const search = vi.fn(async () => found(1));
     mount(search);
     fireEvent.change(screen.getByRole('searchbox', { name: 'Find a transaction' }), { target: { value: 'kroger' } });
-    fireEvent.submit(screen.getByRole('search'));
+    fireEvent.keyDown(screen.getByRole('searchbox', { name: 'Find a transaction' }), { key: 'Enter' });
     expect(await screen.findByText('KROGER #0')).toBeInTheDocument();
     expect(search).toHaveBeenCalledTimes(1);
   });

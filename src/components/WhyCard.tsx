@@ -37,8 +37,7 @@ export function WhyCard({ search, renderStory, now = () => new Date() }: {
   // Unmounting counts as a newer search: a late result must not land.
   useEffect(() => () => { latest.current += 1; }, []);
 
-  const find = async (e: React.FormEvent) => {
-    e.preventDefault();
+  const find = async () => {
     const query = parseTxQuery(text);
     if (isEmptyTxQuery(query)) return;
     const mine = ++latest.current;
@@ -58,16 +57,19 @@ export function WhyCard({ search, renderStory, now = () => new Date() }: {
   return (
     <div className="sfin-card sfin-why-card">
       <SectionLabel>{WHY_CARD_TITLE}</SectionLabel>
-      <form className="sfin-why-form" role="search" onSubmit={find}>
+      {/* Not a <form>: the add-on's frame is sandboxed without allow-forms, so
+          a submit (Find or Enter) is blocked before any handler runs. */}
+      <div className="sfin-why-form" role="search">
         <Input
           type="search"
           aria-label="Find a transaction"
           placeholder={WHY_CARD_PLACEHOLDER}
           value={text}
           onChange={(e) => setText(e.target.value)}
+          onKeyDown={(e) => { if (e.key === 'Enter') void find(); }}
         />
-        <Button type="submit" variant="outline">Find</Button>
-      </form>
+        <Button variant="outline" onClick={() => void find()}>Find</Button>
+      </div>
       {/* Mounted always, so what lands in it is announced: a status region
           inserted already filled is read unreliably. */}
       <div role="status">
