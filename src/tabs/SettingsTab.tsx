@@ -33,6 +33,7 @@ import type { LinkPair } from '../../shared/audit-link';
 import { linkFromApp, notTransferFromApp } from '../utils/audit-fix';
 import type { HeldTransfer } from '../../shared/held-transfers';
 import { ruleAccountOptions, type IgnoreRule } from '../../shared/ignore-rules';
+import { isSimplefinNotice } from '../../shared/simplefin-payload';
 
 /** Ids for this tab's collapsible cards. Doubles as the persisted key set (the
  *  page owns the open-card map), so these strings must not change — a rename
@@ -257,7 +258,8 @@ export function SettingsTab({
       const yesterday = new Date(Date.now() - 24 * 60 * 60 * 1000);
       const set = await fetchAccounts(accessUrl, yesterday, ctx.api.network, authKey);
       if (set.errors.length > 0) setAccountsError(`SimpleFin: ${set.errors.join('; ')}`);
-      setSfAccountsHadErrors(set.errors.length > 0);
+      // A notice the sync ignores too is no sign that an account is down.
+      setSfAccountsHadErrors(set.errors.some((e) => !isSimplefinNotice(e)));
       setSfAccounts(set.accounts);
       // MERGED into the stored names, never replacing them. SimpleFin can
       // return one institution's accounts alongside an error for another, and a

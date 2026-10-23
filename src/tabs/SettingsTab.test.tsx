@@ -701,6 +701,28 @@ describe('SettingsTab', () => {
           vi.mocked(fetchAccounts).mockClear();
         }
       });
+
+      it('still asks over a read whose only message is a SimpleFin notice, which the sync ignores too', async () => {
+        const { fetchAccounts } = await import('../utils/simplefin');
+        vi.mocked(fetchAccounts).mockResolvedValueOnce({
+          errors: ['The requested date range exceeds the recommended 90 days'],
+          accounts: [
+            { id: 'sfin-1', name: 'Growth', currency: 'USD', balance: '10.00', 'balance-date': 1700000000 },
+            { id: 'sfin-2', name: 'Spend', currency: 'USD', balance: '20.00', 'balance-date': 1700000000 },
+          ],
+        });
+        try {
+          const props = reconnected(null, []);
+          props.store.setAccountNames = vi.fn(async () => {});
+          render(<SyncPage {...props} />);
+          await switchTab(/settings/i);
+          await openMapper();
+          expect(await screen.findByRole('button', { name: 'Yes, it replaces it' })).toBeInTheDocument();
+        } finally {
+          // The Accounts card's tests count this mock's calls from zero.
+          vi.mocked(fetchAccounts).mockClear();
+        }
+      });
     });
 
     it('asks for a companion update before rules can be added, when the connected one is older', async () => {

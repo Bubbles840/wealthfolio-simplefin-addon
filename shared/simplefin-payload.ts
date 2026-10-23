@@ -107,3 +107,13 @@ function describeBridgeError(nameById: Map<string, string>) {
     return error.msg;
   };
 }
+
+/**
+ * SimpleFin returns informational notices (window-size recommendations and
+ * caps) in the same `errors` array as real failures. A wide re-scan always trips
+ * them and the data still comes back, so they are not failures: the sync drops
+ * them, and nothing that asks "did this read fail?" should count them.
+ */
+export function isSimplefinNotice(error: unknown): boolean {
+  return /\b(exceeds|recommended|was capped|date range|will be capped|may be capped)\b/i.test(String(error));
+}
