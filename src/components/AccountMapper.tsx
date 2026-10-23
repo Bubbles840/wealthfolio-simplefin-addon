@@ -276,6 +276,7 @@ export function AccountMapper({
                 Reconnection of {r.oldIds.map(nameOf).join(', ')}.{' '}
                 <Button variant="ghost" style={{ padding: '0 4px', fontSize: 12 }} onClick={() => void decide((d) => withoutConfirmed(d, r.newId))}>Undo</Button>
                 {' '}Undo doesn't bring back copies already removed, and the next sync imports the overlap still in SimpleFin's window again.
+                {' '}Ignore rules saved on the old account stop applying to this one.
               </div>
             ))}
             {relinksOffered && declinedFor(sfin.id).map((k) => (

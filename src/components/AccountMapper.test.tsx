@@ -303,6 +303,8 @@ describe('AccountMapper', () => {
       const st = store(confirmed);
       render(<AccountMapper ctx={ctx()} simplefinAccounts={[newFeed]} initialMapping={mapping} onSave={vi.fn()}
         relinkDecisions={confirmed} onRelinkDecisions={st.save} />);
+      // What Undo costs, said before it is pressed.
+      expect(await screen.findByText(/Ignore rules saved on the old account stop applying to this one\./)).toBeInTheDocument();
       fireEvent.click(await screen.findByRole('button', { name: 'Undo' }));
       await waitFor(() => expect(st.now()).toEqual(none()));
     });
