@@ -72,17 +72,22 @@ export function IgnoreRulesEditor({ rules, accounts, onChange, loadFeed, compani
   const [feedError, setFeedError] = useState('');
   const [feedWarnings, setFeedWarnings] = useState<string[]>([]);
 
-  /** The option an id belongs to: its own, or the one that replaced it (a confirmed re-link). */
-  const canonical = useMemo(() => {
-    const of = new Map<string, string>();
+  /** The options an id reaches: its own, or every one that replaced it (a
+   *  confirmed re-link). One id retired into two accounts reaches both, as in
+   *  the sync. */
+  const reach = useMemo(() => {
+    const of = new Map<string, string[]>();
+    const add = (id: string, option: string) => { if (!of.get(id)?.includes(option)) of.set(id, [...(of.get(id) ?? []), option]); };
     for (const a of accounts) {
-      of.set(a.id, a.id);
-      for (const alias of a.aliases ?? []) of.set(alias, a.id);
+      add(a.id, a.id);
+      for (const alias of a.aliases ?? []) add(alias, a.id);
     }
-    return (id: string | undefined) => (id ? of.get(id) ?? id : undefined);
+    return of;
   }, [accounts]);
+  /** Whether a rule saved on `ruleAccount` reaches account `id`. */
+  const sameAccount = (ruleAccount: string, id: string) => ruleAccount === id || !!reach.get(ruleAccount)?.includes(id);
   const accountName = (id: string | undefined) =>
-    !id ? 'All synced accounts' : accounts.find((a) => a.id === canonical(id))?.name ?? id;
+    !id ? 'All synced accounts' : (reach.get(id) ?? []).map((o) => accounts.find((x) => x.id === o)?.name ?? o).join(' and ') || id;
 
   const draftBlank = pattern.trim() === '';
   const problem = draftBlank ? null : ignoreRuleProblem({ pattern, matchType });
@@ -93,7 +98,8 @@ export function IgnoreRulesEditor({ rules, accounts, onChange, loadFeed, compani
     ...(note.trim() ? { note: note.trim() } : {}),
   };
   const duplicate = !!draft && account !== '' && rules.some((r) =>
-    sameIgnoreRule({ ...r, account: canonical(r.account) }, { ...draft, account: canonical(draft.account) }));
+    sameIgnoreRule({ ...r, account: undefined }, { ...draft, account: undefined })
+    && (r.account && draft.account ? sameAccount(r.account, draft.account) : !r.account && !draft.account));
   const companionBehind = !companionUnderstandsIgnoreRules(companionVersion);
   const canAdd = !!draft && account !== '' && !duplicate && !unreadable && !companionBehind && !busy;
 
@@ -156,7 +162,6 @@ export function IgnoreRulesEditor({ rules, accounts, onChange, loadFeed, compani
     const ids = new Set(accounts.map((a) => a.id));
     return (id: string) => ids.has(id);
   }, [accounts]);
-  const sameAccount = (ruleAccount: string, sfAccountId: string) => canonical(ruleAccount) === canonical(sfAccountId);
   const previewRules = draft ? [draft] : draftBlank ? rules : [];
   const scopeId = draft ? draft.account : undefined;
   const inScope = feed

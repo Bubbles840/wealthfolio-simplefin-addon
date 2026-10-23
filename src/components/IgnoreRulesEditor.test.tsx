@@ -57,6 +57,21 @@ describe('IgnoreRulesEditor', () => {
     expect(screen.getByText('You already have this rule.')).toBeInTheDocument();
   });
 
+  it('a rule on an id retired into two accounts shows under both, previews both, and is a duplicate on either', async () => {
+    // As the sync reads it: the rule on sfin-a reaches X and Y alike.
+    const split = [{ id: 'sfin-x', name: 'Cash X', aliases: ['sfin-a'] }, { id: 'sfin-y', name: 'Cash Y', aliases: ['sfin-a'] }];
+    const row = (id: string) => ({ ...feed[0], id, transactions: [{ id: `${id}-1`, posted: NOON, amount: '400.00', description: 'SWEEP FROM CORE FUND' }] });
+    render(<IgnoreRulesEditor rules={[{ ...sweep, account: 'sfin-a' }]} accounts={split} onChange={vi.fn()}
+      loadFeed={async () => ({ accounts: [row('sfin-x'), row('sfin-y')], errors: [] })} />);
+    expect(screen.getByTestId('ignore-rule')).toHaveTextContent('contains “SWEEP FROM CORE FUND” · Cash X and Cash Y');
+    fireEvent.click(screen.getByRole('button', { name: 'Preview last 30 days' }));
+    expect(await screen.findByTestId('ignore-preview')).toHaveTextContent('Your rules match 2 of 2 transactions');
+    for (const id of ['sfin-x', 'sfin-y']) {
+      fill('SWEEP FROM CORE FUND', id);
+      expect(screen.getByText('You already have this rule.')).toBeInTheDocument();
+    }
+  });
+
   it('never saves a blank rule: Add stays disabled with no pattern, and with no account chosen', () => {
     const onChange = vi.fn(async () => {});
     render(<IgnoreRulesEditor rules={[]} accounts={accounts} onChange={onChange} />);
