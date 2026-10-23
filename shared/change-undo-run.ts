@@ -203,7 +203,7 @@ async function findRow(io: UndoIo, entry: ChangeEntry, latest: ChangeEntry | nul
     ?? (entry.kind === 'transaction-removed' ? str(rec(rec(entry.before).activity).accountId) : null);
   if (!wf) return null;
   const id = currentRowId(entry, latest);
-  const baseline = entry.kind === 'starting-balance' || entry.kind === 'starting-balance-moved';
+  const baseline = entry.kind === 'starting-balance' || entry.kind === 'starting-balance-moved' || entry.kind === 'starting-balance-removed';
   const rows = [
     ...(baseline ? await io.host.listOldestActivities(wf, 50) : []),
     ...await io.host.listActivities(wf),
@@ -239,7 +239,7 @@ async function gather(io: UndoIo, entry: ChangeEntry, op: UndoOp, latest: Change
   const key = entry.subject.txKeys?.[0] ?? null;
   const state: UndoState = {};
   const wf = entry.account?.wfId ?? str(after.accountId);
-  const needsCurrency = ['balance-correction', 'starting-balance', 'starting-balance-moved', 'amazon-label', 'venmo-note'].includes(entry.kind);
+  const needsCurrency = ['balance-correction', 'starting-balance', 'starting-balance-moved', 'starting-balance-removed', 'amazon-label', 'venmo-note'].includes(entry.kind);
   if (needsCurrency && wf) {
     state.currency = (await io.host.listAccounts()).find((a) => a.id === wf)?.currency ?? 'USD';
   }
@@ -279,6 +279,13 @@ async function gather(io: UndoIo, entry: ChangeEntry, op: UndoOp, latest: Change
       state.row = await findRow(io, entry, latest, key);
       if (op === 'redo' && wf) {
         state.startingBalanceId = (await io.host.listOldestActivities(wf, 50)).find((r) => r.comment === str(after.comment))?.id ?? null;
+      }
+      return state;
+    case 'starting-balance-removed':
+      // Only a Redo acts on a row: the one the last Undo put back.
+      if (op === 'redo') state.row = await findRow(io, entry, latest, key);
+      if (op === 'undo' && wf) {
+        state.startingBalanceId = (await io.host.listOldestActivities(wf, 50)).find((r) => r.comment === str(rec(entry.before).comment))?.id ?? null;
       }
       return state;
     case 'balance-correction':

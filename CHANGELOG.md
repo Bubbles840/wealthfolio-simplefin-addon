@@ -10,7 +10,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Update both halves. The add-on asks for more permissions (assets, quotes,
 your loans, and reading an account's holdings), so in-app Update refuses it:
 use **Install from File** over the installed add-on, then pull the companion
-image. Loans are offered in the account mapping only once the companion is on
+image. Loans, and the question whether an account is the same one
+reconnected, are offered in the account mapping only once the companion is on
 this release.
 
 ### Added
@@ -25,8 +26,24 @@ this release.
   nothing owed, a feed in another currency, and one loan linked from two
   accounts are reported instead of written. Turning a mapped account into a
   loan asks first, since its imports stop.
+- **A bank connection added again doesn't import its overlap twice.** When a
+  connection is removed and re-added at SimpleFin Bridge, its accounts come
+  back under new ids, and the days both connections reported were imported a
+  second time. The account mapping now asks, on the new account's row and for
+  each old account, whether it is the same account reconnected. After a Yes,
+  the sync matches the old rows instead of importing copies, Deep scan removes
+  copies already imported (adjusting the new account's starting balance by
+  what it removed, in the same step, with Undo), held transfers carry over, and
+  ignore rules saved on the old account keep applying. A No is remembered and
+  can be taken back. Nothing is removed on a guess: only a Yes acts, and only
+  while the old account is still mapped to the same Wealthfolio account.
 
 ### Fixed
+- **A transfer you link by hand stays linked.** A synced row you type as a
+  transfer and link in Wealthfolio to an account the add-on doesn't sync was
+  set back to the bank's type on the next add-on sync, and its partner's note
+  was overwritten. It is now kept as you left it, as the companion already
+  did.
 - **A holding Wealthfolio can't price shows its real value.** A position that
   isn't a ticker (a basket of stocks a robo-advisor reports as one holding)
   had no market price, so Wealthfolio valued it at $0 while the bank reported
@@ -41,7 +58,8 @@ this release.
   bought ticker waiting for its first quote is never caught. A ticker the
   market prices stays shared and is never touched, and neither is an asset you
   set to manual pricing yourself, or a symbol the bank sends in two
-  currencies.
+  currencies. A holding on its own asset keeps its last price on a day the
+  bank sends none, instead of dropping to $0.
 - **A holding SimpleFin sends without a symbol is synced.** Some retirement
   plans send funds with a description but no symbol; they were dropped, which
   left such an account with no holdings at all. They are now filed under their

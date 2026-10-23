@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { AddonContext } from '@wealthfolio/addon-sdk';
 import { runSync } from '../utils/sync';
 import { Button, CollapsibleCard, ErrorBox, Why } from '../components/ui';
@@ -20,6 +20,8 @@ import type { SecretsStore, CategoryCatalogEntry, AccountBalanceInfo } from '../
 import type { Scheduler } from '../utils/scheduler';
 import type { MappingRule, SimplefinAccount, AccountMapping } from '../../shared/types';
 import type { LoanLinks } from '../../shared/loan-balances';
+import type { RelinkDecisions } from '../../shared/relink';
+import { companionUnderstandsRelinks } from '../../shared/version';
 import { accountCreatedChange } from '../../shared/change-entries';
 import { directCallLine } from '../../shared/simplefin-budget';
 import { ChangeLogCard, syncNowSentence } from '../components/ChangeLogCard';
@@ -30,7 +32,8 @@ import { undoFromApp } from '../utils/change-undo';
 import type { LinkPair } from '../../shared/audit-link';
 import { linkFromApp, notTransferFromApp } from '../utils/audit-fix';
 import type { HeldTransfer } from '../../shared/held-transfers';
-import type { IgnoreRule } from '../../shared/ignore-rules';
+import { ruleAccountOptions, type IgnoreRule } from '../../shared/ignore-rules';
+import { isSimplefinNotice } from '../../shared/simplefin-payload';
 
 /** Ids for this tab's collapsible cards. Doubles as the persisted key set (the
  *  page owns the open-card map), so these strings must not change — a rename
@@ -150,8 +153,16 @@ export function SettingsTab({
   // rest of this tab's state: it costs a network round-trip to the bridge, and
   // the overwhelmingly common visit to this tab is for something else.
   const [sfAccounts, setSfAccounts] = useState<SimplefinAccount[] | null>(null);
+  /** That list came with SimpleFin errors: the mapper asks no reconnection question over it. */
+  const [sfAccountsHadErrors, setSfAccountsHadErrors] = useState(false);
   const [mapping, setMapping] = useState<AccountMapping>({});
   const [loanLinks, setLoanLinks] = useState<LoanLinks>({});
+  /** null until read, and when the read fails: the mapper then asks nothing,
+   *  since saving answers over an unread document would drop the others. */
+  const [relinkDecisions, setRelinkDecisions] = useState<RelinkDecisions | null>(null);
+  /** That read failed (a document it cannot read, most often): said above the
+   *  mapper, which would otherwise just show no questions and no Undo. */
+  const [relinkDecisionsUnreadable, setRelinkDecisionsUnreadable] = useState(false);
   /**
    * Whether the stored mapping has actually been READ yet — `{}` alone cannot
    * say, and the difference is destructive here. `AccountMapper` snapshots
@@ -191,6 +202,16 @@ export function SettingsTab({
       store.getIgnoredAccounts?.() ?? [],
       store.getLoanLinks?.() ?? {},
     ]).then(([hours, heal, adjust, r, m, ignored, links]) => {
+      // Optional-called: a store without it (an older build, a test double) reads none, quietly.
+      if (typeof store.readRelinkDecisions === 'function') {
+        Promise.resolve().then(() => store.readRelinkDecisions()).then((d) => {
+          setRelinkDecisions(d);
+          setRelinkDecisionsUnreadable(false);
+        }).catch(() => {
+          setRelinkDecisions(null);
+          setRelinkDecisionsUnreadable(true);
+        });
+      }
       setScheduleHours(hours);
       setAutoHeal(heal);
       setAutoAdjust(adjust);
@@ -237,6 +258,8 @@ export function SettingsTab({
       const yesterday = new Date(Date.now() - 24 * 60 * 60 * 1000);
       const set = await fetchAccounts(accessUrl, yesterday, ctx.api.network, authKey);
       if (set.errors.length > 0) setAccountsError(`SimpleFin: ${set.errors.join('; ')}`);
+      // A notice the sync ignores too is no sign that an account is down.
+      setSfAccountsHadErrors(set.errors.some((e) => !isSimplefinNotice(e)));
       setSfAccounts(set.accounts);
       // MERGED into the stored names, never replacing them. SimpleFin can
       // return one institution's accounts alongside an error for another, and a
@@ -353,10 +376,6 @@ export function SettingsTab({
     await store.setIgnoreRules(next);
     setIgnoreRules(next);
   }, [store]);
-  /** The mapped SimpleFin accounts, the only ones a rule reaches. */
-  const ignoreRuleAccounts = Object.keys(accountMapping)
-    .filter((id) => !!accountMapping[id])
-    .map((id) => ({ id, name: sfinNames[id] ?? id }));
   /** The preview's feed: one SimpleFin download, made only when the person asks.
    *  Counted as a manual call (the 20 and the 5-minute gap): the button can be
    *  clicked again and again, and the headroom past 20 is Setup's and Refresh's. */
@@ -379,6 +398,18 @@ export function SettingsTab({
   // R2: Undo and Redo, the companion's version (the gate and the Telegram
   // pointer), Sync now (the Sync page's own forced run) and "Your overrides".
   const [companionVersion, setCompanionVersion] = useState<string | null>(null);
+  /** The mapped accounts, the only ones a rule reaches. An account a confirmed
+   *  re-link retired folds into the one that replaced it, but only once the
+   *  companion reads confirmed re-links: an older one matches exact ids, and the
+   *  editor must say what the scheduled syncs will do. */
+  const ignoreRuleAccounts = useMemo(
+    () => ruleAccountOptions(
+      accountMapping, sfinNames,
+      companionUnderstandsRelinks(companionVersion) ? relinkDecisions?.confirmed ?? [] : [],
+      wfNames, loanLinks,
+    ),
+    [accountMapping, sfinNames, relinkDecisions, companionVersion, wfNames, loanLinks],
+  );
   useEffect(() => {
     store.getCompanionVersion?.().then((v) => setCompanionVersion(v ?? null)).catch(() => {});
   }, [store]);
@@ -502,6 +533,13 @@ export function SettingsTab({
           </Button>
         ) : (
           <>
+            {relinkDecisionsUnreadable && (
+              <ErrorBox>
+                Your answers about reconnected accounts can&rsquo;t be read, so no reconnection is asked
+                about or can be undone here: saving would drop the answers that weren&rsquo;t understood.
+                The sync acts only on the ones it can read.
+              </ErrorBox>
+            )}
             <AccountMapper
               ctx={ctx}
               simplefinAccounts={sfAccounts}
@@ -509,6 +547,16 @@ export function SettingsTab({
               initialLoanLinks={loanLinks}
               companionVersion={companionVersion}
               onSave={saveMapping}
+              relinkDecisions={relinkDecisions ?? undefined}
+              onRelinkDecisions={relinkDecisions
+                ? async (change) => { const next = await store.updateRelinkDecisions(change); setRelinkDecisions(next); return next; }
+                : undefined}
+              sfinNames={sfinNames}
+              feedReportedErrors={sfAccountsHadErrors}
+              // A follow-up: a durable last-seen date. `account_balances` is
+              // rebuilt each sync from that run's download, so an id that stopped
+              // reporting is usually gone from it ("not reported recently").
+              lastSeen={Object.fromEntries(Object.entries(balances).map(([id, b]) => [id, b.date]))}
               onAccountCreated={(created) => { void store.recordChange?.(accountCreatedChange(created)); }}
             />
             <div style={{ marginTop: 12, display: 'flex', gap: 8, alignItems: 'center' }}>

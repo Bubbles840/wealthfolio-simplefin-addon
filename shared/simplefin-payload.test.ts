@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { normalizeAccountSet } from './simplefin-payload.js';
+import { isSimplefinNotice, normalizeAccountSet } from './simplefin-payload.js';
 
 describe('normalizeAccountSet', () => {
   it('names the failing account when the Bridge sends a structured errlist', () => {
@@ -98,5 +98,14 @@ describe('normalizeAccountSet', () => {
   it('refuses a payload that is not an object', () => {
     expect(() => normalizeAccountSet('nope')).toThrow(/SimpleFin/i);
     expect(() => normalizeAccountSet(null)).toThrow(/SimpleFin/i);
+  });
+});
+
+describe('isSimplefinNotice', () => {
+  it('reads window recommendations and caps as notices, and a failed connection as an error', () => {
+    expect(isSimplefinNotice('The requested date range exceeds the recommended 90 days')).toBe(true);
+    expect(isSimplefinNotice('History was capped at 90 days')).toBe(true);
+    expect(isSimplefinNotice('Growth (old): Connection to institution failed')).toBe(false);
+    expect(isSimplefinNotice('Discover it Card: Connection needs attention')).toBe(false);
   });
 });

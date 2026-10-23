@@ -8,6 +8,7 @@
  * Must not be imported by sync-core.ts: it imports sync-core.ts.
  */
 import { bankDayInstant } from './bank-day.js';
+import { activeRelinks, retiredIds, type Relink } from './relink.js';
 import { accountNameWords, expiryHoldAccount } from './sync-core.js';
 import { formatDollars } from './telegram.js';
 import { accountTxKey } from './transfers.js';
@@ -23,6 +24,9 @@ export interface StoredFeeds {
   mapping: Readonly<Record<string, string>>;
   balances: Readonly<Record<string, { date?: unknown; aliveThrough?: unknown } | null | undefined>>;
   names: Readonly<Record<string, string>>;
+  /** Re-links the person confirmed (shared/relink.ts `RelinkDecisions.confirmed`).
+   *  Absent: none, so a missing old id holds legs as any down feed does. */
+  relinks?: readonly Relink[];
 }
 
 export interface HeldRow {
@@ -94,7 +98,12 @@ export function judgeHeldTransfer(
 
   // Mirrors the sync: only an account that was in the last download has life
   // and name words; any other mapped account has neither, so it holds every leg.
-  const mappedIds = Object.keys(feeds.mapping);
+  // An id a confirmed re-link retired is left out, as the sync leaves it out:
+  // it never reports again, so nothing waits on it.
+  // (`retiredIds`, the sync's rule: not one mapped elsewhere since; an unmapped
+  // id is no mapped feed here either way.)
+  const replaced = retiredIds(activeRelinks(feeds.relinks ?? [], feeds.mapping), feeds.mapping);
+  const mappedIds = Object.keys(feeds.mapping).filter((id) => !replaced.has(id));
   const alive = new Map<string, number>();
   const nameWords = new Map<string, readonly string[]>();
   for (const id of mappedIds) {

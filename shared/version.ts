@@ -171,6 +171,24 @@ export function companionUnderstandsLoanBalances(companionVersion: string | null
   return isAtLeastVersion(companionVersion.trim(), LOAN_BALANCES_SINCE);
 }
 
+/**
+ * The first release whose companion reads confirmed re-links (shared/relink.ts).
+ * An older one ignores `relinks`: on a re-linked account it imports the overlap
+ * again, which is what confirming is meant to stop. The account mapping asks
+ * no re-link question until a connected companion is this new. It also gates
+ * the ignore rules' aliasing (a rule on a retired id reaching its replacement),
+ * so the re-link work and that aliasing must ship in the same release. Raise to
+ * the release that ships this.
+ */
+export const RELINKS_SINCE = '1.68.0';
+
+/** True when `companionVersion` reads confirmed re-links. No companion at all
+ *  (null) is true: nothing else is syncing that could ignore them. */
+export function companionUnderstandsRelinks(companionVersion: string | null): boolean {
+  if (companionVersion === null) return true;
+  return isAtLeastVersion(companionVersion.trim(), RELINKS_SINCE);
+}
+
 /** The companion's half: an installed add-on that reads `asReimbursement`.
  *  Unknown (null — the companion cannot see the addons directory) is false. */
 export function addonUnderstandsPaybacks(installedAddonVersion: string | null): boolean {

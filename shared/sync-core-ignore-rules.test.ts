@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { runSyncCore, VALUATION_POLL } from './sync-core.js';
 import { createFakeHost, type FakeHostSeed } from './fake-host.js';
 import type { IgnoreRule } from './ignore-rules.js';
@@ -12,10 +12,14 @@ import type { SyncHost } from './sync-host.js';
  * bank's balance. Ignore rules let the person say "never import these".
  */
 describe('ignore rules', () => {
+  // A fixed clock: every date below is worked out from it.
   beforeEach(() => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date('2027-03-03T18:00:00Z'));
     VALUATION_POLL.delayMs = 1;
     VALUATION_POLL.attempts = 1;
   });
+  afterEach(() => { vi.useRealTimers(); });
 
   const posted = () => Math.floor(Date.now() / 1000) - 3600;
 
@@ -51,6 +55,65 @@ describe('ignore rules', () => {
       'DIRECT DEBIT CARD AUTOPAY · TRN-bill',
       'DIRECT DEPOSIT EMPLOYER PAYROLL · TRN-pay',
     ]);
+  });
+
+  it('a rule saved on an account keeps working after a confirmed reconnection', async () => {
+    // The bank account came back as 'sfin-cash-new', mapped to the same
+    // Wealthfolio account, and the person confirmed it; the rules were saved on the old id.
+    const relinkDecisions = { confirmed: [{ wfAccountId: 'wf-cash', newId: 'sfin-cash-new', oldIds: ['sfin-cash'] }], declined: [] };
+    const seed = brokerageCash({ ignoreRules: sweeps('sfin-cash'), mapping: { 'sfin-cash': 'wf-cash', 'sfin-cash-new': 'wf-cash' }, relinkDecisions });
+    seed.accountSet!.accounts[0].id = 'sfin-cash-new';
+    const { host, store, activities } = createFakeHost(seed);
+    const result = await runSyncCore(host, store, { force: true });
+
+    expect(result.ignoredByRules).toBe(3);
+    expect(activities.get('wf-cash') ?? []).toHaveLength(2);
+  });
+
+  it('a rule on an id reaches only the account whose re-link still retires it', async () => {
+    // sfin-cash was replaced by X in wf-x, then mapped to wf-cash and replaced by
+    // Y there. The rule saved on it follows it to Y, never to X.
+    const relinkDecisions = { confirmed: [
+      { wfAccountId: 'wf-x', newId: 'sfin-x', oldIds: ['sfin-cash'] },
+      { wfAccountId: 'wf-cash', newId: 'sfin-y', oldIds: ['sfin-cash'] },
+    ], declined: [] };
+    const seed = brokerageCash({
+      ignoreRules: sweeps('sfin-cash'), relinkDecisions,
+      mapping: { 'sfin-cash': 'wf-cash', 'sfin-x': 'wf-x', 'sfin-y': 'wf-cash' },
+    });
+    const sweep = { id: 'TRN-x1', posted: posted(), amount: '-75.00', description: 'SWEEP TO CORE FUND MONEY MARKET' };
+    seed.accountSet!.accounts[0].id = 'sfin-y';
+    seed.accountSet!.accounts.push({ id: 'sfin-x', name: 'Other Cash', currency: 'USD', balance: '100.00', 'balance-date': posted(), transactions: [sweep] });
+    const { host, store, activities } = createFakeHost(seed);
+    const result = await runSyncCore(host, store, { force: true });
+
+    expect(result.ignoredByRules).toBe(3);
+    expect((activities.get('wf-x') ?? []).map((r) => r.comment)).toEqual(['SWEEP TO CORE FUND MONEY MARKET · TRN-x1']);
+  });
+
+  it('an unconfirmed reconnection carries no rule over', async () => {
+    const seed = brokerageCash({ ignoreRules: sweeps('sfin-cash'), mapping: { 'sfin-cash': 'wf-cash', 'sfin-cash-new': 'wf-cash' } });
+    seed.accountSet!.accounts[0].id = 'sfin-cash-new';
+    const { host, store } = createFakeHost(seed);
+    const result = await runSyncCore(host, store, { force: true });
+
+    expect(result.ignoredByRules).toBe(0);
+  });
+
+  it('a rule limited to one of two accounts merged on purpose does not reach the other', async () => {
+    // Checking and Savings both feed wf-cash; the rule is limited to Checking.
+    const seed = brokerageCash({
+      ignoreRules: [{ pattern: 'SWEEP FROM CORE FUND', matchType: 'contains', account: 'sfin-cash' }],
+      mapping: { 'sfin-cash': 'wf-cash', 'sfin-sav': 'wf-cash' },
+    });
+    seed.accountSet!.accounts.push({
+      id: 'sfin-sav', name: 'Savings', currency: 'USD', balance: '100.00', 'balance-date': posted(),
+      transactions: [{ id: 'TRN-sav', posted: posted(), amount: '400.00', description: 'SWEEP FROM CORE FUND MONEY MARKET' }],
+    });
+    const { host, store } = createFakeHost(seed);
+    const result = await runSyncCore(host, store, { force: true });
+
+    expect(result.ignoredByRules).toBe(1);
   });
 
   it('imports everything when there are no rules', async () => {

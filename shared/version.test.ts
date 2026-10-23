@@ -1,7 +1,10 @@
 import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'fs';
 import { join } from 'path';
-import { companionUnderstandsIgnoreRules, companionUnderstandsLoanBalances, IGNORE_RULES_SINCE, LOAN_BALANCES_SINCE, SIMPLEFIN_SYNC_VERSION } from './version.js';
+import {
+  companionUnderstandsIgnoreRules, companionUnderstandsLoanBalances, companionUnderstandsRelinks,
+  IGNORE_RULES_SINCE, LOAN_BALANCES_SINCE, RELINKS_SINCE, SIMPLEFIN_SYNC_VERSION,
+} from './version.js';
 
 describe('SIMPLEFIN_SYNC_VERSION', () => {
   /**
@@ -121,5 +124,15 @@ describe('the loan balances gate', () => {
     expect(companionUnderstandsLoanBalances('1.67.1')).toBe(false);
     expect(companionUnderstandsLoanBalances('garbage')).toBe(false);
     expect(companionUnderstandsLoanBalances(null)).toBe(true);
+  });
+});
+
+describe('the re-link gate', () => {
+  it('opens at the release whose companion reads confirmed re-links, and with no companion at all', () => {
+    expect(companionUnderstandsRelinks(RELINKS_SINCE)).toBe(true);
+    expect(companionUnderstandsRelinks('9.0.0')).toBe(true);
+    expect(companionUnderstandsRelinks('1.67.1')).toBe(false);
+    expect(companionUnderstandsRelinks('garbage')).toBe(false);
+    expect(companionUnderstandsRelinks(null)).toBe(true);
   });
 });

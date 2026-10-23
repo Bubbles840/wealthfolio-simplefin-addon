@@ -12,6 +12,7 @@
  * back — and injected dependencies are also what lets the button's path be
  * tested without a running Wealthfolio.
  */
+import { parseRelinkDecisions, RELINKS_SECRET_KEY } from '../../shared/relink.js';
 import { evaluateSelfCheck, type SelfCheckFinding } from '../../shared/self-check.js';
 import { hasTxOverride, loadSyncOverrides } from '../../shared/sync-overrides.js';
 import { evaluateLedgerChecks, nextLedgerCheckSeen, type LedgerCheckSeen, type LedgerFacts } from '../../shared/ledger-checks.js';
@@ -136,7 +137,8 @@ export async function gatherFindings(
       const marked = new Set(
         overrides ? Object.keys(overrides.overrides.tx).filter((k) => hasTxOverride(overrides.overrides, k, 'notTransfer')) : [],
       );
-      const judged = evaluateLedgerChecks(facts, seen, now, { mapping, balances, names: accountNames }, marked);
+      const relinks = parseRelinkDecisions(await deps.getSecret(RELINKS_SECRET_KEY).catch(() => null)).confirmed;
+      const judged = evaluateLedgerChecks(facts, seen, now, { mapping, balances, names: accountNames, relinks }, marked);
       ledgerFindings = judged.findings;
       const next = nextLedgerCheckSeen(seen, judged.keys, now);
       // Written only when it changed: most mornings nothing did, and a secret

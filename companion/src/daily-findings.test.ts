@@ -90,6 +90,26 @@ describe('gatherFindings', () => {
     });
   });
 
+  it('does not blame a feed a confirmed reconnection retired (#26)', async () => {
+    const facts = cleanFacts();
+    facts.heldTransfers = [{
+      id: 'h1', description: 'WIRE TRANSFER TO ACME LLC', amount: 250, ageDays: 20,
+      wfAccountId: 'wf-chk', date: '2026-09-19', txId: 'w-old', direction: 'out',
+    }];
+    const { deps } = makeDeps({
+      account_mapping: JSON.stringify({ 'sfin-chk': 'wf-chk', 'sfin-sav': 'wf-sav', 'sfin-sav2': 'wf-sav' }),
+      account_balances: JSON.stringify({
+        'sfin-chk': { balance: 10, date: unixDaysAgo(0), aliveThrough: unixDaysAgo(0) },
+        'sfin-sav': { balance: 10, date: unixDaysAgo(18), aliveThrough: unixDaysAgo(18) },
+        'sfin-sav2': { balance: 10, date: unixDaysAgo(0), aliveThrough: unixDaysAgo(0) },
+      }),
+      account_names: JSON.stringify({ 'sfin-chk': 'Checking', 'sfin-sav': 'Harbor Savings', 'sfin-sav2': 'Harbor Savings' }),
+      relinks: JSON.stringify({ confirmed: [{ wfAccountId: 'wf-sav', newId: 'sfin-sav2', oldIds: ['sfin-sav'] }], declined: [] }),
+    }, facts);
+    const found = await gatherFindings(deps, NOW, { recordLedgerChecks: false, ...healthy });
+    expect(found.visible.find((f) => f.key === 'held-transfer:h1')!.message).not.toContain('feed is behind');
+  });
+
   const heldFacts = () => {
     const facts = cleanFacts();
     facts.heldTransfers = [{

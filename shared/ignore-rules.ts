@@ -37,6 +37,7 @@
  */
 import { ruleApplies } from './mapper.js';
 import { IGNORE_RULES_SINCE } from './version.js';
+import { activeRelinks, relinkSuccessors, retiredIds, type Relink } from './relink.js';
 import type { SimplefinAccount, SimplefinTransaction } from './types.js';
 
 export const IGNORE_RULES_SECRET_KEY = 'ignore_rules';
@@ -182,14 +183,86 @@ export function ignoreRuleMatches(rule: IgnoreRule, description: string | undefi
   );
 }
 
+/** Whether a rule saved on SimpleFin account `ruleAccount` reaches account `sfAccountId`. */
+export type SameRuleAccount = (ruleAccount: string, sfAccountId: string) => boolean;
+
+/**
+ * A rule saved on an account a CONFIRMED re-link retired (shared/relink.ts)
+ * reaches the account that replaced it: a connection removed and added again
+ * comes back under new ids, and the rule keeps working without being rewritten.
+ * Nothing else is aliased: several SimpleFin accounts mapped to one Wealthfolio
+ * account on purpose stay separate accounts to a rule. The rule's old id need
+ * not stay in the mapping; the confirmed re-link remembers it. A chain of
+ * re-links is followed to its end (`relinkSuccessors`), and an old id the
+ * person has since mapped elsewhere is its own account again.
+ */
+export function relinkedRuleAccount(
+  relinks: readonly Relink[],
+  mapping: Readonly<Record<string, string>>,
+  loanLinks: Readonly<Record<string, string>> = {},
+): SameRuleAccount {
+  const successors = relinkSuccessors(activeRelinks(relinks, mapping), mapping, loanLinks);
+  return (rule, account) => rule === account || !!successors.get(rule)?.has(account);
+}
+
+/** One account a rule can be limited to, as the editor offers it. */
+export interface RuleAccountOption {
+  /** The SimpleFin id a new rule is saved on. */
+  id: string;
+  name: string;
+  /** Ids a confirmed re-link retired in favour of this one: a rule saved on one
+   *  of them shows, and applies, here. */
+  aliases: string[];
+}
+
+/**
+ * The accounts a rule can be limited to: one per mapped SimpleFin id, except an
+ * id a confirmed re-link retired, which becomes an alias of the id that
+ * replaced it (it never reports again, and listing it would show one account
+ * twice under the same name). Two accounts that share a name are told apart by
+ * their Wealthfolio account's name when that differs, else by the end of their id.
+ */
+export function ruleAccountOptions(
+  mapping: Readonly<Record<string, string>>,
+  names: Readonly<Record<string, string>>,
+  relinks: readonly Relink[] = [],
+  wfNames: Readonly<Record<string, string>> = {},
+  loanLinks: Readonly<Record<string, string>> = {},
+): RuleAccountOption[] {
+  // The sync's own resolver (`relinkedRuleAccount`), so the list shows what a rule reaches.
+  const active = activeRelinks(relinks, mapping);
+  const successors = relinkSuccessors(active, mapping, loanLinks);
+  // What the sync drops: a retired id with no successor (a confirmed cycle) is not listed either.
+  const retired = retiredIds(active, mapping, loanLinks);
+  const ids = Object.keys(mapping).filter((id) => mapping[id] && !retired.has(id)).sort();
+  const options = ids.map((id) => ({
+    id,
+    name: names[id] ?? id,
+    aliases: [...successors].filter(([, to]) => to.has(id)).map(([from]) => from).sort(),
+  }));
+  // Shared names first get the Wealthfolio account's name (when it says
+  // something new), then, if still shared, the end of the SimpleFin id.
+  const withWf = (o: RuleAccountOption) => {
+    const wf = wfNames[mapping[o.id]];
+    return wf && wf !== o.name ? `${o.name} · ${wf}` : o.name;
+  };
+  const shared = (o: RuleAccountOption, by: (x: RuleAccountOption) => string) =>
+    options.some((x) => x.id !== o.id && by(x) === by(o));
+  return options.map((o) => {
+    if (!shared(o, (x) => x.name)) return o;
+    return { ...o, name: shared(o, withWf) ? `${withWf(o)} · …${o.id.slice(-4)}` : withWf(o) };
+  });
+}
+
 /** The first rule that ignores a transaction in this account, or null. */
 export function ignoreRuleFor(
   rules: readonly IgnoreRule[],
   sfAccountId: string,
   description: string | undefined,
+  sameAccount: SameRuleAccount = (a, b) => a === b,
 ): IgnoreRule | null {
   for (const rule of rules) {
-    if (rule.account && rule.account !== sfAccountId) continue;
+    if (rule.account && !sameAccount(rule.account, sfAccountId)) continue;
     if (ignoreRuleMatches(rule, description)) return rule;
   }
   return null;
@@ -209,13 +282,14 @@ export function findIgnored(
   rules: readonly IgnoreRule[],
   accounts: readonly SimplefinAccount[],
   isMapped: (sfAccountId: string) => boolean = () => true,
+  sameAccount?: SameRuleAccount,
 ): IgnoredHit[] {
   if (rules.length === 0) return [];
   const hits: IgnoredHit[] = [];
   for (const account of accounts) {
     if (!isMapped(account.id)) continue;
     for (const tx of account.transactions ?? []) {
-      const rule = ignoreRuleFor(rules, account.id, tx.description);
+      const rule = ignoreRuleFor(rules, account.id, tx.description, sameAccount);
       if (rule) hits.push({ account, tx, rule });
     }
   }

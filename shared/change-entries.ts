@@ -36,7 +36,7 @@ export type ChangeKind =
   | 'import' | 'bank-update' | 'pending-removed'
   | 'transfer-link' | 'transfer-type'
   | 'duplicate-removed' | 'transaction-removed'
-  | 'starting-balance' | 'starting-balance-moved' | 'balance-correction'
+  | 'starting-balance' | 'starting-balance-moved' | 'starting-balance-removed' | 'balance-correction'
   | 'amazon-label' | 'venmo-note' | 'category-filed' | 'opening-balance-filed' | 'payback-filed'
   | 'category-rule-created' | 'mapping-rule-created'
   | 'account-created'
@@ -47,7 +47,7 @@ export const CHANGE_KINDS: readonly ChangeKind[] = [
   'import', 'bank-update', 'pending-removed',
   'transfer-link', 'transfer-type',
   'duplicate-removed', 'transaction-removed',
-  'starting-balance', 'starting-balance-moved', 'balance-correction',
+  'starting-balance', 'starting-balance-moved', 'starting-balance-removed', 'balance-correction',
   'amazon-label', 'venmo-note', 'category-filed', 'opening-balance-filed', 'payback-filed',
   'category-rule-created', 'mapping-rule-created',
   'account-created',
@@ -482,6 +482,25 @@ export function startingBalanceMovedChange(f: StartingBalanceMovedFacts): Change
     why: f.actor === 'you' ? 'You accepted the starting-balance fix' : 'Older transactions arrived from the bank',
     before: { activityId: f.activityId, ...f.before },
     after: { activityId: f.activityId, ...f.after },
+    undoable: true,
+  };
+}
+
+/**
+ * A reconnected account's own starting balance, removed once the person
+ * confirmed the reconnection: the old account's starting balance already
+ * stands for everything before, so a second one counts it twice. Undo (R2):
+ * put the row back.
+ */
+export function startingBalanceRemovedChange(f: BalanceRowFacts & { activityId: string }): ChangeDraft {
+  return {
+    actor: 'auto',
+    kind: 'starting-balance-removed',
+    account: f.account,
+    subject: { activityIds: [f.activityId], amountCents: f.amountCents, date: f.date },
+    summary: 'Removed a second starting balance after a reconnection',
+    why: "The account's first starting balance already covers what came before",
+    before: { activityId: f.activityId, amountCents: f.amountCents, date: f.date, activityType: f.activityType, comment: f.comment },
     undoable: true,
   };
 }

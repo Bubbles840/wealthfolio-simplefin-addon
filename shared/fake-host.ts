@@ -8,6 +8,7 @@ import type { TransferNames } from './transfer-names.js';
 import type { IgnoreRule } from './ignore-rules.js';
 import type { SyncOverrides } from './sync-overrides.js';
 import { confirmLoanBalance, type LinkedLoan, type LoanLinks, type LoanQuote } from './loan-balances.js';
+import type { RelinkDecisions } from './relink.js';
 import type {
   ActivityWrite,
   HostActivity,
@@ -126,6 +127,8 @@ export interface FakeHostSeed {
   loans?: LinkedLoan[];
   /** Make `listLoans` reject. */
   loansThrow?: boolean;
+  /** Re-links the person confirmed or declined (shared/relink.ts). Absent: none. */
+  relinkDecisions?: RelinkDecisions;
 }
 
 export interface FakeHost {
@@ -626,6 +629,9 @@ export function createFakeHost(seed: FakeHostSeed = {}): FakeHost {
     },
     async getLoanLinks() {
       return seed.loanLinks ?? {};
+    },
+    async getRelinkDecisions() {
+      return seed.relinkDecisions ?? { confirmed: [], declined: [] };
     },
     ...(seed.syncOverrides
       ? { async getSyncOverrides() { return seed.syncOverrides!; } }

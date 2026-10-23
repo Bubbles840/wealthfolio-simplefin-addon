@@ -8,6 +8,7 @@ import type { IgnoreRule } from './ignore-rules.js';
 import type { LoadedSyncOverrides, SyncOverrides } from './sync-overrides.js';
 import type { UnlinkLeg, UnlinkResult } from './link-pair.js';
 import type { LinkedLoan, LoanBalance, LoanBalanceDecision, LoanLinks } from './loan-balances.js';
+import type { RelinkDecisions } from './relink.js';
 
 /** A Wealthfolio activity row, normalized across the SDK and REST shapes. */
 export interface HostActivity {
@@ -393,6 +394,12 @@ export interface SyncStore {
    * is what it did before the rules existed. A failed read ignores nothing too.
    */
   getIgnoreRules?(): Promise<IgnoreRule[]>;
+  /**
+   * The re-links the person confirmed or declined (shared/relink.ts). The sync
+   * acts only on a confirmed one. Optional like the getters above; a host
+   * without it, or a failed read, confirms nothing.
+   */
+  getRelinkDecisions?(): Promise<RelinkDecisions>;
   /**
    * What the person told the sync not to do again (shared/sync-overrides.ts),
    * set by an Undo in the change log. A stored document that cannot be read —

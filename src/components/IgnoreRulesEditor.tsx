@@ -20,8 +20,10 @@ const PREVIEW_ROWS = 12;
 
 interface Props {
   rules: IgnoreRule[];
-  /** The mapped SimpleFin accounts, by SimpleFin id: the only ones a rule reaches. */
-  accounts: Array<{ id: string; name: string }>;
+  /** The mapped accounts (`ruleAccountOptions`): the only ones a rule reaches.
+   *  `aliases` are ids a confirmed re-link retired in favour of this one; a rule
+   *  saved on one belongs here. */
+  accounts: Array<{ id: string; name: string; aliases?: string[] }>;
   /** Saves the whole list. Rejects with the reason when nothing was saved. */
   onChange: (next: IgnoreRule[]) => Promise<void>;
   /** The last `days` of the feed, for the preview, with whatever errors
@@ -70,8 +72,22 @@ export function IgnoreRulesEditor({ rules, accounts, onChange, loadFeed, compani
   const [feedError, setFeedError] = useState('');
   const [feedWarnings, setFeedWarnings] = useState<string[]>([]);
 
+  /** The options an id reaches: its own, or every one that replaced it (a
+   *  confirmed re-link). One id retired into two accounts reaches both, as in
+   *  the sync. */
+  const reach = useMemo(() => {
+    const of = new Map<string, string[]>();
+    const add = (id: string, option: string) => { if (!of.get(id)?.includes(option)) of.set(id, [...(of.get(id) ?? []), option]); };
+    for (const a of accounts) {
+      add(a.id, a.id);
+      for (const alias of a.aliases ?? []) add(alias, a.id);
+    }
+    return of;
+  }, [accounts]);
+  /** Whether a rule saved on `ruleAccount` reaches account `id`. */
+  const sameAccount = (ruleAccount: string, id: string) => ruleAccount === id || !!reach.get(ruleAccount)?.includes(id);
   const accountName = (id: string | undefined) =>
-    !id ? 'All synced accounts' : accounts.find((a) => a.id === id)?.name ?? id;
+    !id ? 'All synced accounts' : (reach.get(id) ?? []).map((o) => accounts.find((x) => x.id === o)?.name ?? o).join(' and ') || id;
 
   const draftBlank = pattern.trim() === '';
   const problem = draftBlank ? null : ignoreRuleProblem({ pattern, matchType });
@@ -81,7 +97,9 @@ export function IgnoreRulesEditor({ rules, accounts, onChange, loadFeed, compani
     ...(account && account !== ALL_ACCOUNTS ? { account } : {}),
     ...(note.trim() ? { note: note.trim() } : {}),
   };
-  const duplicate = !!draft && account !== '' && rules.some((r) => sameIgnoreRule(r, draft));
+  const duplicate = !!draft && account !== '' && rules.some((r) =>
+    sameIgnoreRule({ ...r, account: undefined }, { ...draft, account: undefined })
+    && (r.account && draft.account ? sameAccount(r.account, draft.account) : !r.account && !draft.account));
   const companionBehind = !companionUnderstandsIgnoreRules(companionVersion);
   const canAdd = !!draft && account !== '' && !duplicate && !unreadable && !companionBehind && !busy;
 
@@ -139,6 +157,7 @@ export function IgnoreRulesEditor({ rules, accounts, onChange, loadFeed, compani
 
   // The preview follows the draft as it is typed (the feed is read once); with
   // no draft it shows what the saved rules leave out.
+  // A retired id is left out, as the sync leaves it out even if it reports.
   const isMapped = useMemo(() => {
     const ids = new Set(accounts.map((a) => a.id));
     return (id: string) => ids.has(id);
@@ -146,10 +165,10 @@ export function IgnoreRulesEditor({ rules, accounts, onChange, loadFeed, compani
   const previewRules = draft ? [draft] : draftBlank ? rules : [];
   const scopeId = draft ? draft.account : undefined;
   const inScope = feed
-    ? feed.filter((a) => isMapped(a.id) && (!scopeId || a.id === scopeId))
+    ? feed.filter((a) => isMapped(a.id) && (!scopeId || sameAccount(scopeId, a.id)))
         .reduce((n, a) => n + (a.transactions?.length ?? 0), 0)
     : 0;
-  const hits = feed ? findIgnored(previewRules, feed, isMapped) : [];
+  const hits = feed ? findIgnored(previewRules, feed, isMapped, sameAccount) : [];
 
   return (
     <div>

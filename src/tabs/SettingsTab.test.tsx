@@ -3,6 +3,7 @@ import { describe, it, expect, vi } from 'vitest';
 import { SyncPage } from '../pages/SyncPage';
 import { importChange, stampChange } from '../../shared/change-entries';
 import { runSync } from '../utils/sync';
+import { RELINKS_SINCE } from '../../shared/version';
 
 /**
  * Integration-level, on purpose — moved here wholesale from SyncPage.test.tsx
@@ -602,6 +603,126 @@ describe('SettingsTab', () => {
       } finally {
         vi.mocked(fetchAccounts).mockClear();
       }
+    });
+
+    describe('after a reconnection', () => {
+      const RELINK = { wfAccountId: 'wf-a', newId: 'sfin-1', oldIds: ['sfin-old'] };
+      const reconnected = (companion: string | null, confirmed: any[] = [RELINK]) => {
+        const props = withIgnoreRules({ kind: 'ok', list: [{ pattern: 'SWEEP FROM CORE', matchType: 'contains', account: 'sfin-old' }] });
+        props.store.getAccountMapping = vi.fn(async () => ({ 'sfin-1': 'wf-a', 'sfin-old': 'wf-a', 'sfin-2': 'wf-b' }));
+        props.store.getAccountNames = vi.fn(async () => ({ 'sfin-1': 'Growth', 'sfin-old': 'Growth (old)', 'sfin-2': 'Spend' }));
+        props.store.getCompanionVersion = vi.fn(async () => companion);
+        let held = { confirmed, declined: [] as string[] };
+        (props.store as any).readRelinkDecisions = vi.fn(async () => held);
+        (props.store as any).updateRelinkDecisions = vi.fn(async (change: (d: any) => any) => (held = change(held)));
+        return props;
+      };
+      const options = () => Array.from((screen.getByLabelText('Account') as HTMLSelectElement).options).map((o) => o.textContent);
+      /** The release just below the gate (a patch, or a minor at a .0), so
+       *  raising `RELINKS_SINCE` at release keeps these tests on either side of it. */
+      const beforeRelinks = (() => {
+        const [major, minor, patch] = RELINKS_SINCE.split('.').map(Number);
+        return patch > 0 ? `${major}.${minor}.${patch - 1}` : minor > 0 ? `${major}.${minor - 1}.0` : `${major - 1}.99.0`;
+      })();
+
+      it('lists both ids for an older companion, which matches rules by exact id', async () => {
+        render(<SyncPage {...reconnected(beforeRelinks)} />);
+        await switchTab(/settings/i);
+        await openSection(/^Ignore rules/i);
+        await waitFor(() => expect(options()).toEqual(['Choose an account…', 'All synced accounts', 'Growth', 'Spend', 'Growth (old)']));
+      });
+
+      it('folds the retired id into its replacement once the companion reads re-links', async () => {
+        render(<SyncPage {...reconnected(RELINKS_SINCE)} />);
+        await switchTab(/settings/i);
+        await openSection(/^Ignore rules/i);
+        await waitFor(() => expect(options()).toEqual(['Choose an account…', 'All synced accounts', 'Growth', 'Spend']));
+        fireEvent.change(screen.getByLabelText('Description pattern'), { target: { value: 'SWEEP FROM CORE' } });
+        fireEvent.change(screen.getByLabelText('Account'), { target: { value: 'sfin-1' } });
+        expect(await screen.findByText('You already have this rule.')).toBeInTheDocument();
+      });
+
+      it('a Yes in the account mapping is saved, and the rule list follows it', async () => {
+        const props = reconnected(null, []);
+        try {
+          render(<SyncPage {...props} />);
+          await switchTab(/settings/i);
+          await openMapper();
+          fireEvent.click(await screen.findByRole('button', { name: 'Yes, it replaces it' }));
+          await waitFor(() => expect((props.store as any).updateRelinkDecisions).toHaveBeenCalledTimes(1));
+          expect(await (props.store as any).readRelinkDecisions()).toEqual({ confirmed: [RELINK], declined: [] });
+          await openSection(/^Ignore rules/i);
+          await waitFor(() => expect(options()).toEqual(['Choose an account…', 'All synced accounts', 'Growth', 'Spend']));
+        } finally {
+          const { fetchAccounts } = await import('../utils/simplefin');
+          // The Accounts card's tests count this mock's calls from zero.
+          vi.mocked(fetchAccounts).mockClear();
+        }
+      });
+
+      it('says so when the stored answers cannot be read, instead of quietly hiding the questions and Undo', async () => {
+        const { RelinkDecisionsUnreadableError } = await import('../../shared/relink');
+        const props = reconnected(null);
+        (props.store as any).readRelinkDecisions = vi.fn(async () => { throw new RelinkDecisionsUnreadableError(); });
+        try {
+          render(<SyncPage {...props} />);
+          await switchTab(/settings/i);
+          await openMapper();
+          expect(await screen.findByText(/Your answers about reconnected accounts can.t be read/)).toBeInTheDocument();
+          expect(screen.queryByText(/is also mapped here/)).toBeNull();
+        } finally {
+          const { fetchAccounts } = await import('../utils/simplefin');
+          // The Accounts card's tests count this mock's calls from zero.
+          vi.mocked(fetchAccounts).mockClear();
+        }
+      });
+
+      it('asks nothing when the SimpleFin read behind the mapping reported an error: the old id may only be down', async () => {
+        const { fetchAccounts } = await import('../utils/simplefin');
+        vi.mocked(fetchAccounts).mockResolvedValueOnce({
+          errors: ['Growth (old): Connection to institution failed'],
+          accounts: [
+            { id: 'sfin-1', name: 'Growth', currency: 'USD', balance: '10.00', 'balance-date': 1700000000 },
+            { id: 'sfin-2', name: 'Spend', currency: 'USD', balance: '20.00', 'balance-date': 1700000000 },
+          ],
+        });
+        try {
+          const props = reconnected(null, []);
+          props.store.setAccountNames = vi.fn(async () => {});
+          render(<SyncPage {...props} />);
+          await switchTab(/settings/i);
+          await openMapper();
+          expect(await screen.findByText(/SimpleFin: Growth \(old\): Connection to institution failed/)).toBeInTheDocument();
+          await screen.findByText('Auto-match by name');
+          expect(screen.queryByText(/is also mapped here/)).toBeNull();
+          expect(screen.queryByRole('button', { name: 'Yes, it replaces it' })).toBeNull();
+        } finally {
+          // The Accounts card's tests count this mock's calls from zero.
+          vi.mocked(fetchAccounts).mockClear();
+        }
+      });
+
+      it('still asks over a read whose only message is a SimpleFin notice, which the sync ignores too', async () => {
+        const { fetchAccounts } = await import('../utils/simplefin');
+        vi.mocked(fetchAccounts).mockResolvedValueOnce({
+          errors: ['The requested date range exceeds the recommended 90 days'],
+          accounts: [
+            { id: 'sfin-1', name: 'Growth', currency: 'USD', balance: '10.00', 'balance-date': 1700000000 },
+            { id: 'sfin-2', name: 'Spend', currency: 'USD', balance: '20.00', 'balance-date': 1700000000 },
+          ],
+        });
+        try {
+          const props = reconnected(null, []);
+          props.store.setAccountNames = vi.fn(async () => {});
+          render(<SyncPage {...props} />);
+          await switchTab(/settings/i);
+          await openMapper();
+          expect(await screen.findByRole('button', { name: 'Yes, it replaces it' })).toBeInTheDocument();
+        } finally {
+          // The Accounts card's tests count this mock's calls from zero.
+          vi.mocked(fetchAccounts).mockClear();
+        }
+      });
     });
 
     it('asks for a companion update before rules can be added, when the connected one is older', async () => {

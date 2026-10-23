@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
   ignoreRuleProblem, normalizeIgnoreRules, parseIgnoreRules, parseIgnoreRulesStrict,
   ignoreRuleMatches, ignoreRuleFor, findIgnored, withIgnoreRule, withoutIgnoreRule,
+  relinkedRuleAccount, ruleAccountOptions,
   IGNORE_PATTERN_MAX, type IgnoreRule,
 } from './ignore-rules.js';
 import type { SimplefinAccount } from './types.js';
@@ -147,3 +148,104 @@ describe('editing', () => {
     expect(withoutIgnoreRule(list, 1).map((r) => r.pattern)).toEqual(['a', 'c']);
   });
 });
+
+describe('a re-linked connection', () => {
+  // The connection was added again: the same bank account came back as
+  // 'sfin-new', mapped to the same Wealthfolio account as 'sfin-old', and the
+  // person confirmed it. 'sfin-sav' is a second account merged into wf-cash on purpose.
+  const mapping = { 'sfin-old': 'wf-cash', 'sfin-new': 'wf-cash', 'sfin-sav': 'wf-cash', 'sfin-chk': 'wf-chk' };
+  const relinks = [{ wfAccountId: 'wf-cash', newId: 'sfin-new', oldIds: ['sfin-old'] }];
+  const sweeps = (id: string): SimplefinAccount => ({
+    id, name: 'Cash Account', currency: 'USD', balance: '0', 'balance-date': 1,
+    transactions: [{ id: `${id}-1`, posted: 1, amount: '-5.00', description: 'SWEEP FROM CORE' }],
+  });
+
+  it('reaches from a retired id to the one that replaced it, and nowhere else', () => {
+    const same = relinkedRuleAccount(relinks, mapping);
+    expect(same('sfin-old', 'sfin-new')).toBe(true);
+    expect(same('sfin-new', 'sfin-old')).toBe(false);
+    expect(same('sfin-old', 'sfin-sav')).toBe(false);
+    expect(same('sfin-x', 'sfin-x')).toBe(true);
+  });
+
+  it('a rule saved on the old id keeps reaching the account through the new one', () => {
+    const r = rule({ account: 'sfin-old' });
+    expect(findIgnored([r], [sweeps('sfin-new')], () => true, relinkedRuleAccount(relinks, mapping))).toHaveLength(1);
+    expect(findIgnored([r], [sweeps('sfin-chk')], () => true, relinkedRuleAccount(relinks, mapping))).toEqual([]);
+    expect(ignoreRuleFor([r], 'sfin-new', 'SWEEP FROM CORE')).toBeNull();
+  });
+
+  it('a rule limited to one of two accounts merged on purpose does not reach the other', () => {
+    const r = rule({ account: 'sfin-new' });
+    expect(findIgnored([r], [sweeps('sfin-new'), sweeps('sfin-sav')], () => true, relinkedRuleAccount(relinks, mapping)).map((h) => h.account.id))
+      .toEqual(['sfin-new']);
+    // Without a confirmed re-link nothing is aliased at all.
+    expect(findIgnored([rule({ account: 'sfin-old' })], [sweeps('sfin-new')], () => true, relinkedRuleAccount([], mapping))).toEqual([]);
+  });
+
+  it('follows a chain of re-links to its end, and into both accounts when one id was retired into two', () => {
+    // A → B, then B → C, with A no longer mapped: a rule on A reaches C.
+    const chain = [
+      { wfAccountId: 'wf-cash', newId: 'sfin-b', oldIds: ['sfin-a'] },
+      { wfAccountId: 'wf-cash', newId: 'sfin-c', oldIds: ['sfin-b'] },
+    ];
+    const m = { 'sfin-b': 'wf-cash', 'sfin-c': 'wf-cash' };
+    expect(relinkedRuleAccount(chain, m)('sfin-a', 'sfin-c')).toBe(true);
+    expect(ruleAccountOptions(m, { 'sfin-c': 'Cash' }, chain)).toEqual([{ id: 'sfin-c', name: 'Cash', aliases: ['sfin-a', 'sfin-b'] }]);
+    const split = [
+      { wfAccountId: 'wf-1', newId: 'sfin-x', oldIds: ['sfin-a'] },
+      { wfAccountId: 'wf-2', newId: 'sfin-y', oldIds: ['sfin-a'] },
+    ];
+    const both = relinkedRuleAccount(split, { 'sfin-x': 'wf-1', 'sfin-y': 'wf-2' });
+    expect([both('sfin-a', 'sfin-x'), both('sfin-a', 'sfin-y')]).toEqual([true, true]);
+  });
+
+  it('a re-link that no longer retires an id gives it no successor, though another re-link retires it', () => {
+    // A was replaced by X in wf-1, then mapped to wf-2 and replaced by Y there:
+    // only the second re-link still retires it.
+    const relinks2 = [
+      { wfAccountId: 'wf-1', newId: 'X', oldIds: ['A'] },
+      { wfAccountId: 'wf-2', newId: 'Y', oldIds: ['A'] },
+    ];
+    const same = relinkedRuleAccount(relinks2, { A: 'wf-2', X: 'wf-1', Y: 'wf-2' });
+    expect(same('A', 'X')).toBe(false);
+    expect(same('A', 'Y')).toBe(true);
+  });
+
+  it('an old id mapped elsewhere since is its own account again', () => {
+    const moved = { ...mapping, 'sfin-old': 'wf-chk' };
+    expect(relinkedRuleAccount(relinks, moved)('sfin-old', 'sfin-new')).toBe(false);
+    expect(ruleAccountOptions(moved, { 'sfin-old': 'Old', 'sfin-new': 'New' }, relinks).map((o) => o.id)).toContain('sfin-old');
+  });
+
+  it('offers every mapped account, folding only a retired id into the one that replaced it', () => {
+    const names = { 'sfin-old': 'Cash Account', 'sfin-new': 'Cash Account', 'sfin-sav': 'Savings', 'sfin-chk': 'Checking' };
+    expect(ruleAccountOptions(mapping, names, relinks)).toEqual([
+      { id: 'sfin-chk', name: 'Checking', aliases: [] },
+      { id: 'sfin-new', name: 'Cash Account', aliases: ['sfin-old'] },
+      { id: 'sfin-sav', name: 'Savings', aliases: [] },
+    ]);
+  });
+
+  it('lists neither id of a confirmed cycle, which the sync reads neither of', () => {
+    // "b replaces a" and "a replaces b", both confirmed (an older document, or two tabs).
+    const cycle = [{ wfAccountId: 'wf', newId: 'b', oldIds: ['a'] }, { wfAccountId: 'wf', newId: 'a', oldIds: ['b'] }];
+    expect(ruleAccountOptions({ a: 'wf', b: 'wf', c: 'wf-2' }, { a: 'A', b: 'B', c: 'C' }, cycle))
+      .toEqual([{ id: 'c', name: 'C', aliases: [] }]);
+  });
+
+  it('merges nothing without a confirmed re-link, whatever is or is not in the download', () => {
+    const names = { 'sfin-old': 'Cash Account', 'sfin-new': 'Cash Account' };
+    expect(ruleAccountOptions({ 'sfin-old': 'wf-cash', 'sfin-new': 'wf-cash' }, names, [], { 'wf-cash': 'Cash' }).map((o) => o.id))
+      .toEqual(['sfin-new', 'sfin-old']);
+  });
+
+  it('tells accounts with one name apart: by Wealthfolio name when it differs, else by the end of the id', () => {
+    expect(ruleAccountOptions({ a: 'wf-1', b: 'wf-2' }, { a: 'Brokerage', b: 'Brokerage' }, [], { 'wf-1': 'Taxable', 'wf-2': 'Roth' })
+      .map((o) => o.name)).toEqual(['Brokerage · Taxable', 'Brokerage · Roth']);
+    // An account auto-created from the bank's name: no "X · X".
+    expect(ruleAccountOptions({ 'ACT-1111': 'wf-1', 'ACT-2222': 'wf-2' }, { 'ACT-1111': 'Card', 'ACT-2222': 'Card' }, [], { 'wf-1': 'Card', 'wf-2': 'Card' })
+      .map((o) => o.name)).toEqual(['Card · …1111', 'Card · …2222']);
+  });
+});
+
