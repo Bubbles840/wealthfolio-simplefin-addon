@@ -4,7 +4,11 @@ import type { SimplefinAccount, AccountMapping } from '../../shared/types';
 import type { LoanLinks } from '../../shared/loan-balances';
 import { companionUnderstandsLoanBalances, LOAN_BALANCES_SINCE } from '../../shared/version';
 import { Button, ErrorBox, Select } from './ui';
-import { declineKey, emptyRelinkDecisions, openRelinkQuestions, type Relink, type RelinkDecisions } from '../../shared/relink';
+import { changeDayYear } from '../../shared/change-entries';
+import {
+  declineKey, emptyRelinkDecisions, openRelinkQuestions, withConfirmed, withDeclined, withoutConfirmed, withoutDeclined,
+  type RelinkDecisions,
+} from '../../shared/relink';
 import { companionUnderstandsRelinks, RELINKS_SINCE } from '../../shared/version';
 
 interface Props {
@@ -23,7 +27,11 @@ interface Props {
   /** What the person said about reconnections (shared/relink.ts). Without a
    *  writer, no question is asked. */
   relinkDecisions?: RelinkDecisions;
-  onRelinkDecisions?: (next: RelinkDecisions) => void | Promise<void>;
+  /** Saves one answer: `change` is applied to what is stored now, and the
+   *  stored result comes back. */
+  onRelinkDecisions?: (change: (current: RelinkDecisions) => RelinkDecisions) => Promise<RelinkDecisions>;
+  /** When each SimpleFin account last reported (Unix seconds), for the question. */
+  lastSeen?: Record<string, number>;
   /** Stored SimpleFin account names, for an old account no longer in the download. */
   sfinNames?: Record<string, string>;
 }
@@ -42,7 +50,7 @@ type CreatableAccountType = (typeof ACCOUNT_TYPE_OPTIONS)[number]['type'];
 
 export function AccountMapper({
   ctx, simplefinAccounts, initialMapping, initialLoanLinks = {}, onSave, onAccountCreated,
-  relinkDecisions, onRelinkDecisions, sfinNames = {}, companionVersion = null,
+  relinkDecisions, onRelinkDecisions, sfinNames = {}, lastSeen = {}, companionVersion = null,
 }: Props) {
   const [decisions, setDecisions] = useState<RelinkDecisions>(relinkDecisions ?? emptyRelinkDecisions());
   const [decisionError, setDecisionError] = useState('');
@@ -146,20 +154,21 @@ export function AccountMapper({
   const questions = onRelinkDecisions ? openRelinkQuestions(mapping, presentIds, decisions) : [];
   const relinksOffered = companionUnderstandsRelinks(companionVersion);
   const nameOf = (id: string) => sfinNames[id] || simplefinAccounts.find((a) => a.id === id)?.name || id;
-  const decide = async (next: RelinkDecisions) => {
+  const seenLine = (id: string) => {
+    const at = lastSeen[id];
+    return at ? `last reported ${changeDayYear(new Date(at * 1000).toISOString(), new Date())}` : 'not reported recently';
+  };
+  const decide = async (change: (current: RelinkDecisions) => RelinkDecisions) => {
+    if (!onRelinkDecisions) return;
     setDecisionError('');
     try {
-      await onRelinkDecisions?.(next);
-      setDecisions(next);
+      setDecisions(await onRelinkDecisions(change));
     } catch (e: any) {
       setDecisionError(e?.message ?? 'Could not save that answer');
     }
   };
-  const confirm = (q: Relink) => decide({
-    confirmed: [...decisions.confirmed.filter((r) => r.newId !== q.newId), q], declined: decisions.declined,
-  });
-  const decline = (q: Relink) => decide({ confirmed: decisions.confirmed, declined: [...decisions.declined, declineKey(q)] });
-  const undoConfirm = (newId: string) => decide({ confirmed: decisions.confirmed.filter((r) => r.newId !== newId), declined: decisions.declined });
+  /** The Nos about accounts mapped to this row's account, so one can be taken back. */
+  const declinedFor = (sfinId: string) => decisions.declined.filter((k) => k.split('|')[1] === sfinId && k.split('|')[0] === mapping[sfinId]);
 
   return (
     <div>
@@ -237,16 +246,16 @@ export function AccountMapper({
             {questions.filter((q) => q.newId === sfin.id).map((q) => (
               <div key={declineKey(q)} style={{ marginTop: 6, display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>
                 <span className="sfin-subtle" style={{ fontSize: 12 }}>
-                  {q.oldIds.map(nameOf).join(', ')} {q.oldIds.length === 1 ? 'is' : 'are'} also mapped here and no longer in
-                  SimpleFin. Is this the same account, reconnected? If so, the sync matches what is already stored
-                  instead of importing it again, and Deep scan removes copies it already imported.
+                  {nameOf(q.oldIds[0])} ({seenLine(q.oldIds[0])}) is also mapped here and not in SimpleFin now. Is this
+                  the same account, reconnected? If so, the sync matches what is already stored instead of importing it
+                  again, and Deep scan removes copies it already imported.
                 </span>
                 {relinksOffered ? (
                   <>
-                    <Button variant="outline" style={{ padding: '3px 8px', fontSize: 12 }} onClick={() => void confirm(q)}>
-                      Yes, it replaces {q.oldIds.length === 1 ? 'it' : 'them'}
+                    <Button variant="outline" style={{ padding: '3px 8px', fontSize: 12 }} onClick={() => void decide((d) => withConfirmed(d, q))}>
+                      Yes, it replaces it
                     </Button>
-                    <Button variant="ghost" style={{ padding: '3px 8px', fontSize: 12 }} onClick={() => void decline(q)}>
+                    <Button variant="ghost" style={{ padding: '3px 8px', fontSize: 12 }} onClick={() => void decide((d) => withDeclined(d, q))}>
                       No, both feed this account
                     </Button>
                   </>
@@ -260,7 +269,14 @@ export function AccountMapper({
             {decisions.confirmed.filter((r) => r.newId === sfin.id && mapping[sfin.id] === r.wfAccountId).map((r) => (
               <div key={`c-${r.newId}`} className="sfin-subtle" style={{ fontSize: 12, marginTop: 4 }}>
                 Reconnection of {r.oldIds.map(nameOf).join(', ')}.{' '}
-                <Button variant="ghost" style={{ padding: '0 4px', fontSize: 12 }} onClick={() => void undoConfirm(r.newId)}>Undo</Button>
+                <Button variant="ghost" style={{ padding: '0 4px', fontSize: 12 }} onClick={() => void decide((d) => withoutConfirmed(d, r.newId))}>Undo</Button>
+                {' '}Undo doesn't bring back copies already removed, and the next sync imports the overlap still in SimpleFin's window again.
+              </div>
+            ))}
+            {relinksOffered && declinedFor(sfin.id).map((k) => (
+              <div key={`d-${k}`} className="sfin-subtle" style={{ fontSize: 12, marginTop: 4 }}>
+                You said {k.split('|').slice(2).map(nameOf).join(', ')} is a separate feed of this account.{' '}
+                <Button variant="ghost" style={{ padding: '0 4px', fontSize: 12 }} onClick={() => void decide((d) => withoutDeclined(d, k))}>Ask again</Button>
               </div>
             ))}
             {pendingTypeChoice === sfin.id && (

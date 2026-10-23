@@ -8,7 +8,7 @@
  * Must not be imported by sync-core.ts: it imports sync-core.ts.
  */
 import { bankDayInstant } from './bank-day.js';
-import { activeRelinks, type Relink } from './relink.js';
+import { activeRelinks, retiredIds, type Relink } from './relink.js';
 import { accountNameWords, expiryHoldAccount } from './sync-core.js';
 import { formatDollars } from './telegram.js';
 import { accountTxKey } from './transfers.js';
@@ -100,7 +100,9 @@ export function judgeHeldTransfer(
   // and name words; any other mapped account has neither, so it holds every leg.
   // An id a confirmed re-link retired is left out, as the sync leaves it out:
   // it never reports again, so nothing waits on it.
-  const replaced = new Set(activeRelinks(feeds.relinks ?? [], feeds.mapping).flatMap((r) => r.oldIds));
+  // (`retiredIds`, the sync's rule: not one mapped elsewhere since; an unmapped
+  // id is no mapped feed here either way.)
+  const replaced = retiredIds(activeRelinks(feeds.relinks ?? [], feeds.mapping), feeds.mapping);
   const mappedIds = Object.keys(feeds.mapping).filter((id) => !replaced.has(id));
   const alive = new Map<string, number>();
   const nameWords = new Map<string, readonly string[]>();

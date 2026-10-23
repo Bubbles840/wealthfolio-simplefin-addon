@@ -3,7 +3,7 @@ import {
   accountCreatedChange, amazonLabelChange, amazonLabelOf, balanceCorrectionChange, bankUpdateChange, bookkeepingChange, budgetSetChange,
   categoryFiledChange, categoryRuleCreatedChange, CHANGE_KINDS, changeDay, changeMoney, duplicateRemovedChange,
   importChange, mappingRuleCreatedChange, newEntryId, newRunId, openingBalanceFiledChange, paybackFiledChange, pendingRemovedChange,
-  stampChange, startingBalanceChange, startingBalanceMovedChange, transactionRemovedChange, transferLinkChange, transferTypeChange, venmoNoteChange,
+  stampChange, startingBalanceChange, startingBalanceMovedChange, startingBalanceRemovedChange, transactionRemovedChange, transferLinkChange, transferTypeChange, venmoNoteChange,
 
   type ChangeDraft,
 } from './change-entries.js';
@@ -35,7 +35,7 @@ describe('ids and stamps', () => {
   });
 
   it('lists every kind once', () => {
-    expect(new Set(CHANGE_KINDS).size).toBe(20);
+    expect(new Set(CHANGE_KINDS).size).toBe(21);
   });
 });
 
@@ -104,6 +104,9 @@ describe('summaries — one per kind, bank text raw', () => {
       before: { amountCents: 120000, date: '2026-06-19', activityType: 'CREDIT' },
       after: { amountCents: 80000, date: '2026-04-22', activityType: 'CREDIT' },
     }), 'Changed the starting balance and moved it to Apr 22 (was $1,200.00 on Jun 19)'],
+    ['starting-balance-removed', startingBalanceRemovedChange({
+      account: CHECKING, activityId: 'sb-3', amountCents: 4000, date: '2026-09-01', activityType: 'CREDIT', comment: 'Starting balance · ACT-new',
+    }), 'Removed a second starting balance after a reconnection'],
     ['balance-correction', balanceCorrectionChange({
       account: CHECKING, actor: 'auto', activityId: 'plug-1', amountCents: -215, date: '2026-10-12', activityType: 'TRANSFER_OUT',
       comment: 'Balance adjustment · ACT-1f2e · 2026-10-12',

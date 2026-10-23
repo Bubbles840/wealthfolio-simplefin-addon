@@ -195,7 +195,7 @@ export function SettingsTab({
       store.getIgnoredAccounts?.() ?? [],
       store.getLoanLinks?.() ?? {},
     ]).then(([hours, heal, adjust, r, m, ignored, links]) => {
-      store.getRelinkDecisions?.().then(setRelinkDecisions).catch(() => setRelinkDecisions(null));
+      Promise.resolve().then(() => store.readRelinkDecisions()).then(setRelinkDecisions).catch(() => setRelinkDecisions(null));
       setScheduleHours(hours);
       setAutoHeal(heal);
       setAutoAdjust(adjust);
@@ -515,8 +515,9 @@ export function SettingsTab({
               companionVersion={companionVersion}
               onSave={saveMapping}
               relinkDecisions={relinkDecisions ?? undefined}
-              onRelinkDecisions={relinkDecisions && store.setRelinkDecisions ? (next) => store.setRelinkDecisions(next) : undefined}
+              onRelinkDecisions={relinkDecisions ? (change) => store.updateRelinkDecisions(change) : undefined}
               sfinNames={sfinNames}
+              lastSeen={Object.fromEntries(Object.entries(balances).map(([id, b]) => [id, b.date]))}
               onAccountCreated={(created) => { void store.recordChange?.(accountCreatedChange(created)); }}
             />
             <div style={{ marginTop: 12, display: 'flex', gap: 8, alignItems: 'center' }}>

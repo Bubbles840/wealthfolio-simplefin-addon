@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
   amazonLabelChange, balanceCorrectionChange, bankUpdateChange, categoryFiledChange, categoryRuleCreatedChange,
   duplicateRemovedChange, importChange, mappingRuleCreatedChange, openingBalanceFiledChange, reversalChange,
-  stampChange, startingBalanceChange, startingBalanceMovedChange, transferLinkChange, transferTypeChange, venmoNoteChange,
+  stampChange, startingBalanceChange, startingBalanceMovedChange, startingBalanceRemovedChange, transferLinkChange, transferTypeChange, venmoNoteChange,
   type ChangeDraft, type ChangeEntry,
 } from './change-entries.js';
 import type { ChangeLogItem } from './change-log.js';
@@ -508,6 +508,30 @@ describe('planChangeUndo — sync decisions', () => {
       } },
     ]);
     expect(r.rowAfter).toBe('created');
+  });
+});
+
+describe('planChangeUndo — a second starting balance removed after a reconnection', () => {
+  const removed = entry(startingBalanceRemovedChange({
+    account: CHECKING, activityId: 'sb-new', amountCents: 450, date: '2026-09-01', activityType: 'CREDIT', comment: 'Starting balance · ACT-new',
+  }));
+
+  it('Undo puts it back, unless one is back already; Redo removes what the Undo put back', () => {
+    expect(currentRowId(removed, null)).toBeNull();
+    const p = ok(planChangeUndo(removed, 'undo', { row: null, currency: 'USD' }, { latest: null }));
+    expect(p.steps).toEqual([{ do: 'import', row: {
+      accountId: 'wf-checking', sourceSystem: 'simplefin', activityType: 'CREDIT', date: '2026-09-01T12:00:00Z', symbol: '$CASH-USD',
+      amount: 4.5, currency: 'USD', comment: 'Starting balance · ACT-new', isValid: true, isDraft: false,
+    } }]);
+    expect(p.rowAfter).toBe('created');
+    expect(reason(planChangeUndo(removed, 'undo', { row: null, currency: 'USD', startingBalanceId: 'sb-2' }, { latest: null })))
+      .toBe('That starting balance is back already.');
+
+    const back = row({ id: 'sb-back', type: 'CREDIT', absCents: 450, date: '2026-09-01', comment: 'Starting balance · ACT-new' });
+    const r = ok(planChangeUndo(removed, 'redo', { row: back, currency: 'USD' }, { latest: undo(removed, { activityId: 'sb-back' }) }));
+    expect(r.steps).toEqual([{ do: 'delete', activityId: 'sb-back' }]);
+    expect(reason(planChangeUndo(removed, 'redo', { row: null, currency: 'USD' }, { latest: undo(removed, { activityId: 'sb-back' }) })))
+      .toBe('That starting balance is gone already — nothing was redone.');
   });
 });
 

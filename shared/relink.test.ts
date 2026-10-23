@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
-  activeRelinks, declineKey, detectRelinks, openRelinkQuestions, parseRelinkDecisions, planRelinkAdoption,
+  activeRelinks, declineKey, detectRelinks, emptyRelinkDecisions, isDeclined, openRelinkQuestions, parseRelinkDecisions,
+  parseRelinkDecisionsStrict, planRelinkAdoption, retiredIds, withConfirmed, withDeclined, withoutConfirmed, withoutDeclined,
   type Relink, type RelinkRow, type RelinkTx,
 } from './relink.js';
 
@@ -21,10 +22,10 @@ describe('detectRelinks', () => {
 });
 
 const row = (wfId: string, txId: string, description: string, extra: Partial<RelinkRow> = {}): RelinkRow => ({
-  wfId, txId, description, date: '2026-09-02', absCents: 450, pending: false, bookkeeping: false, linked: false, ...extra,
+  wfId, txId, description, date: '2026-09-02', absCents: 450, pending: false, outflow: true, bookkeeping: false, linked: false, ...extra,
 });
 const tx = (txId: string, description: string, extra: Partial<RelinkTx> = {}): RelinkTx => ({
-  txId, description, date: '2026-09-02', absCents: 450, pending: false, ...extra,
+  txId, description, date: '2026-09-02', absCents: 450, pending: false, outflow: true, ...extra,
 });
 
 describe('planRelinkAdoption', () => {
@@ -112,5 +113,41 @@ describe('re-link decisions', () => {
     expect(openRelinkQuestions(mapping, feed, { confirmed: [], declined: [] })).toEqual([R]);
     expect(openRelinkQuestions(mapping, feed, { confirmed: [R], declined: [] })).toEqual([]);
     expect(openRelinkQuestions(mapping, feed, { confirmed: [], declined: [declineKey(R)] })).toEqual([]);
+  });
+});
+
+describe('the answers', () => {
+  const d0 = () => emptyRelinkDecisions();
+  const Q = (oldId: string) => ({ wfAccountId: 'wf', newId: 'n', oldIds: [oldId] });
+
+  it('asks per absent id, and a Yes or a No answers only that one', () => {
+    const mapping = { a: 'wf', b: 'wf', n: 'wf' };
+    expect(openRelinkQuestions(mapping, new Set(['n']), d0())).toEqual([Q('a'), Q('b')]);
+    expect(openRelinkQuestions(mapping, new Set(['n']), withDeclined(d0(), Q('a')))).toEqual([Q('b')]);
+    const both = withConfirmed(withConfirmed(d0(), Q('b')), Q('a'));
+    expect(both.confirmed).toEqual([{ wfAccountId: 'wf', newId: 'n', oldIds: ['a', 'b'] }]);
+    expect(openRelinkQuestions(mapping, new Set(['n']), both)).toEqual([]);
+  });
+
+  it('an older No naming several ids still covers each, and one can be taken back', () => {
+    const old = { confirmed: [], declined: ['wf|n|a|b'] };
+    expect(isDeclined(old.declined, Q('a'))).toBe(true);
+    expect(isDeclined(old.declined, Q('c'))).toBe(false);
+    expect(withoutDeclined(old, 'wf|n|a|b').declined).toEqual([]);
+    expect(withoutConfirmed(withConfirmed(d0(), Q('a')), 'n')).toEqual(d0());
+  });
+
+  it('retires an old id only while it is still mapped to the account, or unmapped and not a loan', () => {
+    const r = [{ wfAccountId: 'wf', newId: 'n', oldIds: ['a', 'b', 'c', 'd'] }];
+    const mapping = { n: 'wf', a: 'wf', b: 'wf-other' };
+    expect([...retiredIds(r, mapping, { d: 'LIAB-1' })].sort()).toEqual(['a', 'c']);
+  });
+
+  it('a strict read tells corrupt from absent, and an entry it cannot read makes it corrupt', () => {
+    expect(parseRelinkDecisionsStrict(null)).toEqual({ kind: 'absent' });
+    expect(parseRelinkDecisionsStrict('nope')).toEqual({ kind: 'corrupt' });
+    expect(parseRelinkDecisionsStrict('[]')).toEqual({ kind: 'corrupt' });
+    expect(parseRelinkDecisionsStrict('{"declined": [3]}')).toEqual({ kind: 'corrupt' });
+    expect(parseRelinkDecisionsStrict('{"declined": ["wf|n|a"]}')).toEqual({ kind: 'ok', decisions: { confirmed: [], declined: ['wf|n|a'] } });
   });
 });

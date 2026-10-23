@@ -43,7 +43,7 @@ export const COMPANION_ONLY_KINDS: ReadonlySet<string> = new Set([
 ]);
 export const UNDO_KINDS: ReadonlySet<string> = new Set([
   ...SYNC_DECISION_KINDS, ...COMPANION_ONLY_KINDS, 'mapping-rule-created', 'starting-balance', 'starting-balance-moved',
-  'transaction-removed',
+  'starting-balance-removed', 'transaction-removed',
 ]);
 
 export const SPENDING_TAXONOMY = 'spending_categories';
@@ -184,6 +184,7 @@ export function currentRowId(entry: ChangeEntry, latest: ChangeEntry | null): st
       return str(rec(entry.before).activityId) ?? entry.subject.activityIds?.[0] ?? null;
     case 'duplicate-removed':
     case 'transaction-removed':
+    case 'starting-balance-removed':
       // The row was removed; there is no row until an undo puts one back.
       return null;
     default:
@@ -636,6 +637,33 @@ export function planChangeUndo(
         done: op === 'undo'
           ? "Undone — the starting balance is back as it was, so the account may no longer match the bank's balance."
           : 'Redone.',
+      });
+    }
+
+    case 'starting-balance-removed': {
+      const amountCents = num(before.amountCents);
+      const date = str(before.date);
+      const comment = str(before.comment);
+      const activityType = str(before.activityType);
+      const accountId = entry.account?.wfId ?? null;
+      if (amountCents === null || !date || !comment || !activityType || !accountId) return refuse(UNDO_NOT_POSSIBLE);
+      if (op === 'redo') {
+        const row = state.row;
+        if (!row) return refuse('That starting balance is gone already — nothing was redone.');
+        if (row.absCents !== Math.abs(amountCents) || row.date !== date) return refuse(undoChangedSince(op));
+        return plan({ op, needsSync: false, rowAfter: null, steps: [{ do: 'delete', activityId: row.id }], done: 'Redone — the second starting balance is gone again.' });
+      }
+      if (state.startingBalanceId) return refuse('That starting balance is back already.');
+      return plan({
+        op, needsSync: false, rowAfter: 'created',
+        done: "Undone — the second starting balance is back, so the account may no longer match the bank's balance.",
+        steps: [{
+          do: 'import',
+          row: {
+            accountId, sourceSystem: 'simplefin', activityType, date: bankDayInstant(date), symbol: `$CASH-${currency}`,
+            amount: Math.abs(amountCents) / 100, currency, comment, isValid: true, isDraft: false,
+          },
+        }],
       });
     }
 

@@ -5,6 +5,7 @@ import type { HostActivity, SyncHost } from './sync-host.js';
 import { emptySyncOverrides, setTxOverride } from './sync-overrides.js';
 import { accountTxKey } from './transfers.js';
 import type { Relink } from './relink.js';
+import type { ChangeEntry, ChangeLogSink } from './change-entries.js';
 
 /**
  * A SimpleFin connection removed and added again: the same bank account comes
@@ -253,6 +254,109 @@ describe('a re-linked connection', () => {
       const result = await runSyncCore(host, store, { heal: true });
 
       expect(result.prunedDuplicates).toEqual([]);
+    });
+  });
+
+  describe('confirmed, the second review', () => {
+    const capture = (): ChangeLogSink & { entries: () => ChangeEntry[] } => {
+      const batches: ChangeEntry[][] = [];
+      return { writer: 'addon', run: 'aRUN1', append: vi.fn(async (e: ChangeEntry[]) => { batches.push(e); }), entries: () => batches.flat() };
+    };
+    const net = (rows: HostActivity[] | undefined) => Math.round((rows ?? [])
+      .reduce((sum, r) => sum + (['WITHDRAWAL', 'TRANSFER_OUT', 'FEE', 'TAX'].includes(String(r.activityType)) ? -1 : 1) * Number(r.amount), 0) * 100) / 100;
+
+    it('a late Yes: heal removes the new id\'s starting balance that cancelled the copies, with its own Undo', async () => {
+      // Before the Yes, the new id's first sync imported the copy and booked a
+      // starting balance cancelling it; the old id's starting balance stands.
+      const rows = [
+        stored('sb-old', 'Starting balance · sfin-old', '1000.00', 30, { activityType: 'CREDIT' }),
+        ...oldRows(), copy(),
+        stored('sb-new', 'Starting balance · sfin-new', '4.50', 6, { activityType: 'CREDIT' }),
+      ];
+      const log = capture();
+      const { host, store, activities } = createFakeHost(reconnected(rows, confirmed));
+      await runSyncCore(host, store, { heal: true, changeLog: log });
+
+      expect(activities.get('wf-chk')?.map((r) => r.id)).not.toContain('b-coffee');
+      expect(activities.get('wf-chk')?.map((r) => r.id)).not.toContain('sb-new');
+      expect(activities.get('wf-chk')?.map((r) => r.id)).toContain('sb-old');
+      // The old books exactly, plus the purchase made since: 1000 − 4.50 + 2500 − 60.
+      expect(net(activities.get('wf-chk'))).toBe(3435.5);
+      expect(log.entries().find((e) => e.kind === 'starting-balance-removed')).toMatchObject({
+        subject: { activityIds: ['sb-new'], amountCents: 450 }, before: { comment: 'Starting balance · sfin-new' }, undoable: true,
+      });
+    });
+
+    it('keeps the new id\'s starting balance when the old id has none of its own', async () => {
+      const rows = [...oldRows(), copy(), stored('sb-new', 'Starting balance · sfin-new', '4.50', 6, { activityType: 'CREDIT' })];
+      const { host, store, activities } = createFakeHost(reconnected(rows, confirmed));
+      await runSyncCore(host, store, { heal: true });
+      expect(activities.get('wf-chk')?.map((r) => r.id)).toContain('sb-new');
+    });
+
+    it('matches a purchase and its refund by direction, never one for the other', async () => {
+      const feed = { ...newFeed(), transactions: [
+        { id: 'TRN-n5', posted: posted(3), amount: '-25.00', description: 'HARDWARE STORE' },
+        { id: 'TRN-n6', posted: posted(3), amount: '25.00', description: 'HARDWARE STORE' },
+      ] };
+      const rows = [
+        stored('z-buy', 'HARDWARE STORE · TRN-o5', '-25.00', 3),
+        stored('a-refund', 'HARDWARE STORE · TRN-o6', '25.00', 3),
+        stored('b-refund', 'HARDWARE STORE · TRN-n6', '25.00', 3, { activityType: 'TRANSFER_IN', sourceGroupId: 'g-1' }),
+      ];
+      const { host, store, activities } = createFakeHost(reconnected(rows, { ...confirmed, accountSet: { errors: [], accounts: [feed] } }));
+      await runSyncCore(host, store, { heal: true });
+      const ids = activities.get('wf-chk')?.map((r) => r.id);
+      expect(ids).toEqual(expect.arrayContaining(['z-buy', 'b-refund']));
+      expect(ids).not.toContain('a-refund');
+      expect(net(activities.get('wf-chk'))).toBe(0);
+    });
+
+    it('keeps a copy linked by hand on the add-on, which reads the group off the row', async () => {
+      const { host, store, activities } = createFakeHost(reconnected([...oldRows(), copy({ activityType: 'WITHDRAWAL', sourceGroupId: 'g-hand' })], confirmed));
+      await runSyncCore({ ...host, capabilities: { ...host.capabilities, readsSourceGroupId: false } } as SyncHost, store, { heal: true });
+      const ids = activities.get('wf-chk')?.map((r) => r.id);
+      expect(ids).toContain('b-coffee');
+      expect(ids).not.toContain('a-coffee');
+    });
+
+    it('imports an old id again once it is mapped to an account of its own', async () => {
+      const old = { id: 'sfin-old', name: 'Savings', currency: 'USD', balance: '50.00', 'balance-date': posted(0),
+        transactions: [{ id: 'TRN-s1', posted: posted(2), amount: '-10.00', description: 'ATM' }] };
+      const seed = reconnected(oldRows(), { ...confirmed, accountSet: { errors: [], accounts: [newFeed(), old] },
+        mapping: { 'sfin-old': 'wf-sav', 'sfin-new': 'wf-chk' } });
+      const { host, store, activities } = createFakeHost(seed);
+      const result = await runSyncCore(host, store, { force: true });
+      expect(comments(activities.get('wf-sav'))).toEqual(['ATM · TRN-s1']);
+      expect(result.errors.join(' ')).not.toMatch(/not imported/);
+    });
+
+    it('says so when a retired id reports again, and imports none of it', async () => {
+      const old = { id: 'sfin-old', name: 'Old Checking', currency: 'USD', balance: '50.00', 'balance-date': posted(0),
+        transactions: [{ id: 'TRN-o9', posted: posted(2), amount: '-10.00', description: 'ATM' }] };
+      const { host, store, activities } = createFakeHost(reconnected(oldRows(), { ...confirmed, accountSet: { errors: [], accounts: [newFeed(), old] } }));
+      const result = await runSyncCore(host, store, { force: true });
+      expect(comments(activities.get('wf-chk'))).not.toContain('ATM · TRN-o9');
+      expect(result.errors.join(' ')).toMatch(/Old Checking reported 1 transaction, which was not imported: you confirmed Checking replaces it/);
+    });
+
+    it('deletes nothing while another feed of the account is missing, or SimpleFin reported an error', async () => {
+      const seed = reconnected([...oldRows(), copy(), stored('a-rent', 'ONLINE TRANSFER · Rent share · TRN-s1', '-100.00', 3)],
+        { ...confirmed, mapping: { 'sfin-old': 'wf-chk', 'sfin-new': 'wf-chk', 'sfin-sav': 'wf-chk' } });
+      const first = createFakeHost(seed);
+      const r1 = await runSyncCore(first.host, first.store, { heal: true });
+      expect(r1.prunedDuplicates).toEqual([]);
+      expect(first.activities.get('wf-chk')?.map((r) => r.id)).toEqual(expect.arrayContaining(['a-rent', 'b-coffee']));
+
+      const second = createFakeHost(reconnected([...oldRows(), copy()], { ...confirmed, accountSet: { errors: ['Connection to the bank failed'], accounts: [newFeed()] } }));
+      const r2 = await runSyncCore(second.host, second.store, { heal: true });
+      expect(r2.prunedDuplicates).toEqual([]);
+    });
+
+    it('counts the rows it matched', async () => {
+      const { host, store } = createFakeHost(reconnected(oldRows(), confirmed));
+      const result = await runSyncCore(host, store, { force: true });
+      expect(result.relinkAdopted).toBe(2);
     });
   });
 });
