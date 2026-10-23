@@ -156,6 +156,25 @@ describe('syncHoldingsWithFeedPrices', () => {
     expect(wf.value('wf-a', next, 'MODEL BASKET')).toEqual({ symbol: 'MODEL BASKET', value: 50463 });
   });
 
+  it('keeps a holding on its own asset on a day the feed sends no price for it', async () => {
+    const wf = withBasket();
+    await syncHoldingsWithFeedPrices(wf.io, wf.pricing, 'wf-a', snap('MODEL BASKET', '400.5'), priceOf('MODEL BASKET', '124.84394507'), 'AAAA1111', undefined, NOW);
+
+    for (const [next, prices] of [['2026-10-20', []], ['2026-10-21', priceOf('MODEL BASKET', '0')]] as const) {
+      await syncHoldingsWithFeedPrices(wf.io, wf.pricing, 'wf-a', snap('MODEL BASKET', '400.5', next), prices, 'AAAA1111', undefined, NOW);
+      // Valued at its last price, not moved onto the shared asset nobody prices.
+      expect(wf.value('wf-a', next, 'MODEL BASKET')).toEqual({ symbol: 'MODEL BASKET (AAAA1111)', value: 50000 });
+    }
+  });
+
+  it('keeps the last price, not the average cost, for a kept holding that reports a cost', async () => {
+    const wf = withBasket();
+    await syncHoldingsWithFeedPrices(wf.io, wf.pricing, 'wf-a', snap('MODEL BASKET', '400.5'), priceOf('MODEL BASKET', '124.84394507'), 'AAAA1111', undefined, NOW);
+    const next = '2026-10-20';
+    await syncHoldingsWithFeedPrices(wf.io, wf.pricing, 'wf-a', snap('MODEL BASKET', '400.5', next, '100'), [], 'AAAA1111', undefined, NOW);
+    expect(wf.value('wf-a', next, 'MODEL BASKET')).toEqual({ symbol: 'MODEL BASKET (AAAA1111)', value: 50000 });
+  });
+
   it('leaves a shared asset the person set to manual alone', async () => {
     const wf = wealthfolio();
     wf.seedAsset('MODEL BASKET', 'MANUAL', OLD);

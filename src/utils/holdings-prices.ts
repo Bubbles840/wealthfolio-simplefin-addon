@@ -195,7 +195,11 @@ export async function syncHoldingsWithFeedPrices(
    *  a shown code can be another listing's (SHOP.TO shows as SHOP), so the
    *  check's id decides whether the judgement stands. */
   const judgedBy = new Map<string, string>();
-  if (tag && priced.size > 0) {
+  /** Holdings already on their per-account asset that the feed sends no usable
+   *  price for today: they stay there at their last price. Written back onto the
+   *  shared asset, which nothing prices, they would be worth $0. */
+  const kept = new Set<string>();
+  if (tag && snapshot.positions.length > 0) {
     let holdings: HeldAsset[];
     try {
       holdings = await pricing.getHoldings(wfAccountId);
@@ -208,7 +212,10 @@ export async function syncHoldingsWithFeedPrices(
     for (const p of snapshot.positions) {
       const key = symbolKey(p.symbol);
       const feed = priced.get(key);
-      if (!feed) continue;
+      if (!feed) {
+        if (held.has(symbolKey(scoped(p.symbol)))) kept.add(key);
+        continue;
+      }
       if (feed.fromDescription) moving.add(key);
       else if (held.has(symbolKey(scoped(p.symbol)))) moving.add(key); // may move back in step 3
       else if (held.has(key)) {
@@ -222,12 +229,15 @@ export async function syncHoldingsWithFeedPrices(
   // 3. A holding filed under its description is checked under its per-account
   // symbol only: its bare name is never a ticker, and checking it would send
   // Wealthfolio to its price provider on every sync.
-  const byDescription = (p: { symbol: string }) => !!priced.get(symbolKey(p.symbol))?.fromDescription && moving.has(symbolKey(p.symbol));
+  // A kept holding is checked under its per-account symbol only, for the same reason.
+  const byDescription = (p: { symbol: string }) => (!!priced.get(symbolKey(p.symbol))?.fromDescription && moving.has(symbolKey(p.symbol)))
+    || kept.has(symbolKey(p.symbol));
   const check = await io.checkImport(wfAccountId, [{
     ...snapshot,
     positions: [
       ...snapshot.positions.filter((p) => !byDescription(p)),
-      ...snapshot.positions.filter((p) => moving.has(symbolKey(p.symbol))).map((p) => ({ ...p, symbol: scoped(p.symbol) })),
+      ...snapshot.positions.filter((p) => moving.has(symbolKey(p.symbol)) || kept.has(symbolKey(p.symbol)))
+        .map((p) => ({ ...p, symbol: scoped(p.symbol) })),
     ],
   }]);
   if (check.validationErrors.length > 0) {
@@ -276,11 +286,11 @@ export async function syncHoldingsWithFeedPrices(
   const written: HoldingsSnapshot = {
     ...snapshot,
     positions: snapshot.positions.map((p) =>
-      moving.has(symbolKey(p.symbol)) ? { ...p, symbol: scoped(p.symbol), quoteMode: 'MANUAL' as const } : p),
+      moving.has(symbolKey(p.symbol)) || kept.has(symbolKey(p.symbol)) ? { ...p, symbol: scoped(p.symbol), quoteMode: 'MANUAL' as const } : p),
   };
   // A per-account symbol is priced here, never by a provider: not unresolved.
   const unresolvedKeys = new Set(
-    snapshot.positions.map((p) => symbolKey(p.symbol)).filter((k) => !moving.has(k)),
+    snapshot.positions.map((p) => symbolKey(p.symbol)).filter((k) => !moving.has(k) && !kept.has(k)),
   );
   const unresolvedSymbols = check.symbols
     .filter((s) => !s.found && unresolvedKeys.has(symbolKey(s.symbol)))
@@ -298,6 +308,23 @@ export async function syncHoldingsWithFeedPrices(
       throw new Error(result.errors.join('; '));
     }
     imported = result.snapshotsImported;
+  }
+  // A kept holding's import wrote the day's price from its average cost (a
+  // MANUAL asset): put back the last price it had, which is what it is worth.
+  if (imported > 0) {
+    for (const key of kept) {
+      const p = snapshot.positions.find((x) => symbolKey(x.symbol) === key);
+      const assetId = p?.avgCost ? ids.get(symbolKey(scoped(p.symbol))) : undefined;
+      if (!p || !assetId) continue;
+      try {
+        const last = (await pricing.getHistory(assetId))
+          .filter((q) => dayOf(q.timestamp) < snapshot.date)
+          .sort((a, b) => (dayOf(a.timestamp) < dayOf(b.timestamp) ? 1 : -1))[0];
+        if (last) await pricing.updateQuote(assetId, manualQuote(assetId, snapshot.date, String(last.close), p.currency));
+      } catch (e: any) {
+        log(`[simplefin-sync] could not keep the last price of ${scoped(p.symbol)}: ${e?.message ?? e}`);
+      }
+    }
   }
   if (moving.size === 0) return { imported, skipped, unresolvedSymbols };
 
