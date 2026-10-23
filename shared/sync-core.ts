@@ -8,6 +8,7 @@ import { REIMBURSEMENT_SUBTYPE } from './cash-flow-bucket.js';
 import { accountTxKey, detectTransferPairs, TRANSFER_MATCH_WINDOW_SECONDS } from './transfers.js';
 import type { TransferCandidate } from './transfers.js';
 import { planReconciliation, IN_TRANSIT_COMMENT_PREFIX } from './reconcile.js';
+import { isSimplefinNotice } from './simplefin-payload.js';
 import { accountTag, feedPrices, toHoldingsSnapshot } from './holdings.js';
 import { loanBalanceOf, type LinkedLoan, type LoanLinks } from './loan-balances.js';
 import type { FeedTx, ExistingRow } from './reconcile.js';
@@ -2259,13 +2260,9 @@ async function runSyncPass(
   const feedErrorAccounts: Array<string | null> = [];
   const errorEntries = accountSet.errorList?.length === accountSet.errors.length ? accountSet.errorList : undefined;
   accountSet.errors.forEach((sfErr, i) => {
-    // SimpleFin returns informational notices (window-size recommendations and
-    // caps) in the same `errors` array. A wide heal re-scan always trips these,
-    // and the data still comes back — so they aren't failures. Drop them so
-    // only genuine problems (auth, connection) reach the Sync page.
-    if (/\b(exceeds|recommended|was capped|date range|will be capped|may be capped)\b/i.test(String(sfErr))) {
-      return;
-    }
+    // Notices aren't failures (see isSimplefinNotice): only genuine problems
+    // (auth, connection) reach the Sync page.
+    if (isSimplefinNotice(sfErr)) return;
     errors.push(`SimpleFin: ${sfErr}`);
     feedErrorAccounts.push(errorEntries?.[i]?.accountId ?? null);
   });
@@ -3273,6 +3270,11 @@ async function runSyncPass(
             removeIds.add(outcome.removed.activityId);
             logChange?.(() => startingBalanceRemovedChange({ account: accountRef, ...outcome.removed }));
           } else if (outcome) {
+            // The run's snapshot must say what the row now holds: the starting-
+            // balance check below falls back to it when the row is past the
+            // oldest rows it reads, and would write the old amount back.
+            const { activityId, after } = outcome.moved;
+            existing = existing.map((r) => (r.wfId === activityId ? { ...r, absCents: Math.abs(after.amountCents), type: after.activityType } : r));
             logChange?.(() => startingBalanceMovedChange({ account: accountRef, actor: 'auto', ...outcome.moved }));
           }
         }

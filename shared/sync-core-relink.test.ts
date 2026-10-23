@@ -318,6 +318,23 @@ describe('a re-linked connection', () => {
       expect(net(activities.get('wf-chk'))).toBe(2435.5);
     });
 
+    it('a restated starting balance stays restated on an account with more history than the oldest-rows read', async () => {
+      // 60 rows older than the new id's starting balance: the later baseline check
+      // reads only the oldest 50, so it finds the row in its own snapshot instead.
+      const history = Array.from({ length: 60 }, (_, i) => stored(`h${i}`, `INTEREST · TRN-h${i}`, '1.00', 100 + i));
+      const rows = [...history, ...oldRows(), copy(), stored('sb-new', 'Starting balance · sfin-new', '10.00', 6, { activityType: 'CREDIT' })];
+      const before = net(rows);
+      const { host, store, activities } = createFakeHost(reconnected(rows, { ...confirmed, accountSet: bankAt('2501.00') }));
+      await runSyncCore(host, store, { heal: true });
+
+      expect(activities.get('wf-chk')?.map((r) => r.id)).not.toContain('b-coffee');
+      const sb = activities.get('wf-chk')?.find((r) => r.id === 'sb-new');
+      expect(sb?.activityType).toBe('CREDIT');
+      expect(Number(sb?.amount)).toBe(5.5);
+      // The total kept, plus the grocery bought since.
+      expect(net(activities.get('wf-chk'))).toBe(Math.round((before - 60) * 100) / 100);
+    });
+
     it('a refused starting-balance fix removes nothing, says so, and the next Deep scan finishes it', async () => {
       // 4.50 is deleted outright, 10.00 restated to 5.50: one write each way.
       for (const [sbAmount, how] of [['4.50', 'errors'], ['10.00', 'errors'], ['4.50', 'throws']] as const) {
