@@ -648,6 +648,31 @@ describe('SettingsTab', () => {
         const { fetchAccounts } = await import('../utils/simplefin');
         vi.mocked(fetchAccounts).mockClear();
       });
+
+      it('asks nothing when the SimpleFin read behind the mapping reported an error: the old id may only be down', async () => {
+        const { fetchAccounts } = await import('../utils/simplefin');
+        vi.mocked(fetchAccounts).mockResolvedValueOnce({
+          errors: ['Growth (old): Connection to institution failed'],
+          accounts: [
+            { id: 'sfin-1', name: 'Growth', currency: 'USD', balance: '10.00', 'balance-date': 1700000000 },
+            { id: 'sfin-2', name: 'Spend', currency: 'USD', balance: '20.00', 'balance-date': 1700000000 },
+          ],
+        });
+        try {
+          const props = reconnected(null, []);
+          props.store.setAccountNames = vi.fn(async () => {});
+          render(<SyncPage {...props} />);
+          await switchTab(/settings/i);
+          await openMapper();
+          expect(await screen.findByText(/SimpleFin: Growth \(old\): Connection to institution failed/)).toBeInTheDocument();
+          await screen.findByText('Auto-match by name');
+          expect(screen.queryByText(/is also mapped here/)).toBeNull();
+          expect(screen.queryByRole('button', { name: 'Yes, it replaces it' })).toBeNull();
+        } finally {
+          // The Accounts card's tests count this mock's calls from zero.
+          vi.mocked(fetchAccounts).mockClear();
+        }
+      });
     });
 
     it('asks for a companion update before rules can be added, when the connected one is older', async () => {

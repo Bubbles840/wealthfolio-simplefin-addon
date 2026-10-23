@@ -32,6 +32,9 @@ interface Props {
   onRelinkDecisions?: (change: (current: RelinkDecisions) => RelinkDecisions) => Promise<RelinkDecisions>;
   /** When each SimpleFin account last reported (Unix seconds), for the question. */
   lastSeen?: Record<string, number>;
+  /** SimpleFin reported an error with `simplefinAccounts`: an id missing from
+   *  them may only be down for this read, so no reconnection is asked about. */
+  feedReportedErrors?: boolean;
   /** Stored SimpleFin account names, for an old account no longer in the download. */
   sfinNames?: Record<string, string>;
 }
@@ -50,7 +53,7 @@ type CreatableAccountType = (typeof ACCOUNT_TYPE_OPTIONS)[number]['type'];
 
 export function AccountMapper({
   ctx, simplefinAccounts, initialMapping, initialLoanLinks = {}, onSave, onAccountCreated,
-  relinkDecisions, onRelinkDecisions, sfinNames = {}, lastSeen = {}, companionVersion = null,
+  relinkDecisions, onRelinkDecisions, sfinNames = {}, lastSeen = {}, companionVersion = null, feedReportedErrors = false,
 }: Props) {
   const [decisions, setDecisions] = useState<RelinkDecisions>(relinkDecisions ?? emptyRelinkDecisions());
   const [decisionError, setDecisionError] = useState('');
@@ -149,9 +152,11 @@ export function AccountMapper({
   const loansFor = (sfinId: string) =>
     (loans ?? []).filter((l) => !Object.entries(loanLinks).some(([id, assetId]) => id !== sfinId && rowIds.has(id) && assetId === l.id));
   // A reconnection is only ever acted on once the person says so: the same
-  // shape is two feeds deliberately mapped to one account, one missing for a run.
+  // shape is two feeds deliberately mapped to one account, one missing for a
+  // run. Not asked over a read SimpleFin reported errors with, where an id can
+  // look gone for a hiccup.
   const presentIds = new Set(simplefinAccounts.map((a) => a.id));
-  const questions = onRelinkDecisions ? openRelinkQuestions(mapping, presentIds, decisions) : [];
+  const questions = onRelinkDecisions && !feedReportedErrors ? openRelinkQuestions(mapping, presentIds, decisions) : [];
   const relinksOffered = companionUnderstandsRelinks(companionVersion);
   const nameOf = (id: string) => sfinNames[id] || simplefinAccounts.find((a) => a.id === id)?.name || id;
   const seenLine = (id: string) => {

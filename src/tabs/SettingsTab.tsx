@@ -152,6 +152,8 @@ export function SettingsTab({
   // rest of this tab's state: it costs a network round-trip to the bridge, and
   // the overwhelmingly common visit to this tab is for something else.
   const [sfAccounts, setSfAccounts] = useState<SimplefinAccount[] | null>(null);
+  /** That list came with SimpleFin errors: the mapper asks no reconnection question over it. */
+  const [sfAccountsHadErrors, setSfAccountsHadErrors] = useState(false);
   const [mapping, setMapping] = useState<AccountMapping>({});
   const [loanLinks, setLoanLinks] = useState<LoanLinks>({});
   /** null until read, and when the read fails: the mapper then asks nothing,
@@ -243,6 +245,7 @@ export function SettingsTab({
       const yesterday = new Date(Date.now() - 24 * 60 * 60 * 1000);
       const set = await fetchAccounts(accessUrl, yesterday, ctx.api.network, authKey);
       if (set.errors.length > 0) setAccountsError(`SimpleFin: ${set.errors.join('; ')}`);
+      setSfAccountsHadErrors(set.errors.length > 0);
       setSfAccounts(set.accounts);
       // MERGED into the stored names, never replacing them. SimpleFin can
       // return one institution's accounts alongside an error for another, and a
@@ -528,6 +531,10 @@ export function SettingsTab({
                 ? async (change) => { const next = await store.updateRelinkDecisions(change); setRelinkDecisions(next); return next; }
                 : undefined}
               sfinNames={sfinNames}
+              feedReportedErrors={sfAccountsHadErrors}
+              // A follow-up: a durable last-seen date. `account_balances` is
+              // rebuilt each sync from that run's download, so an id that stopped
+              // reporting is usually gone from it ("not reported recently").
               lastSeen={Object.fromEntries(Object.entries(balances).map(([id, b]) => [id, b.date]))}
               onAccountCreated={(created) => { void store.recordChange?.(accountCreatedChange(created)); }}
             />
