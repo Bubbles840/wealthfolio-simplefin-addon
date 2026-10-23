@@ -223,16 +223,35 @@ export function openRelinkQuestions(
   return out;
 }
 
-/** Yes to one question: its old id joins the new id's confirmed re-link. */
+/** The Nos, with none left covering `q`'s old ids: a key naming several keeps
+ *  the others. */
+function declinedWithout(declined: readonly string[], q: Relink): string[] {
+  return declined.flatMap((k) => {
+    const [wf, newId, ...olds] = k.split('|');
+    if (wf !== q.wfAccountId || newId !== q.newId || !olds.some((id) => q.oldIds.includes(id))) return [k];
+    const rest = olds.filter((id) => !q.oldIds.includes(id));
+    return rest.length > 0 ? [[wf, newId, ...rest].join('|')] : [];
+  });
+}
+
+/** Yes to one question: its old id joins the new id's confirmed re-link, and a
+ *  No to the same question (from another tab, say) is dropped, so the two are
+ *  never both stored. */
 export function withConfirmed(d: RelinkDecisions, q: Relink): RelinkDecisions {
   const same = d.confirmed.find((c) => c.newId === q.newId && c.wfAccountId === q.wfAccountId);
   const merged = { ...q, oldIds: [...new Set([...(same?.oldIds ?? []), ...q.oldIds])].sort() };
-  return { confirmed: [...d.confirmed.filter((c) => c.newId !== q.newId), merged], declined: d.declined };
+  return { confirmed: [...d.confirmed.filter((c) => c.newId !== q.newId), merged], declined: declinedWithout(d.declined, q) };
 }
 
-/** No to one question, remembered so it is not asked again. */
+/** No to one question, remembered so it is not asked again. A Yes to the same
+ *  question is taken back for that old id alone. */
 export function withDeclined(d: RelinkDecisions, q: Relink): RelinkDecisions {
-  return isDeclined(d.declined, q) ? d : { confirmed: d.confirmed, declined: [...d.declined, declineKey(q)] };
+  const confirmed = d.confirmed.flatMap((c) => {
+    if (c.newId !== q.newId || c.wfAccountId !== q.wfAccountId) return [c];
+    const oldIds = c.oldIds.filter((id) => !q.oldIds.includes(id));
+    return oldIds.length > 0 ? [{ ...c, oldIds }] : [];
+  });
+  return { confirmed, declined: isDeclined(d.declined, q) ? d.declined : [...d.declined, declineKey(q)] };
 }
 
 /** Take back a No: the question is asked again while the shape lasts. */

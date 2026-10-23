@@ -139,6 +139,17 @@ describe('the answers', () => {
       .toEqual([{ wfAccountId: 'wf', newId: 'a', oldIds: ['b'] }]);
   });
 
+  it('a Yes and a No to one question are never both stored: the later answer replaces the other', () => {
+    // Two tabs: each answer is applied to what is stored now.
+    expect(withDeclined(withConfirmed(d0(), Q('a')), Q('a'))).toEqual({ confirmed: [], declined: ['wf|n|a'] });
+    expect(withConfirmed(withDeclined(d0(), Q('a')), Q('a'))).toEqual({ confirmed: [Q('a')], declined: [] });
+    // Only that id's answer: another old id keeps its own.
+    const both = withConfirmed(withConfirmed(d0(), Q('a')), Q('b'));
+    expect(withDeclined(both, Q('a'))).toEqual({ confirmed: [Q('b')], declined: ['wf|n|a'] });
+    // An older No naming two ids keeps covering the other one.
+    expect(withConfirmed({ confirmed: [], declined: ['wf|n|a|b'] }, Q('a'))).toEqual({ confirmed: [Q('a')], declined: ['wf|n|b'] });
+  });
+
   it('an older No naming several ids still covers each, and one can be taken back', () => {
     const old = { confirmed: [], declined: ['wf|n|a|b'] };
     expect(isDeclined(old.declined, Q('a'))).toBe(true);
