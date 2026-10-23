@@ -2228,13 +2228,23 @@ async function runSyncPass(
   for (const r of relinks) {
     console.log(`[simplefin-sync] re-linked connection: account ${r.newId} replaces ${r.oldIds.join(', ')} (Wealthfolio ${r.wfAccountId})`);
   }
-  // A retired id is expected to fall silent. One that reports transactions
-  // may be a Yes given by mistake: say so where the person looks.
+  /** Accounts the user has said they do not want synced. Reported as neither
+   *  unmapped nor a problem — see `SyncStore.getIgnoredAccounts`. Read once
+   *  per run; a failure degrades to "nothing ignored", which is the safe
+   *  direction (it over-reports rather than hiding an account silently). */
+  const ignoredAccountIds = new Set(
+    (await store.getIgnoredAccounts?.().catch(() => [])) ?? [],
+  );
+  // A retired id is expected to fall silent. One that reports transactions is
+  // the old connection still at the Bridge, or a Yes given by mistake: say so
+  // where the person looks, unless they set it not to sync. Undoing the Yes for
+  // the same account would import the overlap again, so that advice is only
+  // for a different one.
   for (const a of downloaded.accounts) {
     const count = (a.transactions ?? []).length;
-    if (!replacedIds.has(a.id) || count === 0) continue;
+    if (!replacedIds.has(a.id) || count === 0 || ignoredAccountIds.has(a.id)) continue;
     const by = relinks.find((r) => r.oldIds.includes(a.id));
-    errors.push(`${a.name || a.id} reported ${count} transaction${count === 1 ? ', which was' : 's, which were'} not imported: you confirmed ${by ? (downloaded.accounts.find((x) => x.id === by.newId)?.name || by.newId) : 'another account'} replaces it. If it is a different account, undo that in Settings → Accounts.`);
+    errors.push(`${a.name || a.id} reported ${count} transaction${count === 1 ? ', which was' : 's, which were'} not imported: you confirmed ${by ? (downloaded.accounts.find((x) => x.id === by.newId)?.name || by.newId) : 'another account'} replaces it. If it is the same account, remove the old connection at SimpleFin Bridge. If it is a different account, undo that in Settings → Accounts.`);
   }
   // The shape alone is a question, never an action: two feeds deliberately
   // mapped to one account, one of them missing for a run, look the same.
@@ -2439,13 +2449,6 @@ async function runSyncPass(
   const unmappedAccounts: UnmappedAccount[] = [];
   /** See `SyncResult.refusedCreates`. */
   const refusedCreates: SyncResult['refusedCreates'] = [];
-  /** Accounts the user has said they do not want synced. Reported as neither
-   *  unmapped nor a problem — see `SyncStore.getIgnoredAccounts`. Read once
-   *  per run; a failure degrades to "nothing ignored", which is the safe
-   *  direction (it over-reports rather than hiding an account silently). */
-  const ignoredAccountIds = new Set(
-    (await store.getIgnoredAccounts?.().catch(() => [])) ?? [],
-  );
   /** The linked loans that still exist, by asset id; null when they could not
    *  be read (the links are then trusted, and nothing is written this run). A
    *  link to a loan that was deleted is no link: its account is unmapped again. */

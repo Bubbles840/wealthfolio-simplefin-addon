@@ -395,6 +395,21 @@ describe('a re-linked connection', () => {
       const result = await runSyncCore(host, store, { force: true });
       expect(comments(activities.get('wf-chk'))).not.toContain('ATM · TRN-o9');
       expect(result.errors.join(' ')).toMatch(/Old Checking reported 1 transaction, which was not imported: you confirmed Checking replaces it/);
+      // Undoing the Yes would import the overlap again: the same account's old
+      // connection is removed at the Bridge instead.
+      expect(result.errors.join(' ')).toMatch(/If it is the same account, remove the old connection at SimpleFin Bridge/);
+    });
+
+    it('says nothing about a retired id the person set not to sync', async () => {
+      const old = { id: 'sfin-old', name: 'Old Checking', currency: 'USD', balance: '50.00', 'balance-date': posted(0),
+        transactions: [{ id: 'TRN-o9', posted: posted(2), amount: '-10.00', description: 'ATM' }] };
+      // Unmapped since, and on the do-not-sync list: still retired, so nothing is imported.
+      const seed = reconnected(oldRows(), { ...confirmed, accountSet: { errors: [], accounts: [newFeed(), old] }, mapping: { 'sfin-new': 'wf-chk' } });
+      const { host, store, activities } = createFakeHost(seed);
+      store.getIgnoredAccounts = async () => ['sfin-old'];
+      const result = await runSyncCore(host, store, { force: true });
+      expect(comments(activities.get('wf-chk'))).not.toContain('ATM · TRN-o9');
+      expect(result.errors.join(' ')).not.toMatch(/not imported/);
     });
 
     it('deletes nothing while another feed of the account is missing, or SimpleFin reported an error', async () => {
