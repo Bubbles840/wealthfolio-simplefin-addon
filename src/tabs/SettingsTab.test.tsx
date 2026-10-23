@@ -3,6 +3,7 @@ import { describe, it, expect, vi } from 'vitest';
 import { SyncPage } from '../pages/SyncPage';
 import { importChange, stampChange } from '../../shared/change-entries';
 import { runSync } from '../utils/sync';
+import { RELINKS_SINCE } from '../../shared/version';
 
 /**
  * Integration-level, on purpose — moved here wholesale from SyncPage.test.tsx
@@ -617,16 +618,22 @@ describe('SettingsTab', () => {
         return props;
       };
       const options = () => Array.from((screen.getByLabelText('Account') as HTMLSelectElement).options).map((o) => o.textContent);
+      /** The release just below the gate (a patch, or a minor at a .0), so
+       *  raising `RELINKS_SINCE` at release keeps these tests on either side of it. */
+      const beforeRelinks = (() => {
+        const [major, minor, patch] = RELINKS_SINCE.split('.').map(Number);
+        return patch > 0 ? `${major}.${minor}.${patch - 1}` : minor > 0 ? `${major}.${minor - 1}.0` : `${major - 1}.99.0`;
+      })();
 
       it('lists both ids for an older companion, which matches rules by exact id', async () => {
-        render(<SyncPage {...reconnected('1.67.1')} />);
+        render(<SyncPage {...reconnected(beforeRelinks)} />);
         await switchTab(/settings/i);
         await openSection(/^Ignore rules/i);
         await waitFor(() => expect(options()).toEqual(['Choose an account…', 'All synced accounts', 'Growth', 'Spend', 'Growth (old)']));
       });
 
       it('folds the retired id into its replacement once the companion reads re-links', async () => {
-        render(<SyncPage {...reconnected('1.68.0')} />);
+        render(<SyncPage {...reconnected(RELINKS_SINCE)} />);
         await switchTab(/settings/i);
         await openSection(/^Ignore rules/i);
         await waitFor(() => expect(options()).toEqual(['Choose an account…', 'All synced accounts', 'Growth', 'Spend']));
@@ -637,16 +644,20 @@ describe('SettingsTab', () => {
 
       it('a Yes in the account mapping is saved, and the rule list follows it', async () => {
         const props = reconnected(null, []);
-        render(<SyncPage {...props} />);
-        await switchTab(/settings/i);
-        await openMapper();
-        fireEvent.click(await screen.findByRole('button', { name: 'Yes, it replaces it' }));
-        await waitFor(() => expect((props.store as any).updateRelinkDecisions).toHaveBeenCalledTimes(1));
-        expect(await (props.store as any).readRelinkDecisions()).toEqual({ confirmed: [RELINK], declined: [] });
-        await openSection(/^Ignore rules/i);
-        await waitFor(() => expect(options()).toEqual(['Choose an account…', 'All synced accounts', 'Growth', 'Spend']));
-        const { fetchAccounts } = await import('../utils/simplefin');
-        vi.mocked(fetchAccounts).mockClear();
+        try {
+          render(<SyncPage {...props} />);
+          await switchTab(/settings/i);
+          await openMapper();
+          fireEvent.click(await screen.findByRole('button', { name: 'Yes, it replaces it' }));
+          await waitFor(() => expect((props.store as any).updateRelinkDecisions).toHaveBeenCalledTimes(1));
+          expect(await (props.store as any).readRelinkDecisions()).toEqual({ confirmed: [RELINK], declined: [] });
+          await openSection(/^Ignore rules/i);
+          await waitFor(() => expect(options()).toEqual(['Choose an account…', 'All synced accounts', 'Growth', 'Spend']));
+        } finally {
+          const { fetchAccounts } = await import('../utils/simplefin');
+          // The Accounts card's tests count this mock's calls from zero.
+          vi.mocked(fetchAccounts).mockClear();
+        }
       });
 
       it('says so when the stored answers cannot be read, instead of quietly hiding the questions and Undo', async () => {
