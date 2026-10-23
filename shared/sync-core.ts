@@ -1069,9 +1069,9 @@ async function keepStartingBalanceOldest(
  * balance that cancelled exactly those copies (the bank's balance less a ledger
  * that held them twice). With the copies gone that starting balance counts the
  * same money again, so it is restated by what was removed, and removed outright
- * when that leaves nothing. `removedSigned` is the signed total of the rows
- * removed this run. Only called when the old connection has its own starting
- * balance, so the new id's is a second one.
+ * when that leaves nothing. That leaves the balance unchanged whatever baseline
+ * the old id has, and is right whenever the new id's was booked after its
+ * copies. `removedSigned` is the signed total of the rows removed this run.
  */
 async function restateRelinkStartingBalance(
   host: SyncHost,
@@ -3229,13 +3229,13 @@ async function runSyncPass(
         }
         for (const d of deletions) relinkPlan.adopt.set(d.keep.wfId, d.txId);
         // The new id's starting balance, booked before the Yes, cancelled these
-        // copies; with them gone it is a second baseline (the old one's stands).
+        // copies; with them gone it counts the same money again. Restated by what
+        // was removed, the balance stays where it was, whatever baseline the old
+        // id has: that one was booked before the copies existed.
         const removedSigned = (del.errors ?? []).length > 0 ? 0 : deletions
           .flatMap((d) => d.remove.map((x) => rowOf.get(x.wfId)!))
           .reduce((sum, row) => sum + signedCentsOf(row.txId, row.type, row.absCents), 0) / 100;
-        const oldBaseline = relink.oldIds.some((id) => balanceInitialized.includes(id))
-          || (await Promise.all(relink.oldIds.map((id) => hasExistingStartingBalance(host, wfAccountId, id).catch(() => false)))).some(Boolean);
-        if (oldBaseline && removedSigned !== 0) {
+        if (removedSigned !== 0) {
           try {
             const restated = await restateRelinkStartingBalance(host, {
               wfAccountId, sfinAccountId: sfAccount.id, currency: sfAccount.currency,

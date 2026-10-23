@@ -307,11 +307,15 @@ describe('a re-linked connection', () => {
       });
     });
 
-    it('keeps the new id\'s starting balance when the old id has none of its own', async () => {
+    it('restates the new id\'s starting balance when the old id has none of its own, so the books keep their total', async () => {
+      // 2495.50 stored, matching the bank before the grocery; the bank is 2435.50 after it.
       const rows = [...oldRows(), copy(), stored('sb-new', 'Starting balance · sfin-new', '4.50', 6, { activityType: 'CREDIT' })];
-      const { host, store, activities } = createFakeHost(reconnected(rows, confirmed));
+      expect(net(rows)).toBe(2495.5);
+      const { host, store, activities } = createFakeHost(reconnected(rows, { ...confirmed, accountSet: bankAt('2435.50') }));
       await runSyncCore(host, store, { heal: true });
-      expect(activities.get('wf-chk')?.map((r) => r.id)).toContain('sb-new');
+      expect(activities.get('wf-chk')?.map((r) => r.id)).not.toContain('b-coffee');
+      expect(activities.get('wf-chk')?.map((r) => r.id)).not.toContain('sb-new');
+      expect(net(activities.get('wf-chk'))).toBe(2435.5);
     });
 
     it('matches a purchase and its refund by direction, never one for the other', async () => {
