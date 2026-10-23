@@ -604,6 +604,52 @@ describe('SettingsTab', () => {
       }
     });
 
+    describe('after a reconnection', () => {
+      const RELINK = { wfAccountId: 'wf-a', newId: 'sfin-1', oldIds: ['sfin-old'] };
+      const reconnected = (companion: string | null, confirmed: any[] = [RELINK]) => {
+        const props = withIgnoreRules({ kind: 'ok', list: [{ pattern: 'SWEEP FROM CORE', matchType: 'contains', account: 'sfin-old' }] });
+        props.store.getAccountMapping = vi.fn(async () => ({ 'sfin-1': 'wf-a', 'sfin-old': 'wf-a', 'sfin-2': 'wf-b' }));
+        props.store.getAccountNames = vi.fn(async () => ({ 'sfin-1': 'Growth', 'sfin-old': 'Growth (old)', 'sfin-2': 'Spend' }));
+        props.store.getCompanionVersion = vi.fn(async () => companion);
+        let held = { confirmed, declined: [] as string[] };
+        (props.store as any).readRelinkDecisions = vi.fn(async () => held);
+        (props.store as any).updateRelinkDecisions = vi.fn(async (change: (d: any) => any) => (held = change(held)));
+        return props;
+      };
+      const options = () => Array.from((screen.getByLabelText('Account') as HTMLSelectElement).options).map((o) => o.textContent);
+
+      it('lists both ids for an older companion, which matches rules by exact id', async () => {
+        render(<SyncPage {...reconnected('1.67.1')} />);
+        await switchTab(/settings/i);
+        await openSection(/^Ignore rules/i);
+        await waitFor(() => expect(options()).toEqual(['Choose an account…', 'All synced accounts', 'Growth', 'Spend', 'Growth (old)']));
+      });
+
+      it('folds the retired id into its replacement once the companion reads re-links', async () => {
+        render(<SyncPage {...reconnected('1.68.0')} />);
+        await switchTab(/settings/i);
+        await openSection(/^Ignore rules/i);
+        await waitFor(() => expect(options()).toEqual(['Choose an account…', 'All synced accounts', 'Growth', 'Spend']));
+        fireEvent.change(screen.getByLabelText('Description pattern'), { target: { value: 'SWEEP FROM CORE' } });
+        fireEvent.change(screen.getByLabelText('Account'), { target: { value: 'sfin-1' } });
+        expect(await screen.findByText('You already have this rule.')).toBeInTheDocument();
+      });
+
+      it('a Yes in the account mapping is saved, and the rule list follows it', async () => {
+        const props = reconnected(null, []);
+        render(<SyncPage {...props} />);
+        await switchTab(/settings/i);
+        await openMapper();
+        fireEvent.click(await screen.findByRole('button', { name: 'Yes, it replaces it' }));
+        await waitFor(() => expect((props.store as any).updateRelinkDecisions).toHaveBeenCalledTimes(1));
+        expect(await (props.store as any).readRelinkDecisions()).toEqual({ confirmed: [RELINK], declined: [] });
+        await openSection(/^Ignore rules/i);
+        await waitFor(() => expect(options()).toEqual(['Choose an account…', 'All synced accounts', 'Growth', 'Spend']));
+        const { fetchAccounts } = await import('../utils/simplefin');
+        vi.mocked(fetchAccounts).mockClear();
+      });
+    });
+
     it('asks for a companion update before rules can be added, when the connected one is older', async () => {
       const props = withIgnoreRules({ kind: 'absent' });
       props.store.getCompanionVersion = vi.fn(async () => '1.65.0');
