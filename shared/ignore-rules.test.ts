@@ -161,7 +161,7 @@ describe('a re-linked connection', () => {
   });
 
   it('reaches from a retired id to the one that replaced it, and nowhere else', () => {
-    const same = relinkedRuleAccount(relinks);
+    const same = relinkedRuleAccount(relinks, mapping);
     expect(same('sfin-old', 'sfin-new')).toBe(true);
     expect(same('sfin-new', 'sfin-old')).toBe(false);
     expect(same('sfin-old', 'sfin-sav')).toBe(false);
@@ -170,17 +170,40 @@ describe('a re-linked connection', () => {
 
   it('a rule saved on the old id keeps reaching the account through the new one', () => {
     const r = rule({ account: 'sfin-old' });
-    expect(findIgnored([r], [sweeps('sfin-new')], () => true, relinkedRuleAccount(relinks))).toHaveLength(1);
-    expect(findIgnored([r], [sweeps('sfin-chk')], () => true, relinkedRuleAccount(relinks))).toEqual([]);
+    expect(findIgnored([r], [sweeps('sfin-new')], () => true, relinkedRuleAccount(relinks, mapping))).toHaveLength(1);
+    expect(findIgnored([r], [sweeps('sfin-chk')], () => true, relinkedRuleAccount(relinks, mapping))).toEqual([]);
     expect(ignoreRuleFor([r], 'sfin-new', 'SWEEP FROM CORE')).toBeNull();
   });
 
   it('a rule limited to one of two accounts merged on purpose does not reach the other', () => {
     const r = rule({ account: 'sfin-new' });
-    expect(findIgnored([r], [sweeps('sfin-new'), sweeps('sfin-sav')], () => true, relinkedRuleAccount(relinks)).map((h) => h.account.id))
+    expect(findIgnored([r], [sweeps('sfin-new'), sweeps('sfin-sav')], () => true, relinkedRuleAccount(relinks, mapping)).map((h) => h.account.id))
       .toEqual(['sfin-new']);
     // Without a confirmed re-link nothing is aliased at all.
-    expect(findIgnored([rule({ account: 'sfin-old' })], [sweeps('sfin-new')], () => true, relinkedRuleAccount([]))).toEqual([]);
+    expect(findIgnored([rule({ account: 'sfin-old' })], [sweeps('sfin-new')], () => true, relinkedRuleAccount([], mapping))).toEqual([]);
+  });
+
+  it('follows a chain of re-links to its end, and into both accounts when one id was retired into two', () => {
+    // A → B, then B → C, with A no longer mapped: a rule on A reaches C.
+    const chain = [
+      { wfAccountId: 'wf-cash', newId: 'sfin-b', oldIds: ['sfin-a'] },
+      { wfAccountId: 'wf-cash', newId: 'sfin-c', oldIds: ['sfin-b'] },
+    ];
+    const m = { 'sfin-b': 'wf-cash', 'sfin-c': 'wf-cash' };
+    expect(relinkedRuleAccount(chain, m)('sfin-a', 'sfin-c')).toBe(true);
+    expect(ruleAccountOptions(m, { 'sfin-c': 'Cash' }, chain)).toEqual([{ id: 'sfin-c', name: 'Cash', aliases: ['sfin-a', 'sfin-b'] }]);
+    const split = [
+      { wfAccountId: 'wf-1', newId: 'sfin-x', oldIds: ['sfin-a'] },
+      { wfAccountId: 'wf-2', newId: 'sfin-y', oldIds: ['sfin-a'] },
+    ];
+    const both = relinkedRuleAccount(split, { 'sfin-x': 'wf-1', 'sfin-y': 'wf-2' });
+    expect([both('sfin-a', 'sfin-x'), both('sfin-a', 'sfin-y')]).toEqual([true, true]);
+  });
+
+  it('an old id mapped elsewhere since is its own account again', () => {
+    const moved = { ...mapping, 'sfin-old': 'wf-chk' };
+    expect(relinkedRuleAccount(relinks, moved)('sfin-old', 'sfin-new')).toBe(false);
+    expect(ruleAccountOptions(moved, { 'sfin-old': 'Old', 'sfin-new': 'New' }, relinks).map((o) => o.id)).toContain('sfin-old');
   });
 
   it('offers every mapped account, folding only a retired id into the one that replaced it', () => {

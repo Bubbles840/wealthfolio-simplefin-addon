@@ -2462,7 +2462,7 @@ async function runSyncPass(
   let ignoredByRules = 0;
   /** See `SyncResult.relinkAdopted`. */
   let relinkAdopted = 0;
-  for (const hit of findIgnored(ignoreRules, accountSet.accounts, (id) => !!mapping[id], relinkedRuleAccount(relinks))) {
+  for (const hit of findIgnored(ignoreRules, accountSet.accounts, (id) => !!mapping[id], relinkedRuleAccount(relinks, mapping, loanLinks))) {
     const key = accountTxKey(hit.account.id, hit.tx.id);
     if (skippedTxKeys.has(key)) continue;
     skippedTxKeys.add(key);

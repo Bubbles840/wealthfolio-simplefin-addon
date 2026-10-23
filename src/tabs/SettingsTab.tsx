@@ -389,9 +389,9 @@ export function SettingsTab({
     () => ruleAccountOptions(
       accountMapping, sfinNames,
       companionUnderstandsRelinks(companionVersion) ? relinkDecisions?.confirmed ?? [] : [],
-      wfNames,
+      wfNames, loanLinks,
     ),
-    [accountMapping, sfinNames, relinkDecisions, companionVersion, wfNames],
+    [accountMapping, sfinNames, relinkDecisions, companionVersion, wfNames, loanLinks],
   );
   useEffect(() => {
     store.getCompanionVersion?.().then((v) => setCompanionVersion(v ?? null)).catch(() => {});

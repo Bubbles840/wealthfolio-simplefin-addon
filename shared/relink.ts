@@ -152,6 +152,41 @@ export function retiredIds(
   return out;
 }
 
+/**
+ * Where each retired id's account lives now: the id that replaced it, followed
+ * through every later re-link while that id is itself retired (A→B, then B→C,
+ * reaches C). An id retired into two accounts reaches both. Built on
+ * `retiredIds`, so it agrees with what the sync drops. `relinks`: the ones in
+ * force (`activeRelinks`).
+ */
+export function relinkSuccessors(
+  relinks: readonly Relink[],
+  mapping: Readonly<Record<string, string>>,
+  loanLinks: Readonly<Record<string, string>> = {},
+): Map<string, Set<string>> {
+  const retired = retiredIds(relinks, mapping, loanLinks);
+  const next = new Map<string, string[]>();
+  for (const r of relinks) {
+    for (const old of r.oldIds) if (retired.has(old)) next.set(old, [...(next.get(old) ?? []), r.newId]);
+  }
+  const out = new Map<string, Set<string>>();
+  for (const start of next.keys()) {
+    const finals = new Set<string>();
+    const seen = new Set([start]);
+    const stack = [...next.get(start)!];
+    while (stack.length > 0) {
+      const id = stack.pop()!;
+      if (seen.has(id)) continue;
+      seen.add(id);
+      const more = next.get(id);
+      if (more) stack.push(...more);
+      else finals.add(id);
+    }
+    if (finals.size > 0) out.set(start, finals);
+  }
+  return out;
+}
+
 /** Whether a No covers this one old id. A key names one old id since the
  *  question is asked per id; an older key naming several covers each of them. */
 export function isDeclined(declined: readonly string[], q: Relink): boolean {

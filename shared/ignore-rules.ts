@@ -37,7 +37,7 @@
  */
 import { ruleApplies } from './mapper.js';
 import { IGNORE_RULES_SINCE } from './version.js';
-import type { Relink } from './relink.js';
+import { activeRelinks, relinkSuccessors, type Relink } from './relink.js';
 import type { SimplefinAccount, SimplefinTransaction } from './types.js';
 
 export const IGNORE_RULES_SECRET_KEY = 'ignore_rules';
@@ -192,10 +192,17 @@ export type SameRuleAccount = (ruleAccount: string, sfAccountId: string) => bool
  * comes back under new ids, and the rule keeps working without being rewritten.
  * Nothing else is aliased: several SimpleFin accounts mapped to one Wealthfolio
  * account on purpose stay separate accounts to a rule. The rule's old id need
- * not stay in the mapping; the confirmed re-link remembers it.
+ * not stay in the mapping; the confirmed re-link remembers it. A chain of
+ * re-links is followed to its end (`relinkSuccessors`), and an old id the
+ * person has since mapped elsewhere is its own account again.
  */
-export function relinkedRuleAccount(relinks: readonly Relink[]): SameRuleAccount {
-  return (rule, account) => rule === account || relinks.some((r) => r.newId === account && r.oldIds.includes(rule));
+export function relinkedRuleAccount(
+  relinks: readonly Relink[],
+  mapping: Readonly<Record<string, string>>,
+  loanLinks: Readonly<Record<string, string>> = {},
+): SameRuleAccount {
+  const successors = relinkSuccessors(activeRelinks(relinks, mapping), mapping, loanLinks);
+  return (rule, account) => rule === account || !!successors.get(rule)?.has(account);
 }
 
 /** One account a rule can be limited to, as the editor offers it. */
@@ -220,17 +227,15 @@ export function ruleAccountOptions(
   names: Readonly<Record<string, string>>,
   relinks: readonly Relink[] = [],
   wfNames: Readonly<Record<string, string>> = {},
+  loanLinks: Readonly<Record<string, string>> = {},
 ): RuleAccountOption[] {
-  const retiredBy = new Map<string, string>();
-  for (const r of relinks) {
-    if (mapping[r.newId] !== r.wfAccountId) continue;
-    for (const old of r.oldIds) retiredBy.set(old, r.newId);
-  }
-  const ids = Object.keys(mapping).filter((id) => mapping[id] && !retiredBy.has(id)).sort();
+  // The sync's own resolver (`relinkedRuleAccount`), so the list shows what a rule reaches.
+  const successors = relinkSuccessors(activeRelinks(relinks, mapping), mapping, loanLinks);
+  const ids = Object.keys(mapping).filter((id) => mapping[id] && !successors.has(id)).sort();
   const options = ids.map((id) => ({
     id,
     name: names[id] ?? id,
-    aliases: [...retiredBy].filter(([, to]) => to === id).map(([from]) => from).sort(),
+    aliases: [...successors].filter(([, to]) => to.has(id)).map(([from]) => from).sort(),
   }));
   // Shared names first get the Wealthfolio account's name (when it says
   // something new), then, if still shared, the end of the SimpleFin id.
