@@ -37,7 +37,7 @@
  */
 import { ruleApplies } from './mapper.js';
 import { IGNORE_RULES_SINCE } from './version.js';
-import { activeRelinks, relinkSuccessors, type Relink } from './relink.js';
+import { activeRelinks, relinkSuccessors, retiredIds, type Relink } from './relink.js';
 import type { SimplefinAccount, SimplefinTransaction } from './types.js';
 
 export const IGNORE_RULES_SECRET_KEY = 'ignore_rules';
@@ -230,8 +230,11 @@ export function ruleAccountOptions(
   loanLinks: Readonly<Record<string, string>> = {},
 ): RuleAccountOption[] {
   // The sync's own resolver (`relinkedRuleAccount`), so the list shows what a rule reaches.
-  const successors = relinkSuccessors(activeRelinks(relinks, mapping), mapping, loanLinks);
-  const ids = Object.keys(mapping).filter((id) => mapping[id] && !successors.has(id)).sort();
+  const active = activeRelinks(relinks, mapping);
+  const successors = relinkSuccessors(active, mapping, loanLinks);
+  // What the sync drops: a retired id with no successor (a confirmed cycle) is not listed either.
+  const retired = retiredIds(active, mapping, loanLinks);
+  const ids = Object.keys(mapping).filter((id) => mapping[id] && !retired.has(id)).sort();
   const options = ids.map((id) => ({
     id,
     name: names[id] ?? id,

@@ -227,6 +227,13 @@ describe('a re-linked connection', () => {
     ]);
   });
 
+  it('lists neither id of a confirmed cycle, which the sync reads neither of', () => {
+    // "b replaces a" and "a replaces b", both confirmed (an older document, or two tabs).
+    const cycle = [{ wfAccountId: 'wf', newId: 'b', oldIds: ['a'] }, { wfAccountId: 'wf', newId: 'a', oldIds: ['b'] }];
+    expect(ruleAccountOptions({ a: 'wf', b: 'wf', c: 'wf-2' }, { a: 'A', b: 'B', c: 'C' }, cycle))
+      .toEqual([{ id: 'c', name: 'C', aliases: [] }]);
+  });
+
   it('merges nothing without a confirmed re-link, whatever is or is not in the download', () => {
     const names = { 'sfin-old': 'Cash Account', 'sfin-new': 'Cash Account' };
     expect(ruleAccountOptions({ 'sfin-old': 'wf-cash', 'sfin-new': 'wf-cash' }, names, [], { 'wf-cash': 'Cash' }).map((o) => o.id))
