@@ -8,6 +8,7 @@ import type { TransferNames } from './transfer-names.js';
 import type { IgnoreRule } from './ignore-rules.js';
 import type { SyncOverrides } from './sync-overrides.js';
 import { confirmLoanBalance, type LinkedLoan, type LoanLinks, type LoanQuote } from './loan-balances.js';
+import type { HeldSecurity } from './dividends.js';
 import type { RelinkDecisions } from './relink.js';
 import type {
   ActivityWrite,
@@ -127,6 +128,9 @@ export interface FakeHostSeed {
   loans?: LinkedLoan[];
   /** Make `listLoans` reject. */
   loansThrow?: boolean;
+  /** The securities each Wealthfolio account holds (shared/dividends.ts).
+   *  Absent: the host has no `listHeldSecurities`. */
+  heldSecurities?: Record<string, HeldSecurity[]>;
   /** Re-links the person confirmed or declined (shared/relink.ts). Absent: none. */
   relinkDecisions?: RelinkDecisions;
 }
@@ -253,7 +257,7 @@ export function createFakeHost(seed: FakeHostSeed = {}): FakeHost {
       amount: w.amount ?? null,
       fee: w.fee ?? null,
       comment: w.comment ?? null,
-      assetId: w.symbol?.symbol,
+      assetId: w.symbol?.id ?? w.symbol?.symbol,
       sourceGroupId: w.sourceGroupId ?? null,
       // Matches both real adapters: an absent subtype reads back as `null`,
       // never dropped. Dropping it here used to mask the second churn path in
@@ -392,6 +396,9 @@ export function createFakeHost(seed: FakeHostSeed = {}): FakeHost {
           },
         }),
 
+    ...(seed.heldSecurities
+      ? { async listHeldSecurities(wfAccountId: string) { return seed.heldSecurities![wfAccountId] ?? []; } }
+      : {}),
     async listLoans() {
       if (seed.loansThrow) throw new Error('loans unavailable');
       return seed.loans ?? Object.values(seed.loanLinks ?? {}).map((id) => ({ id, name: id, currency: 'USD' }));

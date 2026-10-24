@@ -189,6 +189,28 @@ export function companionUnderstandsRelinks(companionVersion: string | null): bo
   return isAtLeastVersion(companionVersion.trim(), RELINKS_SINCE);
 }
 
+/**
+ * The first release whose BOTH writers book a dividend on the security it names
+ * (shared/dividends.ts). An older writer types the same row a deposit or
+ * interest again and drops the security, so each writer books dividends only
+ * once the other is this new: the add-on reads the companion's version, the
+ * companion the installed add-on's. Raise to the release that ships this.
+ */
+export const DIVIDEND_SECURITIES_SINCE = '1.69.0';
+
+/** The add-on's half: a companion that books dividends on their security. No
+ *  companion at all (null) is true: nothing else syncs. */
+export function companionUnderstandsDividends(companionVersion: string | null): boolean {
+  if (companionVersion === null) return true;
+  return isAtLeastVersion(companionVersion.trim(), DIVIDEND_SECURITIES_SINCE);
+}
+
+/** The companion's half: an installed add-on that does the same. Unknown (null,
+ *  the add-on's directory unreadable) is false. */
+export function addonUnderstandsDividends(installedAddonVersion: string | null): boolean {
+  return installedAddonVersion !== null && isAtLeastVersion(installedAddonVersion.trim(), DIVIDEND_SECURITIES_SINCE);
+}
+
 /** The companion's half: an installed add-on that reads `asReimbursement`.
  *  Unknown (null — the companion cannot see the addons directory) is false. */
 export function addonUnderstandsPaybacks(installedAddonVersion: string | null): boolean {
