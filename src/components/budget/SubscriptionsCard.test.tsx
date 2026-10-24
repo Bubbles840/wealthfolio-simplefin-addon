@@ -287,6 +287,18 @@ describe('subscriptions card: emptying it (fix round 1)', () => {
 describe('subscriptions card: adding and editing by hand (1.60)', () => {
   const openAdd = () => fireEvent.click(screen.getByRole('button', { name: '+ Add subscription' }));
 
+  it('renders no <form>, which the sandboxed add-on frame would block, and saves on Enter', () => {
+    const onEdit = vi.fn();
+    const { container } = render(<SubscriptionsCard cube={cubeWith([det('SPOTIFY')])} subscriptionPrefs={loaded()} onSubscriptionEdit={onEdit} />);
+    openAdd();
+    expect(container.querySelector('form')).toBeNull();
+    fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'Hulu' } });
+    fireEvent.change(screen.getByLabelText('Amount'), { target: { value: '9.99' } });
+    fireEvent.change(screen.getByLabelText('Next charge'), { target: { value: 'Oct 20' } });
+    fireEvent.keyDown(screen.getByLabelText('Next charge'), { key: 'Enter' });
+    expect(applied(onEdit).manual).toEqual([expect.objectContaining({ name: 'Hulu', cents: 999 })]);
+  });
+
   it('offers + Add subscription on an empty card too', () => {
     render(<SubscriptionsCard cube={cubeWith([])} subscriptionPrefs={loaded()} onSubscriptionEdit={vi.fn()} />);
     expect(screen.getByText(/no monthly subscriptions detected/i)).toBeTruthy();
