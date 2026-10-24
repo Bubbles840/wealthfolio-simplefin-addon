@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.68.1] - 2026-10-24
+
+Update both halves. From 1.68.0, Update the add-on in the app as usual (no new
+permissions) and pull the companion image: its code is unchanged, but the two
+versions must match, or the daily report flags them. From an older version,
+use **Install from File** with this zip and pull the companion, as 1.68.0
+says.
+
+### Fixed
+- **Find in "Why is this here?", and renaming, adding or editing a
+  subscription, work in Wealthfolio.** Wealthfolio runs an add-on in a
+  sandboxed frame that blocks form submissions, so the Find button, Enter in
+  the search, and the subscription Save buttons did nothing. They are plain
+  buttons now, and Enter in a field still searches or saves.
+
 ## [1.68.0] - 2026-10-23
 
 Update both halves. The add-on asks for more permissions (assets, quotes,
