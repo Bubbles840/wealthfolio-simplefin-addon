@@ -250,6 +250,16 @@ export class WealthfolioClient {
     return Array.isArray(rows) ? rows : [];
   }
 
+  /** An account's holdings (`GET /holdings?accountId=`). */
+  async getHoldings(accountId: string): Promise<unknown[]> {
+    const res = await fetch(`${this.baseUrl}/api/v1/holdings?accountId=${encodeURIComponent(accountId)}`, {
+      headers: this.authHeaders(),
+    });
+    if (!res.ok) throw await this.httpError('getHoldings', res);
+    const rows = (await res.json()) as unknown;
+    return Array.isArray(rows) ? rows : [];
+  }
+
   /** Property, vehicles, loans and the rest (`GET /alternative-holdings`). */
   async getAlternativeHoldings(): Promise<unknown[]> {
     const res = await fetch(`${this.baseUrl}/api/v1/alternative-holdings`, {

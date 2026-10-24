@@ -1,3 +1,4 @@
+import { heldSecuritiesOf, type HeldSecurity } from '../../shared/dividends.js';
 import { fetchAccountsNode } from './simplefin.js';
 import { getNativeAccountBalances } from './sqlite-native.js';
 import { AMAZON_LEDGER_SECRET_KEY } from '../../shared/amazon-ledger.js';
@@ -83,6 +84,11 @@ export class RestSyncHost implements SyncHost {
 
   async listLoans(): Promise<LinkedLoan[]> {
     return linkedLoansOf(await this.client.getAlternativeHoldings());
+  }
+
+  /** The account's held securities, for a dividend that names one. */
+  async listHeldSecurities(wfAccountId: string): Promise<HeldSecurity[]> {
+    return heldSecuritiesOf(await this.client.getHoldings(wfAccountId));
   }
 
   async confirmLoanBalance(loan: LinkedLoan, entry: LoanBalance): Promise<LoanBalanceDecision> {
