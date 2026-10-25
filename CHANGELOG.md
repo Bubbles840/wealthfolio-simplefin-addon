@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.70.0] - 2026-10-25
+
 Update both halves. The add-on asks to read holdings snapshots (two more
 functions in the snapshot permission it already has), so in-app Update refuses
 it: use **Install from File** over the installed add-on, then pull the
