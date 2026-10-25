@@ -1,3 +1,4 @@
+import { companionUnderstandsDividends } from '../../shared/version';
 import { AddonSyncHost } from './addon-host';
 import { warn } from './audit-fix';
 import { beginSync } from './write-lock';
@@ -82,7 +83,12 @@ export function runSync(
       // The change log rides along when the store can keep one (an older store
       // or a test double cannot, and then nothing is recorded).
       const changeLog = opts.changeLog ?? store.changeLogSink?.();
-      const result = await runSyncCore(await bookkeepingHost(ctx, store, warn, !!opts.manual), store, { ...opts, ...(changeLog ? { changeLog } : {}) });
+      // Dividends on their security only once the companion books them the same
+      // way. A failed read is not "no companion": the feature stays off.
+      const dividendSecurities = await (store.getCompanionVersion?.() ?? Promise.resolve(null)).then(companionUnderstandsDividends, () => false);
+      const result = await runSyncCore(await bookkeepingHost(ctx, store, warn, !!opts.manual), store, {
+        ...opts, ...(changeLog ? { changeLog } : {}), dividendSecurities,
+      });
       // Deliver INSIDE the single-flight lock and inside the returned promise, so
       // one run announces its own alerts exactly once and a caller that awaits the
       // sync has also awaited the sends. `deliverAddonAlerts` never rejects, so it

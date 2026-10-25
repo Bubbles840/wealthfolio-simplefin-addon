@@ -2,7 +2,8 @@ import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'fs';
 import { join } from 'path';
 import {
-  companionUnderstandsIgnoreRules, companionUnderstandsLoanBalances, companionUnderstandsRelinks,
+  addonUnderstandsDividends, companionUnderstandsDividends,
+  companionUnderstandsIgnoreRules, companionUnderstandsLoanBalances, companionUnderstandsRelinks, DIVIDEND_SECURITIES_SINCE,
   IGNORE_RULES_SINCE, LOAN_BALANCES_SINCE, RELINKS_SINCE, SIMPLEFIN_SYNC_VERSION,
 } from './version.js';
 
@@ -134,5 +135,16 @@ describe('the re-link gate', () => {
     expect(companionUnderstandsRelinks('1.67.1')).toBe(false);
     expect(companionUnderstandsRelinks('garbage')).toBe(false);
     expect(companionUnderstandsRelinks(null)).toBe(true);
+  });
+});
+
+describe('the dividend gate', () => {
+  it('opens on each side only once the other writer books dividends too', () => {
+    expect(companionUnderstandsDividends(DIVIDEND_SECURITIES_SINCE)).toBe(true);
+    expect(companionUnderstandsDividends('1.68.0')).toBe(false);
+    expect(companionUnderstandsDividends(null)).toBe(true);
+    expect(addonUnderstandsDividends(DIVIDEND_SECURITIES_SINCE)).toBe(true);
+    expect(addonUnderstandsDividends('1.68.0')).toBe(false);
+    expect(addonUnderstandsDividends(null)).toBe(false);
   });
 });

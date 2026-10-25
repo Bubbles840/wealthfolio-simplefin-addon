@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+Update both halves. Dividends are booked on their security only once the
+add-on and the companion are both on this release; until then they come in
+as before.
+
+### Added
+- **A dividend the bank names the security of is booked on that holding.**
+  Fidelity's `DIVIDEND RECEIVED … (VOO) (Cash)` in an investment account
+  becomes a Wealthfolio dividend on VOO instead of a cash deposit, so the
+  Income page shows which holding paid it. Only when the account holds
+  exactly one security under that ticker; otherwise it stays a deposit. A
+  transaction rule still wins: one typed **Dividend** books the security the
+  same way (or **Interest** when none can be named, since Wealthfolio refuses
+  a dividend without one), and one typed anything else is left alone. Once
+  booked, a dividend stays on its security, even after the position is sold.
+
 ## [1.68.1] - 2026-10-24
 
 Update both halves. From 1.68.0, Update the add-on in the app as usual (no new
