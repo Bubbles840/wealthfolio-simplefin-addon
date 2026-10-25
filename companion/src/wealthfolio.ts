@@ -260,6 +260,24 @@ export class WealthfolioClient {
     return Array.isArray(rows) ? rows : [];
   }
 
+  /** An account's holdings snapshots dated `from`..`to` (`GET /snapshots`). */
+  async getSnapshots(accountId: string, from: string, to: string): Promise<unknown[]> {
+    const q = new URLSearchParams({ accountId, dateFrom: from, dateTo: to });
+    const res = await fetch(`${this.baseUrl}/api/v1/snapshots?${q}`, { headers: this.authHeaders() });
+    if (!res.ok) throw await this.httpError('getSnapshots', res);
+    const rows = (await res.json()) as unknown;
+    return Array.isArray(rows) ? rows : [];
+  }
+
+  /** The holdings in an account's snapshot of `date` (`GET /snapshots/holdings`). */
+  async getSnapshotHoldings(accountId: string, date: string): Promise<unknown[]> {
+    const q = new URLSearchParams({ accountId, date });
+    const res = await fetch(`${this.baseUrl}/api/v1/snapshots/holdings?${q}`, { headers: this.authHeaders() });
+    if (!res.ok) throw await this.httpError('getSnapshotHoldings', res);
+    const rows = (await res.json()) as unknown;
+    return Array.isArray(rows) ? rows : [];
+  }
+
   /** Property, vehicles, loans and the rest (`GET /alternative-holdings`). */
   async getAlternativeHoldings(): Promise<unknown[]> {
     const res = await fetch(`${this.baseUrl}/api/v1/alternative-holdings`, {

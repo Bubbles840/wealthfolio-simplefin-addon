@@ -132,9 +132,19 @@
           "name": "importSnapshots",
           "isDeclared": true,
           "isDetected": false
+        },
+        {
+          "name": "getAll",
+          "isDeclared": true,
+          "isDetected": false
+        },
+        {
+          "name": "getByDate",
+          "isDeclared": true,
+          "isDetected": false
         }
       ],
-      "purpose": "Import holdings snapshots for investment accounts, so a brokerage syncs its positions and not only its cash."
+      "purpose": "Import holdings snapshots for investment accounts, so a brokerage syncs its positions and not only its cash, and read earlier snapshots to find the holding a dividend paid after its sale belongs to."
     },
     {
       "category": "assets",

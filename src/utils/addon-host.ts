@@ -1,4 +1,4 @@
-import { heldSecuritiesOf, type HeldSecurity } from '../../shared/dividends';
+import { heldSecuritiesOf, snapshotDaysOf, type HeldSecurity, type SnapshotDay } from '../../shared/dividends';
 import { fetchAccounts } from './simplefin';
 import { linkPairPreferInPlace, unlinkPairPreferInPlace, type InPlaceIo } from '../../shared/link-in-place';
 import type { UnlinkLeg, UnlinkResult } from '../../shared/link-pair';
@@ -306,6 +306,16 @@ export class AddonSyncHost implements SyncHost {
   /** The account's held securities, for a dividend that names one. */
   async listHeldSecurities(wfAccountId: string): Promise<HeldSecurity[]> {
     return heldSecuritiesOf(await this.ctx.api.portfolio.getHoldings(wfAccountId));
+  }
+
+  /** The account's holdings snapshots in a date range, for a dividend paid after a sale. */
+  async listSnapshotDays(wfAccountId: string, from: string, to: string): Promise<SnapshotDay[]> {
+    return snapshotDaysOf(await this.ctx.api.snapshots.getAll(wfAccountId, from, to));
+  }
+
+  /** The securities one of the account's holdings snapshots holds. */
+  async listSnapshotSecurities(wfAccountId: string, date: string): Promise<HeldSecurity[]> {
+    return heldSecuritiesOf(await this.ctx.api.snapshots.getByDate(wfAccountId, date));
   }
 
   /** Each call made as a method on `ctx.api`, as `inPlace` explains. */

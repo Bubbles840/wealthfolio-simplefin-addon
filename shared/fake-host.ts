@@ -131,6 +131,9 @@ export interface FakeHostSeed {
   /** The securities each Wealthfolio account holds (shared/dividends.ts).
    *  Absent: the host has no `listHeldSecurities`. */
   heldSecurities?: Record<string, HeldSecurity[]>;
+  /** Each Wealthfolio account's holdings snapshots: date, position count and the
+   *  securities held. Absent: the host has no snapshot reads. */
+  snapshots?: Record<string, Array<{ date: string; positionCount: number; securities: HeldSecurity[] }>>;
   /** Re-links the person confirmed or declined (shared/relink.ts). Absent: none. */
   relinkDecisions?: RelinkDecisions;
 }
@@ -399,6 +402,20 @@ export function createFakeHost(seed: FakeHostSeed = {}): FakeHost {
 
     ...(seed.heldSecurities
       ? { async listHeldSecurities(wfAccountId: string) { return seed.heldSecurities![wfAccountId] ?? []; } }
+      : {}),
+    ...(seed.snapshots
+      ? {
+        async listSnapshotDays(wfAccountId: string, from: string, to: string) {
+          return (seed.snapshots![wfAccountId] ?? [])
+            .filter((d) => d.date >= from && d.date <= to)
+            .map(({ date, positionCount }) => ({ date, positionCount }));
+        },
+        async listSnapshotSecurities(wfAccountId: string, date: string) {
+          const day = (seed.snapshots![wfAccountId] ?? []).find((d) => d.date === date);
+          if (!day) throw new Error(`No snapshot found for date ${date}`);
+          return day.securities;
+        },
+      }
       : {}),
     async listLoans() {
       if (seed.loansThrow) throw new Error('loans unavailable');

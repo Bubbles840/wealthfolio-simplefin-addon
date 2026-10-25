@@ -7,7 +7,7 @@ import type { TransferNames } from './transfer-names.js';
 import type { IgnoreRule } from './ignore-rules.js';
 import type { LoadedSyncOverrides, SyncOverrides } from './sync-overrides.js';
 import type { UnlinkLeg, UnlinkResult } from './link-pair.js';
-import type { HeldSecurity } from './dividends.js';
+import type { HeldSecurity, SnapshotDay } from './dividends.js';
 import type { LinkedLoan, LoanBalance, LoanBalanceDecision, LoanLinks } from './loan-balances.js';
 import type { RelinkDecisions } from './relink.js';
 
@@ -259,6 +259,12 @@ export interface SyncHost {
   /** The securities an account holds: asset id and display code
    *  (shared/dividends.ts). Optional: without it no dividend names a security. */
   listHeldSecurities?(wfAccountId: string): Promise<HeldSecurity[]>;
+  /** The account's holdings snapshots dated `from`..`to` (`YYYY-MM-DD`): each
+   *  one's date and position count. With `listSnapshotSecurities`, or neither:
+   *  without them a dividend paid after a sale names no security from them. */
+  listSnapshotDays?(wfAccountId: string, from: string, to: string): Promise<SnapshotDay[]>;
+  /** The securities the account's snapshot of `date` holds. */
+  listSnapshotSecurities?(wfAccountId: string, date: string): Promise<HeldSecurity[]>;
   readonly capabilities: {
     /** True when the sync acts on listActivities' sourceGroupId (links,
      *  unlinks, adoptions). False: it acts on its own ledger, and a group only

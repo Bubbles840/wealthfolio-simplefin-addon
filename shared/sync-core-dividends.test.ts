@@ -161,4 +161,84 @@ describe('runSyncCore — dividends on their security', () => {
       expect(theRow(ruled)).toMatchObject({ id: 'act-1', activityType: 'INTEREST', assetId: '$CASH-USD' });
     });
   });
+
+  describe('a position bought and sold between two dividends', () => {
+    const snapshots = {
+      'wf-1': [
+        { date: '2027-02-20', positionCount: 1, securities: [{ assetId: 'asset-voo', symbol: 'VOO' }] },
+        { date: '2027-03-05', positionCount: 0, securities: [] },
+      ],
+    };
+
+    it('is booked on the security the last snapshot before the sale holds, and the next sync reads no snapshot', async () => {
+      const fh = createFakeHost(seed(VOO, { heldSecurities: { 'wf-1': [] }, snapshots }));
+      await runSyncCore(fh.host, fh.store, { dividendSecurities: true });
+      expect(theRow(fh)).toMatchObject({ activityType: 'DIVIDEND', assetId: 'asset-voo' });
+
+      const read = vi.fn(fh.host.listSnapshotSecurities!);
+      fh.host.listSnapshotSecurities = read;
+      const before = fh.saved.length;
+      await runSyncCore(fh.host, fh.store, { dividendSecurities: true, force: true });
+      expect(read).not.toHaveBeenCalled();
+      expect(fh.saved.slice(before).filter((x) => (x.creates?.length ?? 0) + (x.updates?.length ?? 0) > 0)).toEqual([]);
+    });
+
+    it('reads no snapshot while the other writer is not new enough', async () => {
+      const fh = createFakeHost(seed(VOO, { heldSecurities: { 'wf-1': [] }, snapshots }));
+      const days = vi.fn(fh.host.listSnapshotDays!);
+      fh.host.listSnapshotDays = days;
+      await runSyncCore(fh.host, fh.store, {});
+      expect(days).not.toHaveBeenCalled();
+      expect(theRow(fh)).toMatchObject({ activityType: 'DEPOSIT' });
+    });
+  });
+
+  describe('two writers, one of them with the gate shut', () => {
+    const run = (fh: ReturnType<typeof createFakeHost>, gate: boolean) =>
+      runSyncCore(fh.host, fh.store, { force: true, ...(gate ? { dividendSecurities: true } : {}) });
+    const writes = (fh: ReturnType<typeof createFakeHost>, before: number) =>
+      fh.saved.slice(before).filter((x) => (x.creates?.length ?? 0) + (x.updates?.length ?? 0) > 0);
+
+    it('a DIVIDEND rule naming no security is INTEREST on both, so neither undoes the other', async () => {
+      const fh = createFakeHost(seed('Dividend Received', { mappingRules: [rule('Dividend Received', 'DIVIDEND')], heldSecurities: { 'wf-1': [] } }));
+      await run(fh, false);
+      expect(theRow(fh)).toMatchObject({ activityType: 'INTEREST', assetId: '$CASH-USD' });
+      const before = fh.saved.length;
+      for (const gate of [true, false, true, false]) await run(fh, gate);
+      expect(writes(fh, before)).toEqual([]);
+    });
+
+    it('a dividend one writer booked on its security stays there when the other syncs', async () => {
+      const fh = createFakeHost(seed(VOO));
+      await run(fh, true);
+      expect(theRow(fh)).toMatchObject({ activityType: 'DIVIDEND', assetId: 'asset-voo' });
+      const before = fh.saved.length;
+      for (const gate of [false, true, false]) await run(fh, gate);
+      expect(writes(fh, before)).toEqual([]);
+    });
+
+    it('an older writer\'s DIVIDEND on a phantom `$CASH` asset is left alone while the gate is shut', async () => {
+      const phantom: HostActivity = {
+        id: 'act-1', accountId: 'wf-1', activityType: 'DIVIDEND', date: '2027-03-10', amount: 12.34,
+        comment: 'Dividend Received · tx-div', assetId: 'uuid-phantom', assetSymbol: '$CASH', sourceGroupId: null, metadata: null,
+      };
+      const fh = createFakeHost(seed('Dividend Received', {
+        mappingRules: [rule('Dividend Received', 'DIVIDEND')], heldSecurities: { 'wf-1': [] }, existing: new Map([['wf-1', [phantom]]]),
+      }));
+      await run(fh, false);
+      expect(theRow(fh)).toMatchObject({ activityType: 'DIVIDEND', assetId: 'uuid-phantom' });
+      expect(writes(fh, 0)).toEqual([]);
+    });
+  });
+
+  it('a trade entered by hand (no SimpleFin id in its note) names the security of a dividend paid after the sale', async () => {
+    const buy: HostActivity = {
+      id: 'act-buy', accountId: 'wf-1', activityType: 'BUY', date: '2027-01-05', amount: 1000,
+      comment: 'Bought 2 VOO', assetId: 'asset-voo', assetSymbol: 'VOO', sourceGroupId: null, metadata: null,
+    };
+    const fh = createFakeHost(seed(VOO, { heldSecurities: { 'wf-1': [] }, existing: new Map([['wf-1', [buy]]]) }));
+    await runSyncCore(fh.host, fh.store, { dividendSecurities: true });
+    expect(theRow(fh)).toMatchObject({ activityType: 'DIVIDEND', assetId: 'asset-voo' });
+  });
 });
+

@@ -162,19 +162,19 @@ describe('planReconciliation — a keepDividend tx keeps a stored dividend on it
   const dividend = row({ type: 'DIVIDEND', assetId: 'asset-voo' });
 
   it('is not an update when only the type differs', () => {
-    const plan = planReconciliation([feed({ type: 'DEPOSIT', keepDividend: true })], [dividend]);
+    const plan = planReconciliation([feed({ type: 'DEPOSIT', keepDividend: 'security' })], [dividend]);
     expect(plan.updates).toEqual([]);
   });
 
   it('writes the stored type and security back when the row moves for another reason', () => {
-    const plan = planReconciliation([feed({ type: 'INTEREST', keepDividend: true, absCents: 510 })], [dividend]);
+    const plan = planReconciliation([feed({ type: 'INTEREST', keepDividend: 'security', absCents: 510 })], [dividend]);
     expect(plan.updates).toHaveLength(1);
     expect(plan.updates[0].to).toMatchObject({ type: 'DIVIDEND', assetId: 'asset-voo', absCents: 510 });
   });
 
   it('keeps nothing on a cash asset, or without the flag', () => {
     for (const assetId of ['$CASH-USD', 'CASH:USD', '', undefined]) {
-      const plan = planReconciliation([feed({ type: 'DEPOSIT', keepDividend: true })], [row({ type: 'DIVIDEND', assetId })]);
+      const plan = planReconciliation([feed({ type: 'DEPOSIT', keepDividend: 'security' })], [row({ type: 'DIVIDEND', assetId })]);
       expect(plan.updates.map((u) => u.to.type)).toEqual(['DEPOSIT']);
     }
     expect(planReconciliation([feed({ type: 'DEPOSIT' })], [dividend]).updates.map((u) => [u.to.type, u.to.assetId])).toEqual([
@@ -186,8 +186,22 @@ describe('planReconciliation — a keepDividend tx keeps a stored dividend on it
 describe('planReconciliation — a security, not a cash asset under a UUID', () => {
   it('keeps no dividend on a phantom `$CASH` security, and keeps one on the real ticker CASH', () => {
     const phantom = row({ type: 'DIVIDEND', assetId: '9231cb80-4223-4c04-98e3-dd3b1af60311', assetSymbol: '$CASH' });
-    expect(planReconciliation([feed({ type: 'INTEREST', keepDividend: true })], [phantom]).updates.map((u) => u.to.type)).toEqual(['INTEREST']);
+    expect(planReconciliation([feed({ type: 'INTEREST', keepDividend: 'security' })], [phantom]).updates.map((u) => u.to.type)).toEqual(['INTEREST']);
     const pathward = row({ type: 'DIVIDEND', assetId: 'asset-cash-stock', assetSymbol: 'CASH' });
-    expect(planReconciliation([feed({ type: 'INTEREST', keepDividend: true })], [pathward]).updates).toEqual([]);
+    expect(planReconciliation([feed({ type: 'INTEREST', keepDividend: 'security' })], [pathward]).updates).toEqual([]);
   });
 });
+
+describe("planReconciliation — keepDividend 'any' (the other writer may be older)", () => {
+  it('keeps a stored DIVIDEND on a phantom `$CASH` asset too, writing its asset back', () => {
+    const phantom = row({ type: 'DIVIDEND', assetId: 'uuid-phantom', assetSymbol: '$CASH' });
+    expect(planReconciliation([feed({ type: 'INTEREST', keepDividend: 'any' })], [phantom]).updates).toEqual([]);
+    const moved = planReconciliation([feed({ type: 'INTEREST', keepDividend: 'any', absCents: 600 })], [phantom]);
+    expect(moved.updates[0].to).toMatchObject({ type: 'DIVIDEND', assetId: 'uuid-phantom', absCents: 600 });
+  });
+
+  it('still re-types a stored row that is not a DIVIDEND', () => {
+    expect(planReconciliation([feed({ type: 'INTEREST', keepDividend: 'any' })], [row({ type: 'DEPOSIT' })]).updates.map((u) => u.to.type)).toEqual(['INTEREST']);
+  });
+});
+

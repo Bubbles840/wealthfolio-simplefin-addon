@@ -39,11 +39,15 @@ export interface FeedTx {
    *  its type and subtype alone and an update writes them back, as for `createOnly`. */
   keepPayback?: true;
   /** A dividend row (shared/dividends.ts `isDividendRow`) that this run could not
-   *  name a security for: the position was sold since, the holdings read failed,
-   *  or the other writer isn't new enough yet. A STORED DIVIDEND on a security
-   *  stays as it is: `changed()` leaves its type alone and an update writes the
-   *  stored type and security back. */
-  keepDividend?: true;
+   *  name a security for: a read failed, or the other writer isn't new enough
+   *  yet. A STORED DIVIDEND stays as it is: `changed()` leaves its type alone and
+   *  an update writes the stored type and security back.
+   *   - `'security'`: only a DIVIDEND on a security (the other writer is new
+   *     too, and moves one on a cash or phantom `$CASH` asset to INTEREST).
+   *   - `'any'`: any DIVIDEND, on a phantom `$CASH` asset too. While the other
+   *     writer may be older it writes a DIVIDEND rule's row on `$CASH-<ccy>`,
+   *     and a writer that retyped it INTEREST would fight it every sync. */
+  keepDividend?: 'security' | 'any';
   /**
    * Mark the written row as needing the user's eye — Wealthfolio 3.8's
    * `needs_review`, which it surfaces on its own Activities screen.
@@ -138,7 +142,7 @@ function sameType(row: ExistingRow, tx: FeedTx): boolean {
 /** A cash code: Wealthfolio's `is_cash_symbol` forms (`$CASH-USD`, `CASH_USD`,
  *  `CASH:USD`, …) and the bare `$CASH` security an older import minted. The
  *  ticker `CASH` (a real stock) is not one. */
-const isCashCode = (code: string | undefined): boolean =>
+export const isCashCode = (code: string | undefined): boolean =>
   /^(\$CASH|\$?CASH[-_:][A-Z]{3})$/i.test(code?.trim() ?? '');
 
 /** A stored row's asset is a security, not cash: an asset id that isn't a cash
@@ -147,14 +151,15 @@ export function isSecurityAsset(row: Pick<ExistingRow, 'assetId' | 'assetSymbol'
   return !!row.assetId?.trim() && !isCashCode(row.assetId) && !isCashCode(row.assetSymbol);
 }
 
-/** A stored dividend on a security that a `keepDividend` tx leaves where it is. */
+/** A stored dividend that a `keepDividend` tx leaves where it is. */
 function keepsStoredDividend(row: ExistingRow, tx: FeedTx): boolean {
-  return !!tx.keepDividend && row.type === 'DIVIDEND' && isSecurityAsset(row);
+  if (row.type !== 'DIVIDEND') return false;
+  return tx.keepDividend === 'any' || (tx.keepDividend === 'security' && isSecurityAsset(row));
 }
 
 /** Whether the stored row's own type and subtype stand: a `createOnly` tx never re-types a
  *  stored row, a `keepPayback` tx never re-types a stored payback, and a `keepDividend` tx
- *  never re-types a stored dividend on a security. */
+ *  never re-types the stored dividend it keeps. */
 function keepsStored(row: ExistingRow, tx: FeedTx): boolean {
   return !!tx.createOnly
     || (!!tx.keepPayback && row.type === 'CREDIT' && normSubtype(row.subtype) === 'REIMBURSEMENT')
