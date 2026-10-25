@@ -24,6 +24,10 @@ export interface HostActivity {
   fee?: string | number | null;
   comment: string | null;
   assetId?: string;
+  /** The stored asset's symbol (`assetSymbol` on a search row), absent when the
+   *  host reports none. Tells a real security from a cash asset whose id is a
+   *  UUID, such as a phantom `$CASH` security an older import minted. */
+  assetSymbol?: string;
   sourceGroupId?: string | null;
   /** A rule-assigned classifier (e.g. 'REIMBURSEMENT'), or `null` when the
    *  host reports the row has none. See docs/upstream-spending-buckets.md. */

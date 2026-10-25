@@ -16,11 +16,13 @@ as before.
   Fidelity's `DIVIDEND RECEIVED … (VOO) (Cash)` in an investment account
   becomes a Wealthfolio dividend on VOO instead of a cash deposit, so the
   Income page shows which holding paid it. Only when the account holds
-  exactly one security under that ticker; otherwise it stays a deposit. A
-  transaction rule still wins: one typed **Dividend** books the security the
-  same way (or **Interest** when none can be named, since Wealthfolio refuses
-  a dividend without one), and one typed anything else is left alone. Once
-  booked, a dividend stays on its security, even after the position is sold.
+  exactly one security under that ticker, or, for a dividend paid after the
+  position was sold, when the account's earlier dividends from it are booked
+  on exactly one; otherwise it stays a deposit. A transaction rule still
+  wins: one typed **Dividend** books the security the same way (or
+  **Interest** when none can be named, since Wealthfolio refuses a dividend
+  without one), and one typed anything else is left alone. Once booked, a
+  dividend stays on its security, even after the position is sold.
 
 ## [1.68.1] - 2026-10-24
 
