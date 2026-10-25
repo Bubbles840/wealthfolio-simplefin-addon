@@ -38,6 +38,12 @@ export interface FeedTx {
    *  filed (or made by hand, or a rule made before it was undone): `changed()` leaves
    *  its type and subtype alone and an update writes them back, as for `createOnly`. */
   keepPayback?: true;
+  /** A dividend row (shared/dividends.ts `isDividendRow`) that this run could not
+   *  name a security for: the position was sold since, the holdings read failed,
+   *  or the other writer isn't new enough yet. A STORED DIVIDEND on a security
+   *  stays as it is: `changed()` leaves its type alone and an update writes the
+   *  stored type and security back. */
+  keepDividend?: true;
   /**
    * Mark the written row as needing the user's eye — Wealthfolio 3.8's
    * `needs_review`, which it surfaces on its own Activities screen.
@@ -127,11 +133,25 @@ function sameType(row: ExistingRow, tx: FeedTx): boolean {
   return !!tx.inTransit && isInTransitRow(row) && outflow(row.type) && outflow(tx.type);
 }
 
+/** An asset id that names a security, not cash: Wealthfolio's `is_cash_symbol`
+ *  forms (`$CASH-USD`, `CASH_USD`, `CASH:USD`, …) are cash. */
+function isSecurityAssetId(assetId: string | undefined): boolean {
+  const id = assetId?.trim() ?? '';
+  return id !== '' && !/^\$?CASH[-_:]/i.test(id);
+}
+
+/** A stored dividend on a security that a `keepDividend` tx leaves where it is. */
+function keepsStoredDividend(row: ExistingRow, tx: FeedTx): boolean {
+  return !!tx.keepDividend && row.type === 'DIVIDEND' && isSecurityAssetId(row.assetId);
+}
+
 /** Whether the stored row's own type and subtype stand: a `createOnly` tx never re-types a
- *  stored row, and a `keepPayback` tx never re-types a stored payback. */
+ *  stored row, a `keepPayback` tx never re-types a stored payback, and a `keepDividend` tx
+ *  never re-types a stored dividend on a security. */
 function keepsStored(row: ExistingRow, tx: FeedTx): boolean {
   return !!tx.createOnly
-    || (!!tx.keepPayback && row.type === 'CREDIT' && normSubtype(row.subtype) === 'REIMBURSEMENT');
+    || (!!tx.keepPayback && row.type === 'CREDIT' && normSubtype(row.subtype) === 'REIMBURSEMENT')
+    || keepsStoredDividend(row, tx);
 }
 
 function changed(row: ExistingRow, tx: FeedTx): boolean {
@@ -167,13 +187,15 @@ function changed(row: ExistingRow, tx: FeedTx): boolean {
 }
 
 /** The update for a stored row: a tx that keeps it writes the stored type and subtype back
- *  (and, for `createOnly`, the stored in-transit marker). */
+ *  (for `createOnly`, the stored in-transit marker; for `keepDividend`, the stored security,
+ *  or the write would name `$CASH` and drop it). */
 function updateTo(row: ExistingRow, tx: FeedTx): FeedTx {
   if (!keepsStored(row, tx)) return tx;
   const { subtype: _drop, inTransit: _t, ...rest } = tx;
   return {
     ...rest, type: row.type,
     ...(row.subtype ? { subtype: row.subtype } : {}),
+    ...(keepsStoredDividend(row, tx) ? { assetId: row.assetId } : {}),
     ...(tx.createOnly ? (isInTransitRow(row) ? { inTransit: true as const } : {}) : (tx.inTransit ? { inTransit: true as const } : {})),
   };
 }

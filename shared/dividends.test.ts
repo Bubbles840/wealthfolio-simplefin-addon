@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { decideDividend, dividendTicker, heldSecuritiesOf, heldSecurityFor, type HeldSecurity } from './dividends.js';
+import { decideDividend, dividendTicker, heldSecuritiesOf, heldSecurityFor, isDividendRow, type HeldSecurity } from './dividends.js';
 import type { MappedType } from './mapper.js';
 
 describe('dividendTicker', () => {
@@ -71,5 +71,24 @@ describe('decideDividend', () => {
     await decide({ description: 'Dividend Received', held: counting });
     await decide({ accountType: 'CASH', held: counting });
     expect(reads).toBe(0);
+  });
+});
+
+describe('isDividendRow', () => {
+  const FID = 'DIVIDEND RECEIVED VANGUARD INDEX FUNDS S&P 500 ETF USD (VOO) (Cash)';
+  const row = (over: Partial<Parameters<typeof isDividendRow>[0]>) =>
+    isDividendRow({ mapped: { type: 'DEPOSIT', fromRule: false }, amount: 12.34, accountType: 'SECURITIES', description: FID, ...over });
+
+  it('is a known wording on a plain deposit in an investment account, or anything a rule typed DIVIDEND', () => {
+    expect(row({})).toBe(true);
+    expect(row({ mapped: { type: 'DIVIDEND', fromRule: true }, accountType: 'CASH', description: 'Dividend Received' })).toBe(true);
+  });
+
+  it('is not money out, a cash account, an unknown wording, or a row a rule typed otherwise', () => {
+    expect(row({ amount: -12.34 })).toBe(false);
+    expect(row({ accountType: 'CASH' })).toBe(false);
+    expect(row({ description: 'Dividend Received' })).toBe(false);
+    expect(row({ mapped: { type: 'DEPOSIT', fromRule: true } })).toBe(false);
+    expect(row({ mapped: { type: 'INTEREST', fromRule: true } })).toBe(false);
   });
 });

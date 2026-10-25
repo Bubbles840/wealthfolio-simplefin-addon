@@ -3,7 +3,7 @@ import { bankFirstTransferOut, genericTransferNeedsCorroboration } from './bank-
 import { fillFeedCurrencies } from './feed-currency.js';
 import { activeRelinks, emptyRelinkDecisions, openRelinkQuestions, planRelinkAdoption, retiredIds } from './relink.js';
 import { learnedNameKeys, learnedTransferType } from './transfer-names.js';
-import { decideDividend, type HeldSecurity } from './dividends.js';
+import { decideDividend, isDividendRow, type HeldSecurity } from './dividends.js';
 import { mapTransactionWithSource, type MappedType } from './mapper.js';
 import { REIMBURSEMENT_SUBTYPE } from './cash-flow-bucket.js';
 import { accountTxKey, detectTransferPairs, TRANSFER_MATCH_WINDOW_SECONDS } from './transfers.js';
@@ -2396,6 +2396,9 @@ async function runSyncPass(
     /** Nothing decided this cash money-in row's type and the plain mapping says
      *  DEPOSIT: a stored payback stays as stored (see `FeedTx.keepPayback`). */
     keepPayback?: true;
+    /** A dividend row this run named no security for: a stored dividend on a
+     *  security stays as stored (see `FeedTx.keepDividend`). */
+    keepDividend?: true;
   }
   const preparedByAccount = new Map<string, PreparedTx[]>();
   const candidates: TransferCandidate[] = [];
@@ -2691,12 +2694,18 @@ async function runSyncPass(
       // A dividend the bank names the security of (shared/dividends.ts): after
       // every transfer decision above, which it never touches, and only when the
       // other writer books it the same way.
-      const dividend = opts.dividendSecurities && !payback && !bankFirst && !learned
+      const dividendRow = !payback && !bankFirst && !learned
+        && isDividendRow({ mapped, amount, accountType: acctType, description: tx.description });
+      const dividend = opts.dividendSecurities && dividendRow
         ? await decideDividend({
           mapped, amount, accountType: acctType, description: tx.description,
           held: () => heldOf(wfAccountId),
         })
         : null;
+      // No security named this run, whatever the reason (sold since, a failed
+      // read, the gate shut): one already booked on a security stays there.
+      // Without this the next sync retyped it a $CASH deposit.
+      const keepDividend = dividendRow && dividend?.type !== 'DIVIDEND';
       const { type, fromRule, subtype } = payback
         ? { type: 'CREDIT' as ActivityType, fromRule: true, subtype: REIMBURSEMENT_SUBTYPE as string | undefined }
         : notTransfer && isTransferType(mapped.type)
@@ -2714,6 +2723,7 @@ async function runSyncPass(
         // Neither a rule nor the flag decided: a stored payback (filed, made by hand, or
         // made by a rule since undone) is not the sync's to turn into a deposit.
         ...(keepPayback ? { keepPayback: true as const } : {}),
+        ...(keepDividend ? { keepDividend: true as const } : {}),
       });
       // Amazon categories go on AFTER typing: `mapTransactionWithSource` above
       // matches the user's merchant rules against the bank's own text, and
@@ -3156,7 +3166,7 @@ async function runSyncPass(
     // in place rather than re-importing). A failed read of existing rows is
     // treated as "none" — the planner then creates everything and the host's
     // own dedup remains the backstop.
-    const feed: FeedTx[] = preparedAll.map(({ tx, type, inTransit, subtype, needsReview, createOnly, keepPayback, assetId }) => ({
+    const feed: FeedTx[] = preparedAll.map(({ tx, type, inTransit, subtype, needsReview, createOnly, keepPayback, assetId, keepDividend }) => ({
       txId: tx.id,
       wfAccountId,
       absCents: Math.round(Math.abs(parseFloat(tx.amount)) * 100),
@@ -3168,6 +3178,7 @@ async function runSyncPass(
       ...(createOnly ? { createOnly: true as const } : {}),
       ...(keepPayback && type === 'DEPOSIT' && !inTransit ? { keepPayback: true as const } : {}),
       ...(assetId ? { assetId } : {}),
+      ...(keepDividend ? { keepDividend: true as const } : {}),
       // Carried so `changed()` can compare it against the stored row — a rule
       // added after a row was imported has to reach that row as an update, and a
       // row that already agrees must not be rewritten every sync.

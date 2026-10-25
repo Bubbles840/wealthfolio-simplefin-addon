@@ -14,6 +14,11 @@
  * Who decides, as everywhere in the sync: a transaction rule the person wrote
  * wins. Without one, a known wording is recognised by itself.
  *
+ * Once booked, a dividend stays on its security: a later sync that can't name
+ * one (the position sold since, a failed holdings read, the other writer not
+ * new enough yet) leaves a stored DIVIDEND on a security as it is
+ * (`FeedTx.keepDividend`). Only a sync that names a security moves the row.
+ *
  * Pure: sync-core reads the holdings and writes; this module only decides.
  */
 import type { MappedType } from './mapper.js';
@@ -83,6 +88,23 @@ export type DividendDecision =
   | null;
 
 /**
+ * Whether this feature decides the row at all, from the text alone (no
+ * holdings read): money in that a rule typed DIVIDEND, or that no rule typed
+ * and the plain mapping calls a DEPOSIT, in an investment account, with a known
+ * dividend wording. A rule typed anything else wins, as everywhere.
+ */
+export function isDividendRow(row: {
+  mapped: MappedType;
+  amount: number;
+  accountType: string | undefined;
+  description: string;
+}): boolean {
+  if (!(row.amount > 0)) return false;
+  if (row.mapped.fromRule) return row.mapped.type === 'DIVIDEND';
+  return row.mapped.type === 'DEPOSIT' && isInvestmentAccountType(row.accountType) && dividendTicker(row.description) !== null;
+}
+
+/**
  * What a money-in row becomes, or null to leave the mapped type alone.
  *
  *  - A rule typed it DIVIDEND: a DIVIDEND on the held security the text names;
@@ -101,11 +123,9 @@ export async function decideDividend(row: {
   description: string;
   held: () => Promise<readonly HeldSecurity[] | null>;
 }): Promise<DividendDecision> {
-  if (!(row.amount > 0)) return null;
-  const ruled = row.mapped.fromRule && row.mapped.type === 'DIVIDEND';
-  const invest = isInvestmentAccountType(row.accountType);
-  const ticker = invest ? dividendTicker(row.description) : null;
-  if (!ruled && !(ticker && !row.mapped.fromRule && row.mapped.type === 'DEPOSIT')) return null;
+  if (!isDividendRow(row)) return null;
+  const ruled = row.mapped.fromRule;
+  const ticker = isInvestmentAccountType(row.accountType) ? dividendTicker(row.description) : null;
   const security = ticker ? heldSecurityFor(ticker, (await row.held()) ?? []) : null;
   if (security) return { type: 'DIVIDEND', assetId: security.assetId };
   return ruled ? { type: 'INTEREST' } : null;

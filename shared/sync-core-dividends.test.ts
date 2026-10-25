@@ -85,4 +85,54 @@ describe('runSyncCore — dividends on their security', () => {
     await runSyncCore(fh.host, fh.store, { dividendSecurities: true, force: true });
     expect(theRow(fh)).toMatchObject({ id: 'act-1', activityType: 'DIVIDEND', assetId: 'asset-voo' });
   });
+
+  describe('a booked dividend on a later sync', () => {
+    const booked = async (extra: Partial<FakeHostSeed> = {}) => {
+      const s = seed(VOO, extra);
+      const fh = createFakeHost(s);
+      await runSyncCore(fh.host, fh.store, { dividendSecurities: true });
+      expect(theRow(fh)).toMatchObject({ activityType: 'DIVIDEND', assetId: 'asset-voo' });
+      return { s, fh, before: fh.saved.length };
+    };
+    const writesSince = (fh: ReturnType<typeof createFakeHost>, before: number) =>
+      fh.saved.slice(before).filter((s) => (s.creates?.length ?? 0) + (s.updates?.length ?? 0) > 0);
+
+    it('stays on its security once the position is sold, and nothing is written', async () => {
+      const { s, fh, before } = await booked();
+      s.heldSecurities!['wf-1'] = [];
+      await runSyncCore(fh.host, fh.store, { dividendSecurities: true, force: true });
+      expect(theRow(fh)).toMatchObject({ activityType: 'DIVIDEND', assetId: 'asset-voo' });
+      expect(writesSince(fh, before)).toEqual([]);
+    });
+
+    it('stays when the holdings read fails, or the other writer is not new enough', async () => {
+      const { fh, before } = await booked();
+      fh.host.listHeldSecurities = async () => { throw new Error('holdings unavailable'); };
+      await runSyncCore(fh.host, fh.store, { dividendSecurities: true, force: true });
+      await runSyncCore(fh.host, fh.store, { force: true });
+      expect(theRow(fh)).toMatchObject({ activityType: 'DIVIDEND', assetId: 'asset-voo' });
+      expect(writesSince(fh, before)).toEqual([]);
+    });
+
+    it('keeps its security when it is rewritten for another reason (the amount changed)', async () => {
+      const { s, fh } = await booked({ mappingRules: [rule('Dividend Received', 'DIVIDEND')] });
+      s.accountSet!.accounts[0].transactions![0].amount = '12.50';
+      await runSyncCore(fh.host, fh.store, { force: true });
+      expect(theRow(fh)).toMatchObject({ activityType: 'DIVIDEND', assetId: 'asset-voo', amount: 12.5 });
+    });
+
+    it('moves to the security the holdings name now', async () => {
+      const { s, fh } = await booked();
+      s.heldSecurities!['wf-1'] = [{ assetId: 'asset-voo-manual', symbol: 'VOO' }];
+      await runSyncCore(fh.host, fh.store, { dividendSecurities: true, force: true });
+      expect(theRow(fh)).toMatchObject({ activityType: 'DIVIDEND', assetId: 'asset-voo-manual' });
+    });
+
+    it('a rule typing it something else still wins', async () => {
+      const { s, fh } = await booked({ mappingRules: [] });
+      s.mappingRules!.push(rule('Dividend Received', 'INTEREST'));
+      await runSyncCore(fh.host, fh.store, { dividendSecurities: true, force: true });
+      expect(theRow(fh)).toMatchObject({ activityType: 'INTEREST', assetId: '$CASH-USD' });
+    });
+  });
 });
