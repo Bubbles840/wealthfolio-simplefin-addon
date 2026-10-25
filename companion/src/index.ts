@@ -74,7 +74,7 @@ import { DEFAULT_GLYPH_STYLE, money, whyButton, WHY_BUTTON_TEXT, WHY_CALLBACK_PR
 import type { GlyphStyle, InlineKeyboard } from '../../shared/telegram.js';
 import type { DismissalLedger } from './dismissals.js';
 import type { SyncHealth } from '../../shared/telegram.js';
-import { SIMPLEFIN_SYNC_VERSION, COMPANION_VERSION_SECRET_KEY, INSTALLED_ADDON_VERSION_SECRET_KEY, isNewerVersion } from '../../shared/version.js';
+import { addonUnderstandsDividends, SIMPLEFIN_SYNC_VERSION, COMPANION_VERSION_SECRET_KEY, INSTALLED_ADDON_VERSION_SECRET_KEY, isNewerVersion } from '../../shared/version.js';
 import { getNativeWealthfolioSpending, getNativeWealthfolioSpendingBetween, getNativeWealthfolioBudgets, getNativeWealthfolioTopSpending, getNativeUncategorizedSpending, getNativeRuleCategorizedAmazonRows, getNativeCategorizedSpending, getNativeSpendingCategories, getNativeCategoryCatalog, getNativeSubcategorySpending, getNativeUncategorizedSpendingTotal, countRulePatternMatches, getNativeBudgetSpend, getNativeIncomeByMonthAccount, getNativeUncategorizedByMonthAccount, getNativeMerchantRows, getNativeDrillRows, getNativeFeesInterestByMonth, getNativeSpendDailyTotals, getNativeValuationByMonth, getNativeIncomeCategories } from './sqlite-native.js';
 import { publishUncategorizedStatusForDbPath } from './uncategorized-status.js';
 import { getNativePastFilings } from './sqlite-guess.js';
@@ -1050,7 +1050,9 @@ export async function runCompanionSync(opts: { force?: boolean; manual?: boolean
     // groups them as one run.
     const changeLog = companionChangeSink(wfClient);
     // `/sync` is a person, so no one-hour wall; the SimpleFin budget applies (1.64, C6).
-    const result = await runSyncCore(host, store, { force, changeLog, ...(opts.manual ? { manual: true } : {}) });
+    // Dividends on their security only once the installed add-on books them the same way.
+    const dividendSecurities = addonUnderstandsDividends(readInstalledAddonVersion(wealthfolioDbPath()));
+    const result = await runSyncCore(host, store, { force, changeLog, dividendSecurities, ...(opts.manual ? { manual: true } : {}) });
 
     for (const err of result.errors) {
       log(`Sync note: ${err}`);

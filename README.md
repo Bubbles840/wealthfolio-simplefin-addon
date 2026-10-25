@@ -285,6 +285,18 @@ pattern, or a regular expression that matches an empty description, is never
 saved, and the sync ignores one it finds stored. A Docker companion obeys the
 same rules once it is updated to the same release as the add-on.
 
+### Dividends on their security
+
+A dividend whose bank text names the security is booked as a Wealthfolio
+**Dividend** on that holding, so the Income page shows which one paid it. Only a
+known wording counts (today Fidelity's `DIVIDEND RECEIVED … (VOO) (Cash)`), only
+in an investment account, and only when the account holds exactly one security
+under that ticker; anything else is imported as before. A transaction rule wins,
+as always: a rule typed **DIVIDEND** books the security the same way, or
+**Interest** when none is named (a Dividend needs one). It starts once the add-on
+and the companion are both on this release. To add your bank's wording, add an
+entry to `DIVIDEND_PATTERNS` in `shared/dividends.ts` with its real text in the test.
+
 ### Starting balances
 
 On an account's first sync the addon reads its current balance from

@@ -26,6 +26,9 @@ export interface FeedTx {
    *  Omitted — not `null` — when no rule set one; see `normSubtype` for why
    *  that distinction matters to `changed()`. */
   subtype?: string;
+  /** The held security a dividend is booked on (shared/dividends.ts). Absent on
+   *  every other row; when set, a stored row on another security is updated. */
+  assetId?: string;
   /** A payback rule decided this row's type (W10): it applies to rows the sync
    *  CREATES only. Against a stored row, `changed()` ignores type and subtype and an
    *  update writes the stored ones back. */
@@ -140,6 +143,7 @@ function changed(row: ExistingRow, tx: FeedTx): boolean {
     (!keeps && !sameType(row, tx)) ||
     row.date !== tx.date ||
     row.pending !== tx.pending ||
+    (tx.assetId !== undefined && row.assetId !== tx.assetId) ||
     // Placeholder-ness is a real difference even when nothing else moved: a
     // non-CASH placeholder expires into the identical DEPOSIT/WITHDRAWAL, so
     // without this the row would keep its in-transit marker forever on a leg

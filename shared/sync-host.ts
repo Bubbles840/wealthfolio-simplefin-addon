@@ -7,6 +7,7 @@ import type { TransferNames } from './transfer-names.js';
 import type { IgnoreRule } from './ignore-rules.js';
 import type { LoadedSyncOverrides, SyncOverrides } from './sync-overrides.js';
 import type { UnlinkLeg, UnlinkResult } from './link-pair.js';
+import type { HeldSecurity } from './dividends.js';
 import type { LinkedLoan, LoanBalance, LoanBalanceDecision, LoanLinks } from './loan-balances.js';
 import type { RelinkDecisions } from './relink.js';
 
@@ -62,7 +63,9 @@ export interface ActivityWrite {
   accountId: string;
   activityType: string;
   activityDate: string;
-  symbol?: { symbol: string };
+  /** The security: `$CASH-<ccy>` by `symbol` for cash rows, an existing asset by
+   *  `id` for a dividend on a held security (shared/dividends.ts). */
+  symbol?: { symbol?: string; id?: string };
   amount?: number;
   fee?: number;
   currency: string;
@@ -249,6 +252,9 @@ export interface SyncHost {
   /** The loans (liabilities) Wealthfolio has: their currency, origination and
    *  whether a linked one still exists. With `confirmLoanBalance`, or neither. */
   listLoans?(): Promise<LinkedLoan[]>;
+  /** The securities an account holds: asset id and display code
+   *  (shared/dividends.ts). Optional: without it no dividend names a security. */
+  listHeldSecurities?(wfAccountId: string): Promise<HeldSecurity[]>;
   readonly capabilities: {
     /** True when the sync acts on listActivities' sourceGroupId (links,
      *  unlinks, adoptions). False: it acts on its own ledger, and a group only

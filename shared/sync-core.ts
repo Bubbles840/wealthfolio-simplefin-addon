@@ -3,6 +3,7 @@ import { bankFirstTransferOut, genericTransferNeedsCorroboration } from './bank-
 import { fillFeedCurrencies } from './feed-currency.js';
 import { activeRelinks, emptyRelinkDecisions, openRelinkQuestions, planRelinkAdoption, retiredIds } from './relink.js';
 import { learnedNameKeys, learnedTransferType } from './transfer-names.js';
+import { decideDividend, type HeldSecurity } from './dividends.js';
 import { mapTransactionWithSource, type MappedType } from './mapper.js';
 import { REIMBURSEMENT_SUBTYPE } from './cash-flow-bucket.js';
 import { accountTxKey, detectTransferPairs, TRANSFER_MATCH_WINDOW_SECONDS } from './transfers.js';
@@ -631,6 +632,14 @@ export interface SyncOptions {
    * leaves cards "not checked" (R7).
    */
   manual?: boolean;
+  /**
+   * Book a dividend the bank names the security of as a DIVIDEND on that held
+   * security (shared/dividends.ts). Set by each host only once the OTHER writer
+   * does the same (`companionUnderstandsDividends` / `addonUnderstandsDividends`),
+   * or the two would retype the row back and forth. Absent: dividends are typed
+   * as before.
+   */
+  dividendSecurities?: boolean;
 }
 
 /**
@@ -2373,6 +2382,8 @@ async function runSyncPass(
     /** Set when this row's classification is a guess the user should confirm —
      *  see `FeedTx.needsReview`. */
     needsReview?: boolean;
+    /** The held security a dividend is booked on (shared/dividends.ts). */
+    assetId?: string;
     /** The subtype the matched rule assigned, resolved ONCE here and read from
      *  here by everything downstream. Omitted — never `''` — for a row no rule
      *  subtyped: the write is patch-shaped, so an explicit empty string would
@@ -2574,6 +2585,18 @@ async function runSyncPass(
     }
     return p;
   };
+  // The securities an account holds, read lazily and once (only when a
+  // dividend names one). A failed read, or a host without the read, is null:
+  // the dividend is then typed as it would be without this feature.
+  const heldCache = new Map<string, Promise<HeldSecurity[] | null>>();
+  const heldOf = (wfId: string): Promise<HeldSecurity[] | null> => {
+    let p = heldCache.get(wfId);
+    if (!p) {
+      p = host.listHeldSecurities ? host.listHeldSecurities(wfId).catch(() => null) : Promise.resolve(null);
+      heldCache.set(wfId, p);
+    }
+    return p;
+  };
 
   // Each mapped account's name words, built once and BEFORE typing: typing needs
   // them to see a payment that names another connected account (spec A), and the
@@ -2665,13 +2688,25 @@ async function runSyncPass(
       const mapped = bankFirst
         ? { ...builtIn, type: 'TRANSFER_OUT' as ActivityType }
         : learned ? { ...builtIn, type: learned as ActivityType } : builtIn;
+      // A dividend the bank names the security of (shared/dividends.ts): after
+      // every transfer decision above, which it never touches, and only when the
+      // other writer books it the same way.
+      const dividend = opts.dividendSecurities && !payback && !bankFirst && !learned
+        ? await decideDividend({
+          mapped, amount, accountType: acctType, description: tx.description,
+          held: () => heldOf(wfAccountId),
+        })
+        : null;
       const { type, fromRule, subtype } = payback
         ? { type: 'CREDIT' as ActivityType, fromRule: true, subtype: REIMBURSEMENT_SUBTYPE as string | undefined }
         : notTransfer && isTransferType(mapped.type)
           ? { type: expiredTransferLegType(wfTypes.get(wfAccountId) ?? '', amount), fromRule: false, subtype: undefined }
-          : mapped;
+          : dividend
+            ? { type: dividend.type as ActivityType, fromRule: mapped.fromRule, subtype: undefined }
+            : mapped;
       prepared.push({
         sfAccountId: sfAccount.id, tx, type,
+        ...(dividend?.type === 'DIVIDEND' ? { assetId: dividend.assetId } : {}),
         ...(subtype ? { subtype } : {}),
         // Only when the rule's own type stands: the asReimbursement flag and the
         // notTransfer rewrite decide by themselves and may re-type a stored row.
@@ -3121,7 +3156,7 @@ async function runSyncPass(
     // in place rather than re-importing). A failed read of existing rows is
     // treated as "none" — the planner then creates everything and the host's
     // own dedup remains the backstop.
-    const feed: FeedTx[] = preparedAll.map(({ tx, type, inTransit, subtype, needsReview, createOnly, keepPayback }) => ({
+    const feed: FeedTx[] = preparedAll.map(({ tx, type, inTransit, subtype, needsReview, createOnly, keepPayback, assetId }) => ({
       txId: tx.id,
       wfAccountId,
       absCents: Math.round(Math.abs(parseFloat(tx.amount)) * 100),
@@ -3132,6 +3167,7 @@ async function runSyncPass(
       ...(needsReview ? { needsReview: true } : {}),
       ...(createOnly ? { createOnly: true as const } : {}),
       ...(keepPayback && type === 'DEPOSIT' && !inTransit ? { keepPayback: true as const } : {}),
+      ...(assetId ? { assetId } : {}),
       // Carried so `changed()` can compare it against the stored row — a rule
       // added after a row was imported has to reach that row as an update, and a
       // row that already agrees must not be rewritten every sync.
@@ -4022,7 +4058,8 @@ async function runSyncPass(
       // asset by symbol — the /activities/bulk endpoint deserializes `symbol` as
       // an AssetResolutionInput object (a bare string 422s with "invalid type:
       // string, expected struct AssetResolutionInput").
-      ...(isTransferType(t.type) ? {} : { symbol: { symbol: cashSymbol } }),
+      // A dividend on a held security names that asset by id (shared/dividends.ts).
+      ...(isTransferType(t.type) ? {} : t.assetId ? { symbol: { id: t.assetId } } : { symbol: { symbol: cashSymbol } }),
       amount: t.absCents / 100,
       currency: sfAccount.currency,
       // The in-transit marker goes at the FRONT: txIdFromComment parses the
