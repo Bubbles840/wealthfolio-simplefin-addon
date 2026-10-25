@@ -8,8 +8,10 @@
  *
  * Narrow on purpose: a security is only named when a known bank wording
  * carries its ticker AND the account holds exactly one security under that
- * ticker. Anything less stays what it was. A wrong match would credit income to
- * the wrong holding; a missed one only leaves a deposit.
+ * ticker, or, holding none, has its earlier dividends under that ticker booked
+ * on exactly one (a dividend paid after the position was sold). Anything less
+ * stays what it was. A wrong match would credit income to the wrong holding; a
+ * missed one only leaves a deposit.
  *
  * Who decides, as everywhere in the sync: a transaction rule the person wrote
  * wins. Without one, a known wording is recognised by itself.
@@ -19,7 +21,8 @@
  * new enough yet) leaves a stored DIVIDEND on a security as it is
  * (`FeedTx.keepDividend`). Only a sync that names a security moves the row.
  *
- * Pure: sync-core reads the holdings and writes; this module only decides.
+ * Pure: sync-core reads the holdings and stored rows and writes; this module
+ * only decides.
  */
 import type { MappedType } from './mapper.js';
 
@@ -104,17 +107,38 @@ export function isDividendRow(row: {
   return row.mapped.type === 'DEPOSIT' && isInvestmentAccountType(row.accountType) && dividendTicker(row.description) !== null;
 }
 
+/** A dividend the account already has booked on a security: its bank text and
+ *  that security's asset id. */
+export interface PastDividend {
+  description: string;
+  assetId: string;
+}
+
+/** The one security this account's earlier dividends under `ticker` are booked
+ *  on, or null when they name none or more than one. */
+export function pastDividendSecurity(ticker: string, past: readonly PastDividend[]): string | null {
+  const key = ticker.trim().toUpperCase();
+  const ids = new Set(past.filter((p) => dividendTicker(p.description) === key).map((p) => p.assetId));
+  return ids.size === 1 ? [...ids][0] : null;
+}
+
 /**
  * What a money-in row becomes, or null to leave the mapped type alone.
  *
- *  - A rule typed it DIVIDEND: a DIVIDEND on the held security the text names;
+ *  - A rule typed it DIVIDEND: a DIVIDEND on the security the text names;
  *    otherwise INTEREST, the income type that needs no security (a DIVIDEND
  *    without one is refused).
  *  - No rule, a plain deposit in an investment account whose text is a known
- *    dividend wording: a DIVIDEND on the held security it names; otherwise
- *    left as it is.
+ *    dividend wording: a DIVIDEND on the security it names; otherwise left as
+ *    it is.
  *
- * `held` is read only when needed: pass a function.
+ * The security is the one holding under the ticker. When the account holds
+ * none (a dividend paid after the position was sold) or the read failed, it is
+ * the one security this account's earlier dividends under the ticker are booked
+ * on: both writers read the same stored rows, so they agree. Two holdings under
+ * the ticker name none, whatever the history says.
+ *
+ * `held` and `past` are read only when needed: pass functions.
  */
 export async function decideDividend(row: {
   mapped: MappedType;
@@ -122,11 +146,23 @@ export async function decideDividend(row: {
   accountType: string | undefined;
   description: string;
   held: () => Promise<readonly HeldSecurity[] | null>;
+  past?: () => Promise<readonly PastDividend[] | null>;
 }): Promise<DividendDecision> {
   if (!isDividendRow(row)) return null;
   const ruled = row.mapped.fromRule;
   const ticker = isInvestmentAccountType(row.accountType) ? dividendTicker(row.description) : null;
-  const security = ticker ? heldSecurityFor(ticker, (await row.held()) ?? []) : null;
-  if (security) return { type: 'DIVIDEND', assetId: security.assetId };
+  const assetId = ticker ? await securityFor(ticker, row.held, row.past) : null;
+  if (assetId) return { type: 'DIVIDEND', assetId };
   return ruled ? { type: 'INTEREST' } : null;
+}
+
+async function securityFor(
+  ticker: string,
+  held: () => Promise<readonly HeldSecurity[] | null>,
+  past: (() => Promise<readonly PastDividend[] | null>) | undefined,
+): Promise<string | null> {
+  const holdings = (await held()) ?? [];
+  const key = ticker.trim().toUpperCase();
+  if (holdings.some((h) => h.symbol.trim().toUpperCase() === key)) return heldSecurityFor(ticker, holdings)?.assetId ?? null;
+  return past ? pastDividendSecurity(ticker, (await past()) ?? []) : null;
 }

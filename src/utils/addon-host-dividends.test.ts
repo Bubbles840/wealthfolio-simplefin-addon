@@ -12,3 +12,18 @@ describe('AddonSyncHost — held securities', () => {
     expect(getHoldings).toHaveBeenCalledWith('wf-1');
   });
 });
+
+describe('AddonSyncHost — a stored row\'s asset symbol', () => {
+  it('carries assetSymbol from the search row, and leaves it out when the row has none', async () => {
+    const search = vi.fn(async () => ({
+      data: [
+        { id: 'a1', accountId: 'wf-1', activityType: 'DIVIDEND', date: '2027-03-10', amount: 1, assetId: 'uuid-1', assetSymbol: '$CASH' },
+        { id: 'a2', accountId: 'wf-1', activityType: 'DEPOSIT', date: '2027-03-10', amount: 1 },
+      ],
+    }));
+    const rows = await new AddonSyncHost({ api: { activities: { search } } } as any).listActivities('wf-1');
+    expect(rows[0].assetSymbol).toBe('$CASH');
+    expect('assetSymbol' in rows[1]).toBe(false);
+  });
+});
+

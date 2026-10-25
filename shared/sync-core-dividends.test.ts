@@ -135,4 +135,30 @@ describe('runSyncCore — dividends on their security', () => {
       expect(theRow(fh)).toMatchObject({ activityType: 'INTEREST', assetId: '$CASH-USD' });
     });
   });
+
+  describe('a dividend paid after the position was sold', () => {
+    const earlier = (assetId: string, assetSymbol?: string): HostActivity => ({
+      id: 'act-old', accountId: 'wf-1', activityType: 'DIVIDEND', date: '2026-12-10', amount: 11.9,
+      comment: `${VOO} · tx-old`, assetId, ...(assetSymbol ? { assetSymbol } : {}), sourceGroupId: null, metadata: null,
+    });
+
+    it('is booked on the security this account\'s earlier dividend under the ticker is on', async () => {
+      const fh = createFakeHost(seed(VOO, { heldSecurities: { 'wf-1': [] }, existing: new Map([['wf-1', [earlier('asset-voo')]]]) }));
+      await runSyncCore(fh.host, fh.store, { dividendSecurities: true });
+      expect(theRow(fh)).toMatchObject({ activityType: 'DIVIDEND', assetId: 'asset-voo' });
+    });
+
+    it('never uses an earlier dividend on a phantom `$CASH` security, and moves a ruled one off it', async () => {
+      const fh = createFakeHost(seed(VOO, { heldSecurities: { 'wf-1': [] }, existing: new Map([['wf-1', [earlier('uuid-phantom', '$CASH')]]]) }));
+      await runSyncCore(fh.host, fh.store, { dividendSecurities: true });
+      expect(theRow(fh)).toMatchObject({ activityType: 'DEPOSIT' });
+
+      const stored = { ...earlier('uuid-phantom', '$CASH'), id: 'act-1', comment: `${VOO} · tx-div`, date: '2027-03-10', amount: 12.34 };
+      const ruled = createFakeHost(seed(VOO, {
+        heldSecurities: { 'wf-1': [] }, mappingRules: [rule('Dividend Received', 'DIVIDEND')], existing: new Map([['wf-1', [stored]]]),
+      }));
+      await runSyncCore(ruled.host, ruled.store, { dividendSecurities: true, force: true });
+      expect(theRow(ruled)).toMatchObject({ id: 'act-1', activityType: 'INTEREST', assetId: '$CASH-USD' });
+    });
+  });
 });

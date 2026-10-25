@@ -258,6 +258,7 @@ export function createFakeHost(seed: FakeHostSeed = {}): FakeHost {
       fee: w.fee ?? null,
       comment: w.comment ?? null,
       assetId: w.symbol?.id ?? w.symbol?.symbol,
+      ...(w.symbol?.symbol ? { assetSymbol: w.symbol.symbol } : {}),
       sourceGroupId: w.sourceGroupId ?? null,
       // Matches both real adapters: an absent subtype reads back as `null`,
       // never dropped. Dropping it here used to mask the second churn path in

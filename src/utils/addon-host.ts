@@ -71,6 +71,7 @@ function fromSearchRow(a: any, wfAccountId: string): HostActivity {
     fee: a.fee ?? null,
     comment: a.comment ?? a.notes ?? a.description ?? null,
     assetId: a.assetId ? String(a.assetId) : undefined,
+    ...(a.assetSymbol ? { assetSymbol: String(a.assetSymbol) } : {}),
     sourceGroupId: a.sourceGroupId ?? null,
     subtype: a.subtype ?? null,
     // Passed through as-is, and ABSENT (not null) when the response has no

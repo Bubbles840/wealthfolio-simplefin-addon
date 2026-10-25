@@ -182,3 +182,12 @@ describe('planReconciliation — a keepDividend tx keeps a stored dividend on it
     ]);
   });
 });
+
+describe('planReconciliation — a security, not a cash asset under a UUID', () => {
+  it('keeps no dividend on a phantom `$CASH` security, and keeps one on the real ticker CASH', () => {
+    const phantom = row({ type: 'DIVIDEND', assetId: '9231cb80-4223-4c04-98e3-dd3b1af60311', assetSymbol: '$CASH' });
+    expect(planReconciliation([feed({ type: 'INTEREST', keepDividend: true })], [phantom]).updates.map((u) => u.to.type)).toEqual(['INTEREST']);
+    const pathward = row({ type: 'DIVIDEND', assetId: 'asset-cash-stock', assetSymbol: 'CASH' });
+    expect(planReconciliation([feed({ type: 'INTEREST', keepDividend: true })], [pathward]).updates).toEqual([]);
+  });
+});

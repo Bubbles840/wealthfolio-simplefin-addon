@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { decideDividend, dividendTicker, heldSecuritiesOf, heldSecurityFor, isDividendRow, type HeldSecurity } from './dividends.js';
+import { decideDividend, dividendTicker, heldSecuritiesOf, heldSecurityFor, isDividendRow, pastDividendSecurity, type HeldSecurity } from './dividends.js';
 import type { MappedType } from './mapper.js';
 
 describe('dividendTicker', () => {
@@ -90,5 +90,45 @@ describe('isDividendRow', () => {
     expect(row({ description: 'Dividend Received' })).toBe(false);
     expect(row({ mapped: { type: 'DEPOSIT', fromRule: true } })).toBe(false);
     expect(row({ mapped: { type: 'INTEREST', fromRule: true } })).toBe(false);
+  });
+});
+
+describe('a dividend paid after the position was sold', () => {
+  const FID = 'DIVIDEND RECEIVED VANGUARD INDEX FUNDS S&P 500 ETF USD (VOO) (Cash)';
+  const MSFT = 'DIVIDEND RECEIVED MICROSOFT CORP (MSFT) (Cash)';
+  const past = [{ description: FID, assetId: 'a-voo' }, { description: MSFT, assetId: 'a-msft' }];
+  const decide = (over: Partial<Parameters<typeof decideDividend>[0]>) =>
+    decideDividend({
+      mapped: { type: 'DEPOSIT', fromRule: false }, amount: 12.34, accountType: 'SECURITIES', description: FID,
+      held: async () => [], past: async () => past, ...over,
+    });
+
+  it('names the one security the account\'s earlier dividends under the ticker are booked on', () => {
+    expect(pastDividendSecurity('voo', past)).toBe('a-voo');
+    expect(pastDividendSecurity('VOO', [...past, { description: FID, assetId: 'a-voo-2' }])).toBeNull();
+    expect(pastDividendSecurity('SPAXX', past)).toBeNull();
+  });
+
+  it('books on it when nothing held carries the ticker, or the holdings read failed', async () => {
+    expect(await decide({})).toEqual({ type: 'DIVIDEND', assetId: 'a-voo' });
+    expect(await decide({ held: async () => null })).toEqual({ type: 'DIVIDEND', assetId: 'a-voo' });
+    expect(await decide({ held: async () => [{ assetId: 'a-x', symbol: 'MSFT' }] })).toEqual({ type: 'DIVIDEND', assetId: 'a-voo' });
+  });
+
+  it('a holding wins over the history, and two holdings under the ticker name none', async () => {
+    expect(await decide({ held: async () => [{ assetId: 'a-voo-now', symbol: 'VOO' }] })).toEqual({ type: 'DIVIDEND', assetId: 'a-voo-now' });
+    expect(await decide({ held: async () => [{ assetId: 'a1', symbol: 'VOO' }, { assetId: 'a2', symbol: 'VOO' }] })).toBeNull();
+  });
+
+  it('leaves it a deposit with no history, or when the history read failed', async () => {
+    expect(await decide({ past: async () => [] })).toBeNull();
+    expect(await decide({ past: async () => null })).toBeNull();
+    expect(await decide({ past: undefined })).toBeNull();
+  });
+
+  it('reads the history only when no holding carries the ticker', async () => {
+    let reads = 0;
+    await decide({ held: async () => [{ assetId: 'a-voo-now', symbol: 'VOO' }], past: async () => { reads++; return past; } });
+    expect(reads).toBe(0);
   });
 });

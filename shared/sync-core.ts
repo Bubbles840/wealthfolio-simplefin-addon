@@ -3,12 +3,12 @@ import { bankFirstTransferOut, genericTransferNeedsCorroboration } from './bank-
 import { fillFeedCurrencies } from './feed-currency.js';
 import { activeRelinks, emptyRelinkDecisions, openRelinkQuestions, planRelinkAdoption, retiredIds } from './relink.js';
 import { learnedNameKeys, learnedTransferType } from './transfer-names.js';
-import { decideDividend, isDividendRow, type HeldSecurity } from './dividends.js';
+import { decideDividend, isDividendRow, type HeldSecurity, type PastDividend } from './dividends.js';
 import { mapTransactionWithSource, type MappedType } from './mapper.js';
 import { REIMBURSEMENT_SUBTYPE } from './cash-flow-bucket.js';
 import { accountTxKey, detectTransferPairs, TRANSFER_MATCH_WINDOW_SECONDS } from './transfers.js';
 import type { TransferCandidate } from './transfers.js';
-import { planReconciliation, IN_TRANSIT_COMMENT_PREFIX } from './reconcile.js';
+import { planReconciliation, IN_TRANSIT_COMMENT_PREFIX, isSecurityAsset } from './reconcile.js';
 import { isSimplefinNotice } from './simplefin-payload.js';
 import { accountTag, feedPrices, toHoldingsSnapshot } from './holdings.js';
 import { loanBalanceOf, type LinkedLoan, type LoanLinks } from './loan-balances.js';
@@ -1305,6 +1305,7 @@ async function fetchExistingRows(
       date: new Date(a.date).toISOString().slice(0, 10),
       pending,
       assetId: a.assetId ? String(a.assetId) : undefined,
+      ...(a.assetSymbol ? { assetSymbol: String(a.assetSymbol) } : {}),
       comment: a.comment ?? undefined,
       // Both halves of the subtype comparison have to be real or `changed()`
       // decides on one: with the feed carrying a rule's subtype and this side
@@ -2574,19 +2575,29 @@ async function runSyncPass(
   // The learned transfer names (A5). No list (no companion, or one not yet on
   // 1.64) is an empty set and typing is exactly as before (R6).
   const learnedNames = learnedNameKeys(await store.getTransferNames?.().catch(() => null));
-  // The ids of an account's stored paybacks, read lazily and once (only when a
-  // learned name matches a payback candidate). A failed read is null.
-  const paybackIdCache = new Map<string, Promise<Set<string> | null>>();
-  const storedPaybacksOf = (wfId: string): Promise<Set<string> | null> => {
-    let p = paybackIdCache.get(wfId);
+  // An account's stored rows, read lazily and once for typing (only when a
+  // learned name matches a payback candidate, or a dividend's ticker isn't
+  // held). A failed read is null.
+  const storedRowsCache = new Map<string, Promise<StoredRow[] | null>>();
+  const storedRowsOf = (wfId: string): Promise<StoredRow[] | null> => {
+    let p = storedRowsCache.get(wfId);
     if (!p) {
-      p = fetchExistingRows(host, wfId).then(
-        (rows) => new Set(rows.filter((r) => r.type === 'CREDIT' && (r.subtype ?? '').toUpperCase() === REIMBURSEMENT_SUBTYPE).map((r) => r.txId)),
-        () => null,
-      );
-      paybackIdCache.set(wfId, p);
+      p = fetchExistingRows(host, wfId).catch(() => null);
+      storedRowsCache.set(wfId, p);
     }
     return p;
+  };
+  // The ids of an account's stored paybacks.
+  const storedPaybacksOf = async (wfId: string): Promise<Set<string> | null> => {
+    const rows = await storedRowsOf(wfId);
+    return rows && new Set(rows.filter((r) => r.type === 'CREDIT' && (r.subtype ?? '').toUpperCase() === REIMBURSEMENT_SUBTYPE).map((r) => r.txId));
+  };
+  // The dividends an account already has booked on a security (shared/dividends.ts).
+  const pastDividendsOf = async (wfId: string): Promise<PastDividend[] | null> => {
+    const rows = await storedRowsOf(wfId);
+    return rows && rows
+      .filter((r) => r.type === 'DIVIDEND' && isSecurityAsset(r))
+      .map((r) => ({ description: descriptionFromComment(r.comment), assetId: r.assetId! }));
   };
   // The securities an account holds, read lazily and once (only when a
   // dividend names one). A failed read, or a host without the read, is null:
@@ -2700,6 +2711,7 @@ async function runSyncPass(
         ? await decideDividend({
           mapped, amount, accountType: acctType, description: tx.description,
           held: () => heldOf(wfAccountId),
+          past: () => pastDividendsOf(wfAccountId),
         })
         : null;
       // No security named this run, whatever the reason (sold since, a failed

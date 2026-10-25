@@ -73,6 +73,8 @@ export interface ExistingRow {
    *  book cash and to stay pairable; legs imported before that was understood
    *  carry the phantom "$CASH" security here and need re-creating. */
   assetId?: string;
+  /** The stored asset's symbol, when the host reports one (see `isSecurityAsset`). */
+  assetSymbol?: string;
   /** The row's stored comment, kept verbatim so a re-created leg preserves its
    *  description even when the transaction is outside this run's fetch window
    *  (where the SimpleFin description is no longer available to rebuild it). */
@@ -133,16 +135,21 @@ function sameType(row: ExistingRow, tx: FeedTx): boolean {
   return !!tx.inTransit && isInTransitRow(row) && outflow(row.type) && outflow(tx.type);
 }
 
-/** An asset id that names a security, not cash: Wealthfolio's `is_cash_symbol`
- *  forms (`$CASH-USD`, `CASH_USD`, `CASH:USD`, …) are cash. */
-function isSecurityAssetId(assetId: string | undefined): boolean {
-  const id = assetId?.trim() ?? '';
-  return id !== '' && !/^\$?CASH[-_:]/i.test(id);
+/** A cash code: Wealthfolio's `is_cash_symbol` forms (`$CASH-USD`, `CASH_USD`,
+ *  `CASH:USD`, …) and the bare `$CASH` security an older import minted. The
+ *  ticker `CASH` (a real stock) is not one. */
+const isCashCode = (code: string | undefined): boolean =>
+  /^(\$CASH|\$?CASH[-_:][A-Z]{3})$/i.test(code?.trim() ?? '');
+
+/** A stored row's asset is a security, not cash: an asset id that isn't a cash
+ *  code, under a symbol (when the host reports one) that isn't one either. */
+export function isSecurityAsset(row: Pick<ExistingRow, 'assetId' | 'assetSymbol'>): boolean {
+  return !!row.assetId?.trim() && !isCashCode(row.assetId) && !isCashCode(row.assetSymbol);
 }
 
 /** A stored dividend on a security that a `keepDividend` tx leaves where it is. */
 function keepsStoredDividend(row: ExistingRow, tx: FeedTx): boolean {
-  return !!tx.keepDividend && row.type === 'DIVIDEND' && isSecurityAssetId(row.assetId);
+  return !!tx.keepDividend && row.type === 'DIVIDEND' && isSecurityAsset(row);
 }
 
 /** Whether the stored row's own type and subtype stand: a `createOnly` tx never re-types a
