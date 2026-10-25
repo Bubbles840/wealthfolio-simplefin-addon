@@ -27,3 +27,18 @@ describe('AddonSyncHost — a stored row\'s asset symbol', () => {
   });
 });
 
+describe('AddonSyncHost — holdings snapshots', () => {
+  it('lists snapshot dates and position counts, and one snapshot\'s securities without its cash line', async () => {
+    const getAll = vi.fn(async () => [{ id: 's1', snapshotDate: '2027-02-20', positionCount: 1, source: 'MANUAL_ENTRY' }]);
+    const getByDate = vi.fn(async () => [
+      { holdingType: 'security', instrument: { id: 'asset-voo', symbol: 'VOO' } },
+      { holdingType: 'cash', instrument: { id: 'cash:USD', symbol: 'USD' } },
+    ]);
+    const host = new AddonSyncHost({ api: { snapshots: { getAll, getByDate } } } as any);
+    expect(await host.listSnapshotDays('wf-1', '2026-09-01', '2027-03-15')).toEqual([{ date: '2027-02-20', positionCount: 1 }]);
+    expect(getAll).toHaveBeenCalledWith('wf-1', '2026-09-01', '2027-03-15');
+    expect(await host.listSnapshotSecurities('wf-1', '2027-02-20')).toEqual([{ assetId: 'asset-voo', symbol: 'VOO' }]);
+    expect(getByDate).toHaveBeenCalledWith('wf-1', '2027-02-20');
+  });
+});
+

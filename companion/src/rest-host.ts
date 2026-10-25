@@ -1,4 +1,4 @@
-import { heldSecuritiesOf, type HeldSecurity } from '../../shared/dividends.js';
+import { heldSecuritiesOf, snapshotDaysOf, type HeldSecurity, type SnapshotDay } from '../../shared/dividends.js';
 import { fetchAccountsNode } from './simplefin.js';
 import { getNativeAccountBalances } from './sqlite-native.js';
 import { AMAZON_LEDGER_SECRET_KEY } from '../../shared/amazon-ledger.js';
@@ -90,6 +90,16 @@ export class RestSyncHost implements SyncHost {
   /** The account's held securities, for a dividend that names one. */
   async listHeldSecurities(wfAccountId: string): Promise<HeldSecurity[]> {
     return heldSecuritiesOf(await this.client.getHoldings(wfAccountId));
+  }
+
+  /** The account's holdings snapshots in a date range, for a dividend paid after a sale. */
+  async listSnapshotDays(wfAccountId: string, from: string, to: string): Promise<SnapshotDay[]> {
+    return snapshotDaysOf(await this.client.getSnapshots(wfAccountId, from, to));
+  }
+
+  /** The securities one of the account's holdings snapshots holds. */
+  async listSnapshotSecurities(wfAccountId: string, date: string): Promise<HeldSecurity[]> {
+    return heldSecuritiesOf(await this.client.getSnapshotHoldings(wfAccountId, date));
   }
 
   async confirmLoanBalance(loan: LinkedLoan, entry: LoanBalance): Promise<LoanBalanceDecision> {

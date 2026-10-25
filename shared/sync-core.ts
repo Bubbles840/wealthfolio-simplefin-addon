@@ -3,7 +3,7 @@ import { bankFirstTransferOut, genericTransferNeedsCorroboration } from './bank-
 import { fillFeedCurrencies } from './feed-currency.js';
 import { activeRelinks, emptyRelinkDecisions, openRelinkQuestions, planRelinkAdoption, retiredIds } from './relink.js';
 import { learnedNameKeys, learnedTransferType } from './transfer-names.js';
-import { decideDividend, isDividendRow, type HeldSecurity, type PastDividend } from './dividends.js';
+import { decideDividend, isDividendRow, NO_DIVIDEND_READS, SNAPSHOT_WINDOW_DAYS, type DividendReads, type HeldSecurity, type PastActivity, type SnapshotDay } from './dividends.js';
 import { mapTransactionWithSource, type MappedType } from './mapper.js';
 import { REIMBURSEMENT_SUBTYPE } from './cash-flow-bucket.js';
 import { accountTxKey, detectTransferPairs, TRANSFER_MATCH_WINDOW_SECONDS } from './transfers.js';
@@ -1289,7 +1289,12 @@ async function fetchExistingRows(
   host: SyncHost,
   wfAccountId: string,
 ): Promise<StoredRow[]> {
-  const data = await host.listActivities(wfAccountId);
+  return storedRowsFrom(await host.listActivities(wfAccountId), wfAccountId);
+}
+
+/** The sync's own rows (those whose comment ends with a SimpleFin tx id) in a
+ *  `listActivities` read. */
+function storedRowsFrom(data: HostActivity[], wfAccountId: string): StoredRow[] {
   const rows: StoredRow[] = [];
   for (const a of data) {
     const pending = (a.comment ?? '').endsWith(PENDING_SUFFIX);
@@ -2397,9 +2402,9 @@ async function runSyncPass(
     /** Nothing decided this cash money-in row's type and the plain mapping says
      *  DEPOSIT: a stored payback stays as stored (see `FeedTx.keepPayback`). */
     keepPayback?: true;
-    /** A dividend row this run named no security for: a stored dividend on a
-     *  security stays as stored (see `FeedTx.keepDividend`). */
-    keepDividend?: true;
+    /** A dividend row this run named no security for: a stored dividend stays
+     *  as stored (see `FeedTx.keepDividend`). */
+    keepDividend?: 'security' | 'any';
   }
   const preparedByAccount = new Map<string, PreparedTx[]>();
   const candidates: TransferCandidate[] = [];
@@ -2575,29 +2580,43 @@ async function runSyncPass(
   // The learned transfer names (A5). No list (no companion, or one not yet on
   // 1.64) is an empty set and typing is exactly as before (R6).
   const learnedNames = learnedNameKeys(await store.getTransferNames?.().catch(() => null));
-  // An account's stored rows, read lazily and once for typing (only when a
+  // An account's activities, read lazily and once for typing (only when a
   // learned name matches a payback candidate, or a dividend's ticker isn't
   // held). A failed read is null.
-  const storedRowsCache = new Map<string, Promise<StoredRow[] | null>>();
-  const storedRowsOf = (wfId: string): Promise<StoredRow[] | null> => {
-    let p = storedRowsCache.get(wfId);
+  const activitiesCache = new Map<string, Promise<HostActivity[] | null>>();
+  const activitiesOf = (wfId: string): Promise<HostActivity[] | null> => {
+    let p = activitiesCache.get(wfId);
     if (!p) {
-      p = fetchExistingRows(host, wfId).catch(() => null);
-      storedRowsCache.set(wfId, p);
+      p = host.listActivities(wfId).catch(() => null);
+      activitiesCache.set(wfId, p);
     }
     return p;
+  };
+  // The sync's own rows among them. A malformed row fails the whole read (as
+  // fetchExistingRows does), and here a failed read is null.
+  const storedRowsOf = async (wfId: string): Promise<StoredRow[] | null> => {
+    const data = await activitiesOf(wfId);
+    try {
+      return data && storedRowsFrom(data, wfId);
+    } catch {
+      return null;
+    }
   };
   // The ids of an account's stored paybacks.
   const storedPaybacksOf = async (wfId: string): Promise<Set<string> | null> => {
     const rows = await storedRowsOf(wfId);
     return rows && new Set(rows.filter((r) => r.type === 'CREDIT' && (r.subtype ?? '').toUpperCase() === REIMBURSEMENT_SUBTYPE).map((r) => r.txId));
   };
-  // The dividends an account already has booked on a security (shared/dividends.ts).
-  const pastDividendsOf = async (wfId: string): Promise<PastDividend[] | null> => {
-    const rows = await storedRowsOf(wfId);
-    return rows && rows
-      .filter((r) => r.type === 'DIVIDEND' && isSecurityAsset(r))
-      .map((r) => ({ description: descriptionFromComment(r.comment), assetId: r.assetId! }));
+  // An account's activity on a security (shared/dividends.ts): every row, not
+  // only the sync's own; a trade entered by hand names its security too.
+  const pastActivityOf = async (wfId: string): Promise<PastActivity[] | null> => {
+    const data = await activitiesOf(wfId);
+    return data && data
+      .filter((a) => isSecurityAsset(a))
+      .map((a) => ({
+        type: String(a.activityType).toUpperCase(), description: descriptionFromComment(a.comment), assetId: String(a.assetId),
+        ...(a.assetSymbol ? { assetSymbol: a.assetSymbol } : {}),
+      }));
   };
   // The securities an account holds, read lazily and once (only when a
   // dividend names one). A failed read, or a host without the read, is null:
@@ -2610,6 +2629,37 @@ async function runSyncPass(
       heldCache.set(wfId, p);
     }
     return p;
+  };
+  // An account's holdings snapshots, read lazily: the dates once per account
+  // (the last SNAPSHOT_WINDOW_DAYS), each date's securities once. A failed
+  // read, or a host without the reads, is null.
+  const snapshotDaysCache = new Map<string, Promise<SnapshotDay[] | null>>();
+  const snapshotSecuritiesCache = new Map<string, Promise<HeldSecurity[] | null>>();
+  const snapshotReads = (wfId: string): DividendReads['snapshots'] => {
+    const listDays = host.listSnapshotDays?.bind(host);
+    const listSecurities = host.listSnapshotSecurities?.bind(host);
+    if (!listDays || !listSecurities) return undefined;
+    return {
+      days: () => {
+        let p = snapshotDaysCache.get(wfId);
+        if (!p) {
+          const today = new Date();
+          const from = new Date(today.getTime() - SNAPSHOT_WINDOW_DAYS * 86_400_000).toISOString().slice(0, 10);
+          p = listDays(wfId, from, today.toISOString().slice(0, 10)).catch(() => null);
+          snapshotDaysCache.set(wfId, p);
+        }
+        return p;
+      },
+      securities: (date) => {
+        const k = `${wfId}\u0000${date}`;
+        let p = snapshotSecuritiesCache.get(k);
+        if (!p) {
+          p = listSecurities(wfId, date).catch(() => null);
+          snapshotSecuritiesCache.set(k, p);
+        }
+        return p;
+      },
+    };
   };
 
   // Each mapped account's name words, built once and BEFORE typing: typing needs
@@ -2707,17 +2757,25 @@ async function runSyncPass(
       // other writer books it the same way.
       const dividendRow = !payback && !bankFirst && !learned
         && isDividendRow({ mapped, amount, accountType: acctType, description: tx.description });
-      const dividend = opts.dividendSecurities && dividendRow
+      // A DIVIDEND rule that names no security is INTEREST even with the gate
+      // shut (that names no security either); only naming one waits for the
+      // other writer.
+      const dividend = dividendRow
         ? await decideDividend({
           mapped, amount, accountType: acctType, description: tx.description,
-          held: () => heldOf(wfAccountId),
-          past: () => pastDividendsOf(wfAccountId),
+          date: new Date(txEpoch(tx)! * 1000).toISOString().slice(0, 10),
+          ...(opts.dividendSecurities
+            ? { held: () => heldOf(wfAccountId), past: () => pastActivityOf(wfAccountId), snapshots: snapshotReads(wfAccountId) }
+            : NO_DIVIDEND_READS),
         })
         : null;
-      // No security named this run, whatever the reason (sold since, a failed
-      // read, the gate shut): one already booked on a security stays there.
-      // Without this the next sync retyped it a $CASH deposit.
-      const keepDividend = dividendRow && dividend?.type !== 'DIVIDEND';
+      // No security named this run: a dividend already booked stays as stored.
+      // Without this the next sync retyped it a $CASH deposit or INTEREST. With
+      // the gate shut the other writer may be older and book a DIVIDEND rule's
+      // row on $CASH: that stays too, or the two would fight over it.
+      const keepDividend: 'security' | 'any' | undefined = dividendRow && dividend?.type !== 'DIVIDEND'
+        ? (opts.dividendSecurities ? 'security' : 'any')
+        : undefined;
       const { type, fromRule, subtype } = payback
         ? { type: 'CREDIT' as ActivityType, fromRule: true, subtype: REIMBURSEMENT_SUBTYPE as string | undefined }
         : notTransfer && isTransferType(mapped.type)
@@ -2735,7 +2793,7 @@ async function runSyncPass(
         // Neither a rule nor the flag decided: a stored payback (filed, made by hand, or
         // made by a rule since undone) is not the sync's to turn into a deposit.
         ...(keepPayback ? { keepPayback: true as const } : {}),
-        ...(keepDividend ? { keepDividend: true as const } : {}),
+        ...(keepDividend ? { keepDividend } : {}),
       });
       // Amazon categories go on AFTER typing: `mapTransactionWithSource` above
       // matches the user's merchant rules against the bank's own text, and
@@ -3190,7 +3248,7 @@ async function runSyncPass(
       ...(createOnly ? { createOnly: true as const } : {}),
       ...(keepPayback && type === 'DEPOSIT' && !inTransit ? { keepPayback: true as const } : {}),
       ...(assetId ? { assetId } : {}),
-      ...(keepDividend ? { keepDividend: true as const } : {}),
+      ...(keepDividend ? { keepDividend } : {}),
       // Carried so `changed()` can compare it against the stored row — a rule
       // added after a row was imported has to reach that row as an update, and a
       // row that already agrees must not be rewritten every sync.

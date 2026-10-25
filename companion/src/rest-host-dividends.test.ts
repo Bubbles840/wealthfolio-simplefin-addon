@@ -39,3 +39,25 @@ describe('RestSyncHost — a stored row\'s asset symbol', () => {
   });
 });
 
+describe('holdings snapshots over REST', () => {
+  afterEach(() => { vi.unstubAllGlobals(); });
+
+  it('GETs /snapshots for a date range and /snapshots/holdings for one date', async () => {
+    const mockFetch = vi.fn();
+    vi.stubGlobal('fetch', mockFetch);
+    const client = new WealthfolioClient('http://wealthfolio:8088');
+    mockFetch.mockResolvedValueOnce({ ok: true, json: async () => [{ snapshotDate: '2027-02-20', positionCount: 1 }] });
+    mockFetch.mockResolvedValueOnce({ ok: true, json: async () => [{ holdingType: 'security', instrument: { id: 'asset-voo', symbol: 'VOO' } }] });
+    const host = new RestSyncHost(client);
+    expect(await host.listSnapshotDays('wf 1', '2026-09-01', '2027-03-15')).toEqual([{ date: '2027-02-20', positionCount: 1 }]);
+    expect(mockFetch.mock.calls[0][0]).toBe('http://wealthfolio:8088/api/v1/snapshots?accountId=wf+1&dateFrom=2026-09-01&dateTo=2027-03-15');
+    expect(await host.listSnapshotSecurities('wf 1', '2027-02-20')).toEqual([{ assetId: 'asset-voo', symbol: 'VOO' }]);
+    expect(mockFetch.mock.calls[1][0]).toBe('http://wealthfolio:8088/api/v1/snapshots/holdings?accountId=wf+1&date=2027-02-20');
+  });
+
+  it('throws on a failed read (the sync reads it as no evidence)', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => ({ ok: false, status: 500, statusText: 'x', text: async () => 'No snapshot found', json: async () => ({}) })));
+    await expect(new WealthfolioClient('http://wealthfolio:8088').getSnapshotHoldings('wf-1', '2027-02-20')).rejects.toThrow();
+  });
+});
+
