@@ -7,9 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-Update both halves. Dividends are booked on their security only once the
-add-on and the companion are both on this release; until then they come in
-as before.
+## [1.69.0] - 2026-10-25
+
+Update both halves. From 1.68.0 or 1.68.1, Update the add-on in the app as
+usual (no new permissions) and pull the companion image. From an older
+version, use **Install from File** with this zip and pull the companion, as
+1.68.0 says. Dividends are booked on their security only once the add-on and
+the companion are both on this release; until then they come in as before.
 
 ### Added
 - **A dividend the bank names the security of is booked on that holding.**
