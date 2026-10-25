@@ -7,6 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+Update both halves. The add-on asks to read holdings snapshots (two more
+functions in the snapshot permission it already has), so in-app Update refuses
+it: use **Install from File** over the installed add-on, then pull the
+companion image.
+
+### Added
+- **A dividend for a position bought and sold between two dividends is booked
+  on its security.** When neither the holdings nor the account's earlier
+  activity show the ticker, the holdings snapshots from the 60 days before the
+  dividend are read, the last one before a sale first, and the first that holds
+  the ticker names the security (exactly one under it). At most eight are read.
+- **Any earlier activity on the security counts**, not only earlier dividends:
+  a trade in an account that records them names the security too.
+
+### Fixed
+- **A transaction rule typed Dividend books Interest even before both halves
+  are updated**, when no security can be named. Wealthfolio does not refuse a
+  dividend written on cash, as 1.69.0 said: it makes up a phantom `$CASH`
+  security for it. While the other half is older, a dividend it wrote that way
+  is left alone instead of fought over every sync; once both are on this
+  release, it moves to Interest.
+- **The add-on and a companion that can't see the add-on folder no longer
+  retype a Dividend rule's row back and forth** (Interest one sync, a dividend
+  on a phantom `$CASH` security the next).
+- **The cash line of a holdings read is never taken for a security.** It reads
+  back under the symbol `USD`, so a dividend from the fund whose ticker is USD
+  could have been booked on cash.
+
 ## [1.69.0] - 2026-10-25
 
 Update both halves. From 1.68.0 or 1.68.1, Update the add-on in the app as
