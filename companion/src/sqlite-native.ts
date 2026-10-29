@@ -529,6 +529,17 @@ function hasActivityTypeOverride(dbPath: string): boolean {
   return Number(Object.values(rows[0] ?? {})[0]) > 0;
 }
 
+/** Whether the database has the spending module's split lines (Wealthfolio 3.8+). */
+function hasSpendingSplits(dbPath: string): boolean {
+  const rows = queryNativeDb<Record<string, unknown>>(
+    dbPath,
+    'spending splits table',
+    "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'spending_activity_splits';",
+    (parts) => (parts.length >= 1 ? { n: parts[0] } : null),
+  );
+  return Number(Object.values(rows[0] ?? {})[0]) > 0;
+}
+
 /**
  * Spending rows in `[startInclusive, endExclusive)` with NO taxonomy
  * assignment — the needs-a-category sweep behind the import notice.
@@ -555,6 +566,10 @@ export function getNativeUncategorizedSpending(
   const T = hasActivityTypeOverride(dbPath)
     ? "UPPER(COALESCE(NULLIF(TRIM(a.activity_type_override), ''), a.activity_type, ''))"
     : "UPPER(COALESCE(a.activity_type, ''))";
+  // A split row is filed on its lines and carries no assignment of its own.
+  const NOT_SPLIT = hasSpendingSplits(dbPath)
+    ? `AND NOT EXISTS (SELECT 1 FROM spending_activity_splits s WHERE s.activity_id = a.id AND s.taxonomy_id = '${SPENDING_TAXONOMY}')`
+    : '';
   const query = `
     SELECT a.id, COALESCE(a.account_id, ''), COALESCE(a.notes, ''),
            ROUND(ABS(CAST(a.amount AS REAL)) * 100),
@@ -584,6 +599,7 @@ export function getNativeUncategorizedSpending(
       AND COALESCE(a.notes, '') NOT LIKE '↔️ In-transit transfer · %'
       ${IN_SPENDING_SCOPE}
       ${NOT_AWAITING_TRANSFER_HALF}
+      ${NOT_SPLIT}
     ORDER BY a.activity_date DESC, a.id;
   `;
 

@@ -681,6 +681,33 @@ describe('sqlite-native', () => {
       }
     });
 
+    it('leaves out a split row: its categories are on the split lines, not an assignment', () => {
+      const { path, cleanup } = makeTestDb();
+      try {
+        seed(path);
+        const db = new DatabaseSync(path);
+        db.exec(`INSERT INTO spending_activity_splits (id, activity_id, taxonomy_id, category_id, amount, sort_order)
+                 VALUES ('s1', 'act-1', 'spending_categories', 'cat-1', '45.16', 0);`);
+        db.close();
+        expect(getNativeUncategorizedSpending(path, '2026-07-01', '2026-08-01').map((r) => r.activityId)).toEqual(['act-4', 'act-4b']);
+      } finally {
+        cleanup();
+      }
+    });
+
+    it('still reads a database from before split lines existed', () => {
+      const { path, cleanup } = makeTestDb();
+      try {
+        seed(path);
+        const db = new DatabaseSync(path);
+        db.exec('DROP TABLE spending_activity_splits;');
+        db.close();
+        expect(getNativeUncategorizedSpending(path, '2026-07-01', '2026-08-01').map((r) => r.activityId)).toEqual(['act-4', 'act-4b', 'act-1']);
+      } finally {
+        cleanup();
+      }
+    });
+
     it('reads the EFFECTIVE type: activity_type_override (3.8+) wins, a blank one is none (PB-I m4)', () => {
       const { path, cleanup } = makeTestDb();
       try {
