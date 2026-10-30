@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach, onTestFinished } from 'vitest';
-import { maskUrl, publishLiveReports, validateStartupEnv, startupWarnings, runCompanionSync, resolvePassword, sendDailyTelegramReport, sendWeeklyTelegramReport, sendMonthlyTelegramReport, previousYearMonth, sendImportNotice, readBudgetSnapshot, composeDailyDigestMessage, composeDailyDigest, composeWeeklyReportMessage, composeMonthlyWrapUpMessage, runCompanionSyncExclusive, markNotTransferExclusive, FIX_SYNC_RUNNING, buildTelegramCommandHandler, applyTelegramDismissal, undoTelegramDismissal, formatDismissedReply, buildTelegramListenerDeps, buildCategorizeController, buildCategorizeDeps, rememberImportScope, sendUnmappedAccountsNotice, updateCheckDeps, buildAskSessions, cubeBuildDeps } from './index.js';
+import { maskUrl, publishLiveReports, validateStartupEnv, startupWarnings, runCompanionSync, resolvePassword, sendDailyTelegramReport, sendWeeklyTelegramReport, sendMonthlyTelegramReport, previousYearMonth, sendImportNotice, readBudgetSnapshot, composeDailyDigestMessage, composeDailyDigest, composeWeeklyReportMessage, composeMonthlyWrapUpMessage, runCompanionSyncExclusive, markNotTransferExclusive, FIX_SYNC_RUNNING, syncStatus, buildTelegramCommandHandler, applyTelegramDismissal, undoTelegramDismissal, formatDismissedReply, buildTelegramListenerDeps, buildCategorizeController, buildCategorizeDeps, rememberImportScope, sendUnmappedAccountsNotice, updateCheckDeps, buildAskSessions, cubeBuildDeps } from './index.js';
 import { findingHandle } from '../../shared/findings.js';
 import { whyRunHandle } from './why-menu.js';
 import { formatHelpReply, parseCommand } from '../../shared/telegram-commands.js';
@@ -268,6 +268,28 @@ describe('runCompanionSync', () => {
   it('calls runSyncCore using REST host and store adapters', async () => {
     await runCompanionSync();
     expect(runSyncCore).toHaveBeenCalledTimes(1);
+  });
+
+  it('records a returned run for the status page, with its counts (#51)', async () => {
+    await runCompanionSync();
+    expect(syncStatus.snapshot()).toMatchObject({ running: false, lastRun: { outcome: 'synced', imported: 2, skipped: 1, error: null } });
+  });
+
+  it('records a run that throws before reaching Wealthfolio as failed, and still throws (#51)', async () => {
+    delete process.env.WEALTHFOLIO_API_URL;
+    await expect(runCompanionSync()).rejects.toThrow('Missing WEALTHFOLIO_API_URL');
+    expect(syncStatus.snapshot()).toMatchObject({ running: false, lastRun: { outcome: 'failed', error: 'Missing WEALTHFOLIO_API_URL' } });
+  });
+
+  it('records a missing access URL as not-configured, not as a sync (#51)', async () => {
+    const { WealthfolioClient } = await import('./wealthfolio.js');
+    const usual = vi.mocked(WealthfolioClient).getMockImplementation()!;
+    vi.mocked(WealthfolioClient).mockImplementationOnce(function (this: any, ...args: any[]) {
+      (usual as any).apply(this, args);
+      this.getAddonSecret = vi.fn(async () => null);
+    } as any);
+    await runCompanionSync();
+    expect(syncStatus.snapshot().lastRun).toMatchObject({ outcome: 'not-configured', imported: 0, skipped: 0 });
   });
 
   it('runs the card bookkeeping rewrite BEFORE the opening-debt filing, marking through the card_bookkeeping_rewrite secret', async () => {

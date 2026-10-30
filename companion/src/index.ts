@@ -54,6 +54,7 @@ export function wealthfolioDbPath(): string {
 }
 import { formatSelfCheckBlock, formatFindingsSummary, printsInFull } from '../../shared/self-check.js';
 import { readInstalledAddonVersion } from './installed-addon.js';
+import { createSyncStatus, outcomeOf, startStatusServer, statusServerConfig } from './status-server.js';
 import { getLedgerFacts } from './ledger-facts.js';
 import { REFUSED_ALERTED_SECRET_KEY, parseAnnouncedRefusals, unannouncedRefusals, withAnnouncedRefusals } from '../../shared/refused-alerts.js';
 import { gatherFindings, readSyncHealth, updateSnoozes, type FindingsDeps } from './daily-findings.js';
@@ -955,8 +956,32 @@ export async function sendUnmappedAccountsNotice(
  * cron or startup run is scheduled (an hour since the last request, 16 a day).
  * The add-on's Sync button passes `manual` the same way; since 1.64 there is no
  * "Sync anyway" (src/pages/SyncPage.tsx).
+ *
+ * Every run, thrown or returned, is recorded for the status page (#51). The
+ * record wraps the WHOLE run because a failed Wealthfolio login throws before
+ * `sync_health` can be written, and that is the failure a headless install
+ * most needs to see.
  */
 export async function runCompanionSync(opts: { force?: boolean; manual?: boolean } = {}): Promise<SyncResult> {
+  const run = syncStatus.begin();
+  try {
+    const result = await runCompanionSyncOnce(opts);
+    run.finish(outcomeOf(result, notConfiguredResults.has(result)), result);
+    return result;
+  } catch (err) {
+    run.fail(formatError(err));
+    throw err;
+  }
+}
+
+/** The status page's record of this process's runs (#51). */
+export const syncStatus = createSyncStatus();
+
+/** The companion's own "no access URL" return, which says nothing in `errors`
+ *  (its callers log and reply from that list), told apart for the status page. */
+const notConfiguredResults = new WeakSet<SyncResult>();
+
+async function runCompanionSyncOnce(opts: { force?: boolean; manual?: boolean }): Promise<SyncResult> {
   // The checks compare the report's figure only from a cube THIS run published (M-2).
   const runStartedAt = new Date();
   const apiUrl = process.env.WEALTHFOLIO_API_URL ?? '';
@@ -1016,6 +1041,7 @@ export async function runCompanionSync(opts: { force?: boolean; manual?: boolean
       // acceptable blind spot since nothing in this codebase clears that
       // secret except the addon's own setup flow.
       await updateSyncHealth(wfClient, null);
+      notConfiguredResults.add(empty);
       return empty;
     }
 
@@ -4366,6 +4392,16 @@ if (!process.env.VITEST) {
         });
       });
     }).listen(miniappPort, () => log(`Mini app dashboard listening on :${miniappPort}`));
+  }
+
+  // The status page (#51), served only when STATUS_PORT is set. Read-only and
+  // unauthenticated by design: it serializes the in-memory run record and
+  // nothing else; see status-server.ts.
+  const statusConfig = statusServerConfig();
+  if (statusConfig && 'warning' in statusConfig) {
+    log(`WARNING: ${statusConfig.warning}`);
+  } else if (statusConfig) {
+    startStatusServer({ ...statusConfig, version: SIMPLEFIN_SYNC_VERSION, read: () => syncStatus.snapshot(), log });
   }
 
   cron.schedule(schedule, () => {

@@ -421,6 +421,49 @@ The companion logs its version on startup (`Starting companion v…`), and the
 addon shows a banner when the tab, the installed addon and the companion
 are different versions, naming the fix (reload, upload the zip, or pull the image).
 
+#### Status page (optional)
+
+Running the companion headless? Set `STATUS_PORT` (say `8099`) and it answers
+`GET /status` on that port with its last run:
+
+```json
+{ "version": "1.71.0", "ok": true, "running": false,
+  "lastRun": { "startedAt": "…", "finishedAt": "…", "outcome": "synced",
+               "imported": 3, "skipped": 120, "error": null },
+  "lastSyncedAt": "…" }
+```
+
+Each `outcome` and the status it returns:
+- `synced`: 200.
+- `limited`: 200. SimpleFin's daily request limit stopped the download.
+- `too-soon`: 200. The last sync was under an hour ago.
+- `not-configured`: 200. The add-on isn't set up yet.
+- `failed`: **503**, with the reason in `error`.
+
+Before the first run finishes, `lastRun` is `null` and the status is 200.
+The record covers the companion's own syncs since it started. A sync started
+from the add-on in Wealthfolio isn't included.
+
+The page has no login, so it holds nothing private:
+- no amounts, account names or bank names;
+- passwords, tokens and URL credentials are masked out of `error`;
+- requests to it never start a sync or touch Wealthfolio.
+
+Anyone who can reach the port can read it, so only publish the port where you
+want it seen. `STATUS_HOST=127.0.0.1` keeps it inside the container, for a
+healthcheck only:
+
+```yaml
+    environment:
+      - STATUS_PORT=8099
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8099/status').then(r => process.exit(r.ok ? 0 : 1), () => process.exit(1))"]
+      interval: 5m
+      start_period: 2m
+```
+
+Docker only marks the container unhealthy. It doesn't restart it.
+
 ### Amazon auto-categorization
 
 A bank charge reads `AMAZON.COM*MB3T81` and says nothing about what you bought.
