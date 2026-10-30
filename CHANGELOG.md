@@ -7,7 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-Companion only. Pull the image; the add-on is unchanged.
+## [1.71.0] - 2026-10-30
+
+Update both halves. Everything new is in the companion. From 1.70.0, Update
+the add-on in the app as usual (no new permissions) and pull the companion
+image: the add-on's code is unchanged, but the two versions must match, or
+the daily report flags them. From an older version, use **Install from File**
+with this zip and pull the companion, as 1.70.0 says.
 
 ### Added
 - **The companion can sync one profile of a Wealthfolio with several (#50).**
