@@ -234,6 +234,37 @@ describe('WealthfolioClient with a profile (#50)', () => {
     expect(wf.sent('/api/v1/profiles/unlock_profile').map((x) => x.headers.Authorization)).toEqual(['Bearer jwt-1', 'Bearer jwt-2']);
   });
 
+  it('a login landing while a request opens the profile does not mix the two credentials', async () => {
+    const wf = fakeWealthfolio();
+    vi.stubGlobal('fetch', wf.fetch);
+    const c = new WealthfolioClient('http://wf:8088', { id: BUSINESS });
+    await c.login('pw');
+    const pending = c.getAccounts();
+    await c.login('pw');
+    expect(await pending).toHaveLength(2);
+    const owners = (path: string) => wf.sent(path).map((x) => x.headers.Authorization);
+    expect(owners('/api/v1/profiles/unlock_profile')[0]).toBe('Bearer jwt-1');
+    expect(owners('/api/v1/accounts').slice(0, 2)).toEqual(['Bearer jwt-1', 'Bearer jwt-1']);
+  });
+
+  it('reads and drops the 423 reply before retrying', async () => {
+    const wf = fakeWealthfolio();
+    const c = client(wf, { id: BUSINESS });
+    await c.getAccounts();
+    wf.restart();
+    const replies: Array<{ consumed: boolean }> = [];
+    const inner = wf.fetch.getMockImplementation()!;
+    wf.fetch.mockImplementation(async (url: string, init?: RequestInit) => {
+      const res = await inner(url, init) as any;
+      if (res.status !== 423) return res;
+      const tracked = { consumed: false };
+      replies.push(tracked);
+      return { ...res, text: async () => { tracked.consumed = true; return 'PROFILE_LOCKED'; } };
+    });
+    await c.getAccounts();
+    expect(replies).toEqual([{ consumed: true }]);
+  });
+
   it('the profile calls send only the ID, the credential and the cookie', async () => {
     const wf = fakeWealthfolio();
     await client(wf, { id: BUSINESS }).getAccounts();

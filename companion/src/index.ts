@@ -51,12 +51,23 @@ import { DISMISSAL_MAX_AGE_DAYS } from '../../shared/uncategorized.js';
  * agreement, plus the loud startup line when the file is absent.
  */
 const DEFAULT_WEALTHFOLIO_DB_PATH = '/mnt/wealthfolio.db';
+/** The database file #50's check proved for this process's profile. Once set,
+ *  every reader uses it instead of deciding again: a profile folder that went
+ *  away must not quietly hand the readers another profile's file. */
+let pinnedProfileDb: { id: string; path: string } | null = null;
+
+/** Test-only: forget the proved file. */
+export function resetProfileDbPinForTest(): void {
+  pinnedProfileDb = null;
+}
+
 /**
  * With `WEALTHFOLIO_PROFILE_ID` (#50): Wealthfolio 3.10 keeps every profile but
  * the original in `<data dir>/profiles/<id>/app.db`, with its add-ons beside
  * it, so that file is read when it exists. Otherwise `WEALTHFOLIO_DB_PATH`
  * itself: the original profile, or a path that already points at the
- * profile's file. `verifyProfileDatabase` proves the pick before it is used.
+ * profile's file. `verifyProfileDatabase` proves the pick before it is used,
+ * and from then on the proved file is the answer.
  */
 export function wealthfolioDbPath(env: NodeJS.ProcessEnv = process.env, fileExists: (path: string) => boolean = existsSync): string {
   const configured = env.WEALTHFOLIO_DB_PATH || DEFAULT_WEALTHFOLIO_DB_PATH;
@@ -68,6 +79,7 @@ export function wealthfolioDbPath(env: NodeJS.ProcessEnv = process.env, fileExis
     return configured;
   }
   if (!profileId) return configured;
+  if (env === process.env && pinnedProfileDb?.id === profileId) return pinnedProfileDb.path;
   const own = join(dirname(configured), 'profiles', profileId, 'app.db');
   return fileExists(own) ? own : configured;
 }
@@ -76,8 +88,8 @@ export function wealthfolioDbPath(env: NodeJS.ProcessEnv = process.env, fileExis
  * #50's refusal: the database file must be the profile the API serves, or the
  * companion would read one profile and write what it decides into another.
  * Every account the API lists must be in the file, and an API with no accounts
- * needs a file with none. A missing file passes: nothing is read from it, and
- * the startup ERROR already names it. An unreadable one throws.
+ * needs a file with none. A missing or unreadable file is refused too: a check
+ * that cannot run is not a pass.
  */
 export function verifyProfileDatabase(
   accounts: Array<{ id: string }>,
@@ -85,9 +97,9 @@ export function verifyProfileDatabase(
     { dbPath: wealthfolioDbPath(), exists: existsSync, readIds: getNativeAccountIds },
 ): void {
   const { dbPath } = deps;
-  if (!deps.exists(dbPath)) return;
-  const inFile = new Set(deps.readIds(dbPath));
   const fix = "Mount Wealthfolio's whole data folder (the one with profiles.json), or set WEALTHFOLIO_DB_PATH to this profile's profiles/<id>/app.db.";
+  if (!deps.exists(dbPath)) throw new Error(`No database file at ${dbPath} to check the profile against. ${fix}`);
+  const inFile = new Set(deps.readIds(dbPath));
   if (accounts.length === 0) {
     if (inFile.size > 0) throw new Error(`The database file ${dbPath} is not this profile's: the profile has no accounts and the file has ${inFile.size}. ${fix}`);
     return;
@@ -102,7 +114,16 @@ export function verifyProfileDatabase(
  *  database check when `WEALTHFOLIO_PROFILE_ID` is set (#50). */
 export function createWealthfolioClient(apiUrl: string): WealthfolioClient {
   const profileId = profileIdFromEnv(process.env);
-  return new WealthfolioClient(apiUrl, profileId ? { id: profileId, verify: (accounts) => verifyProfileDatabase(accounts), log } : undefined);
+  if (!profileId) return new WealthfolioClient(apiUrl, undefined);
+  return new WealthfolioClient(apiUrl, {
+    id: profileId,
+    verify: (accounts) => {
+      const dbPath = wealthfolioDbPath();
+      verifyProfileDatabase(accounts, { dbPath, exists: existsSync, readIds: getNativeAccountIds });
+      pinnedProfileDb = { id: profileId, path: dbPath };
+    },
+    log,
+  });
 }
 import { formatSelfCheckBlock, formatFindingsSummary, printsInFull } from '../../shared/self-check.js';
 import { readInstalledAddonVersion } from './installed-addon.js';
@@ -1028,8 +1049,20 @@ export async function runCompanionSync(opts: { force?: boolean; manual?: boolean
   }
 }
 
+/** The values the status page must never show, whatever an error says (#51). */
+function statusSecrets(): string[] {
+  const values = [process.env.WEALTHFOLIO_API_KEY ?? ''];
+  try {
+    const password = resolvePassword();
+    values.push(password, encodeURIComponent(password));
+  } catch {
+    // An unreadable password file: nothing to blank out.
+  }
+  return values.filter((v) => v.length >= 4);
+}
+
 /** The status page's record of this process's runs (#51). */
-export const syncStatus = createSyncStatus();
+export const syncStatus = createSyncStatus(undefined, statusSecrets);
 
 /** The companion's own "no access URL" return, which says nothing in `errors`
  *  (its callers log and reply from that list), told apart for the status page. */

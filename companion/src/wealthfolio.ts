@@ -123,32 +123,35 @@ export class WealthfolioClient {
    */
   private async send(url: string, init: RequestInit = {}): Promise<Response> {
     if (!this.profile) return fetch(url, init);
-    const scope = await this.profileScope();
-    const res = await fetch(url, this.scoped(init, scope));
+    // One credential for the whole call: a login() landing mid-call must not
+    // pair the old token with a session opened for the new one's owner.
+    const token = this.token;
+    const scope = await this.profileScope(token);
+    const res = await fetch(url, this.scoped(init, scope, token));
     if (res.status !== 423) return res;
-    return fetch(url, this.scoped(init, await this.profileScope(scope)));
+    await res.text().catch(() => '');
+    return fetch(url, this.scoped(init, await this.profileScope(token, scope), token));
   }
 
-  private scoped(init: RequestInit, scope: string): RequestInit {
-    return {
-      ...init,
-      headers: { ...(init.headers as Record<string, string> | undefined), [PROFILE_SCOPE_HEADER]: scope, Cookie: `wf_browser=${BROWSER_ID}` },
+  private scoped(init: RequestInit, scope: string, token: string | null): RequestInit {
+    const headers: Record<string, string> = {
+      ...(init.headers as Record<string, string> | undefined),
+      [PROFILE_SCOPE_HEADER]: scope,
+      Cookie: `wf_browser=${BROWSER_ID}`,
     };
+    if (token) headers.Authorization = `Bearer ${token}`;
+    return { ...init, headers };
   }
 
-  private profileKey(): string {
-    return `${this.profile!.id}\u0000${this.token ?? ''}`;
-  }
-
-  /** The current session, opening one when there is none or it is `stale`.
-   *  Concurrent callers share one opening. */
-  private async profileScope(stale?: string): Promise<string> {
-    const key = this.profileKey();
+  /** The current session for `token`, opening one when there is none or it is
+   *  `stale`. Concurrent callers share one opening. */
+  private async profileScope(token: string | null, stale?: string): Promise<string> {
+    const key = `${this.profile!.id}\u0000${token ?? ''}`;
     const current = profileSessions.get(key);
     if (current && current !== stale) return current;
     let opening = profileOpenings.get(key);
     if (!opening) {
-      opening = this.openProfile()
+      opening = this.openProfile(token)
         .then((scope) => {
           profileSessions.delete(key);
           profileSessions.set(key, scope);
@@ -166,9 +169,9 @@ export class WealthfolioClient {
    * Wealthfolio without profiles is refused), unlock it, then check it with
    * its accounts before the session is handed to anything else.
    */
-  private async openProfile(): Promise<string> {
+  private async openProfile(token: string | null): Promise<string> {
     const { id, verify, log } = this.profile!;
-    const state = await this.profileCommand('get_profile_state', {});
+    const state = await this.profileCommand(token, 'get_profile_state', {});
     const profiles = (state as { profiles?: unknown } | null)?.profiles;
     if (!Array.isArray(profiles)) throw new Error(NO_PROFILE_API);
     const listed = profiles.filter((p): p is { id: string; name?: unknown; lockEnabled?: unknown } =>
@@ -182,12 +185,12 @@ export class WealthfolioClient {
     if (match.lockEnabled === true) {
       throw new Error(`Profile ${id} has a lock. The companion can only sync a profile without one: remove its lock in Wealthfolio, or pick another profile.`);
     }
-    const session = await this.profileCommand('unlock_profile', { profileId: id });
+    const session = await this.profileCommand(token, 'unlock_profile', { profileId: id });
     const scope = (session as { scopeId?: unknown } | null)?.scopeId;
     if (typeof scope !== 'string' || !isUuid(scope)) {
       throw new Error(`Wealthfolio opened profile ${id} but sent back no usable session.`);
     }
-    const res = await fetch(`${this.baseUrl}/api/v1/accounts`, this.scoped({ headers: this.authHeaders() }, scope));
+    const res = await fetch(`${this.baseUrl}/api/v1/accounts`, this.scoped({}, scope, token));
     if (!res.ok) throw await this.httpError('Profile check (getAccounts)', res);
     const accounts: unknown = await res.json();
     if (!Array.isArray(accounts)) throw new Error(`Profile check: Wealthfolio's account list for profile ${id} was not a list.`);
@@ -197,10 +200,14 @@ export class WealthfolioClient {
 
   /** `POST /api/v1/profiles/<command>`. A server without that route (before
    *  3.10), or one that answers with something other than JSON, has no profiles. */
-  private async profileCommand(command: 'get_profile_state' | 'unlock_profile', body: Record<string, string>): Promise<unknown> {
+  private async profileCommand(
+    token: string | null,
+    command: 'get_profile_state' | 'unlock_profile',
+    body: Record<string, string>,
+  ): Promise<unknown> {
     const res = await fetch(`${this.baseUrl}/api/v1/profiles/${command}`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', ...this.authHeaders(), Cookie: `wf_browser=${BROWSER_ID}` },
+      headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}), Cookie: `wf_browser=${BROWSER_ID}` },
       body: JSON.stringify(body),
     });
     if (res.status === 404 || res.status === 405) throw new Error(NO_PROFILE_API);

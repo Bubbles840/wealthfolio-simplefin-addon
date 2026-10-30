@@ -95,6 +95,33 @@ describe('scrubStatusError', () => {
     expect(scrubStatusError('cookie wf_session=eyJhbGciOiJIUzI1NiJ9.eyJzaWQiOiJ4In0.sig_nature-1; Path=/')).toBe('cookie wf_session=***; Path=/');
   });
 
+  it('masks URL credentials with a space or an @ in the password, as Node quotes them unencoded', () => {
+    const quoted = 'Request cannot be constructed from a URL that includes credentials: http://admin:pass word@wf.lan/api/v1/auth/login';
+    expect(scrubStatusError(quoted)).toBe('Request cannot be constructed from a URL that includes credentials: http://***@wf.lan/api/v1/auth/login');
+    expect(scrubStatusError('fetch http://me:p@ss@wf.lan/x failed')).toBe('fetch http://***@wf.lan/x failed');
+  });
+
+  it('masks a Telegram bot token', () => {
+    expect(scrubStatusError('Failed to parse URL from https://api.telegram.org/bot123456:AAH-x_y9/sendMessage'))
+      .toBe('Failed to parse URL from https://api.telegram.org/bot***/sendMessage');
+  });
+
+  it('blanks the known secrets wherever they appear', () => {
+    expect(scrubStatusError('login with hunter22 refused; key k3y-abc', ['hunter22', 'k3y-abc', 'abc'])).toBe('login with *** refused; key ***');
+  });
+
+  it('drops the text a server sent: response bodies and quoted JSON', () => {
+    expect(scrubStatusError('importActivities failed: 400 - {"amount":"1234.56","payee":"ACME Payroll"}')).toBe('importActivities failed: 400');
+    expect(scrubStatusError('getAccounts failed: Wealthfolio refused profile 2222 (HTTP 423) - PROFILE_STALE')).toBe('getAccounts failed: Wealthfolio refused profile 2222 (HTTP 423)');
+    for (const snippet of [
+      'Unexpected token \']\', "{"amount":"1234.56","payee":"ACME"},]}" is not valid JSON',
+      'Unexpected token \'<\', "<!doctype "... is not valid JSON',
+      '"undefined" is not valid JSON',
+    ]) {
+      expect(scrubStatusError(`SimpleFin: ${snippet}`)).toBe('SimpleFin: a reply that is not valid JSON');
+    }
+  });
+
   it('collapses control characters and newlines into one line', () => {
     expect(scrubStatusError('first\nsecond\r\n\tthird\u0007')).toBe('first second third');
   });
@@ -214,10 +241,24 @@ describe('startStatusServer', () => {
     expect(lines.join('\n')).toMatch(/Status page could not start/);
   });
 
-  it('sets short timeouts', async () => {
+  it('sets short timeouts, enforced every second, and caps connections', async () => {
     await listen(() => ({ running: false, lastRun: null, lastSyncedAt: null }));
     expect(server!.headersTimeout).toBe(5_000);
     expect(server!.requestTimeout).toBe(10_000);
     expect(server!.keepAliveTimeout).toBe(5_000);
+    expect(server!.timeout).toBe(10_000);
+    expect(server!.maxConnections).toBe(64);
   });
+
+  it('drops a client that sends its headers too slowly', async () => {
+    const base = await listen(() => ({ running: false, lastRun: null, lastSyncedAt: null }));
+    const { connect } = await import('node:net');
+    const socket = connect(Number(new URL(base).port), '127.0.0.1');
+    await once(socket, 'connect');
+    socket.resume(); // read the 408, so the close is seen
+    socket.write('GET /status HTTP/1.1\r\nHost: x\r\n');
+    const started = Date.now();
+    await once(socket, 'close');
+    expect(Date.now() - started).toBeLessThan(8_000);
+  }, 15_000);
 });

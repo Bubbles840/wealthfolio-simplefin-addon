@@ -45,8 +45,12 @@ companion then stops, and the README says to keep one profile with no lock.
   - A Wealthfolio with no profile API (before 3.10).
   - **Database mismatch (Nick: refuse).** Every account the API lists must be in
     the database file the companion reads. If the API lists none, the file must
-    have none. A missing file is not checked: nothing is read from it, and the
-    startup error already names it.
+    have none. A missing or unreadable file is refused too: a check that can't run
+    is not a pass. (Changed after the security review; the first draft let a
+    missing file through.)
+  - Once the check passes, the checked file is pinned for the process. Every
+    reader uses it instead of deciding again, so a profile folder that goes away
+    can't hand the readers another profile's file.
 - The check runs inside the client every time the profile opens. So it guards
   every consumer (the sync, the Telegram bot, the scheduled reports, the mini app),
   not only the sync.
@@ -64,6 +68,9 @@ companion then stops, and the README says to keep one profile with no lock.
 - No new secret is stored or sent. The unlock call carries only the profile ID.
 - The account check compares IDs in JavaScript. Nothing from the API is put in SQL.
 - Server text in errors stays bounded by the existing `httpError` (300 chars).
+- One credential per call: `send()` reads the token once and uses it for the
+  session lookup, the opening and the request. A `login()` landing mid-call
+  can't pair the old token with the new owner's session.
 
 ## #51: `STATUS_PORT` and `GET /status`
 
@@ -104,17 +111,24 @@ companion then stops, and the README says to keep one profile with no lock.
 - Headers: `Content-Type: application/json; charset=utf-8`,
   `Cache-Control: no-store`, `X-Content-Type-Options: nosniff`. No CORS headers, so
   another site's page cannot read it from a browser.
-- Short server timeouts (headers 5 s, request 10 s, keep-alive 5 s).
+- Short server timeouts (headers 5 s, request 10 s, keep-alive 5 s, idle socket
+  10 s). They're enforced every second, where Node's default check is every 30 s.
+  At most 64 connections, and an 8 KB header limit.
 - A bind failure (port taken) is logged, never a crash.
-- The error text is scrubbed before it is stored:
-  - URL credentials (`//user:pass@`) masked;
-  - `Bearer …` tokens and JWT-shaped strings redacted;
-  - control characters and newlines collapsed;
-  - capped at 300 characters.
+- The error text is scrubbed before it is stored. The log keeps the full text.
+  - The Wealthfolio password and API key are blanked wherever they appear.
+  - URL credentials are masked up to the authority's last `@`, spaces included,
+    because Node quotes a raw URL unencoded.
+  - Telegram bot tokens, `Bearer`/`Basic` tokens and JWT-shaped strings are
+    masked.
+  - Text a server sent is dropped: `httpError`'s response body, and the input
+    snippet a JSON parse error quotes, which could hold amounts or payees.
+  - Control characters are collapsed, and the result is capped at 300 characters.
 - No amounts, account names, bank names, profile names, or the access URL.
 - Accepted risk: a DNS-rebinding page could read the record (counts, times,
   version, scrubbed error). It holds nothing sensitive, and the port is off unless
-  turned on.
+  turned on. A Host allowlist was considered and declined: it would make everyone
+  who reaches the page by a hostname add another setting.
 
 ## Not doing
 - Password-locked profiles.

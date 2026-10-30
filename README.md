@@ -443,9 +443,10 @@ a lock on the only one, the companion has to be told which profile to sync:
   `profiles/<id>/app.db` in that folder, and the companion reads the right file
   for the profile without any change to `WEALTHFOLIO_DB_PATH`.
 - **The safety check.** Before the companion uses the profile, it checks that
-  every account Wealthfolio lists is in the database file it reads. If not,
-  it doesn't sync. It would otherwise read one profile and write into another.
-  The log names the file it found and how to fix the mount.
+  every account Wealthfolio lists is in the database file it reads. If not, or
+  if it can't find the file, it doesn't sync. It would otherwise read one
+  profile and write into another. The log names the file it found and how to
+  fix the mount.
 - **Locks.** A profile with a lock can't be synced. Remove the lock in
   Wealthfolio, or pick another profile.
 
@@ -474,7 +475,8 @@ from the add-on in Wealthfolio isn't included.
 
 The page has no login, so it holds nothing private:
 - no amounts, account names or bank names;
-- passwords, tokens and URL credentials are masked out of `error`;
+- passwords, tokens and URL credentials are masked out of `error`, and any text
+  a server sent is left out (the log keeps the full message);
 - requests to it never start a sync or touch Wealthfolio.
 
 Anyone who can reach the port can read it, so only publish the port where you

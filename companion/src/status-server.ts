@@ -56,19 +56,29 @@ export function outcomeOf(result: Pick<SyncResult, 'errors' | 'download'>, notCo
 const MAX_ERROR_CHARS = 300;
 
 /**
- * A failure message made safe for an unauthenticated page. The companion's
- * messages already avoid secrets (`httpError` never echoes a request body, and
- * the access URL is masked in logs), so this is the backstop for one that
- * slips through: URL credentials, bearer/basic tokens and JWT-shaped strings
- * are masked, control characters and newlines collapse to spaces, and the
- * result is capped.
+ * A failure message made safe for an unauthenticated page. The log keeps the
+ * full text; the page gets the reason without anything private:
+ * - the known secrets (the Wealthfolio password and API key), literally;
+ * - URL credentials, up to the authority's LAST `@`, spaces included: Node's
+ *   fetch quotes a caller's raw URL, which need not be encoded;
+ * - a Telegram bot token, bearer/basic tokens and JWT-shaped strings;
+ * - text a server sent: `httpError`'s ` - <response body>`, and the snippet of
+ *   the input a JSON parse error quotes (amounts, payees);
+ * - control characters; the rest is capped.
  */
-export function scrubStatusError(message: string): string {
-  const scrubbed = message
-    .replace(/\/\/[^\s/@]+@/g, '//***@')
+export function scrubStatusError(message: string, secrets: readonly string[] = []): string {
+  let text = message;
+  for (const secret of secrets) {
+    if (secret.length >= 4) text = text.split(secret).join('***');
+  }
+  const scrubbed = text
+    .replace(/\/\/[^/?#]*@/g, '//***@')
+    .replace(/\bbot\d+:[\w-]+/g, 'bot***')
     .replace(/\b(Bearer|Basic)\s+[^\s,;"']+/gi, '$1 ***')
     .replace(/\beyJ[\w-]*\.[\w-]*\.[\w-]*/g, '***')
-    .replace(/[\u0000-\u001f\u007f]+/g, ' ')
+    .replace(/(failed: \d{3}|\(HTTP 423\)) - [\s\S]*$/, '$1')
+    .replace(/(Unexpected token .{1,8}, )?"[\s\S]*?"(\.\.\.)? is not valid JSON/g, 'a reply that is not valid JSON')
+    .replace(/[\u0000-\u001f\u007f-\u009f]+/g, ' ')
     .replace(/\s+/g, ' ')
     .trim();
   return [...scrubbed].slice(0, MAX_ERROR_CHARS).join('');
@@ -84,7 +94,11 @@ export interface SyncStatusRecorder {
   snapshot(): SyncStatus;
 }
 
-export function createSyncStatus(now: () => Date = () => new Date()): SyncStatusRecorder {
+export function createSyncStatus(
+  now: () => Date = () => new Date(),
+  /** Values the page must never show, read when a run fails. */
+  secrets: () => readonly string[] = () => [],
+): SyncStatusRecorder {
   // A count, not a flag: runs are serialized by `runCompanionSyncExclusive`,
   // but nothing here should depend on that to stay truthful.
   let running = 0;
@@ -104,7 +118,7 @@ export function createSyncStatus(now: () => Date = () => new Date()): SyncStatus
       };
       return {
         finish: (outcome, counts) => settle({ outcome, imported: counts.imported, skipped: counts.skipped, error: null }),
-        fail: (message) => settle({ outcome: 'failed', imported: 0, skipped: 0, error: scrubStatusError(message) }),
+        fail: (message) => settle({ outcome: 'failed', imported: 0, skipped: 0, error: scrubStatusError(message, secrets()) }),
       };
     },
     snapshot: () => ({ running: running > 0, lastRun: lastRun ? { ...lastRun } : null, lastSyncedAt }),
@@ -174,15 +188,21 @@ export function startStatusServer(opts: {
   read: () => SyncStatus;
   log: (message: string) => void;
 }): Server {
-  const server = createServer((req, res) => {
-    req.resume();
-    const out = statusReply(req.method, req.url, opts.version, opts.read());
-    res.writeHead(out.status, out.headers);
-    res.end(req.method === 'HEAD' ? undefined : out.body);
-  });
-  server.headersTimeout = 5_000;
-  server.requestTimeout = 10_000;
+  const server = createServer(
+    // Node enforces these two only on each `connectionsCheckingInterval` tick
+    // (30 s by default), so the tick is shortened too.
+    { headersTimeout: 5_000, requestTimeout: 10_000, connectionsCheckingInterval: 1_000, maxHeaderSize: 8_192 },
+    (req, res) => {
+      req.resume();
+      const out = statusReply(req.method, req.url, opts.version, opts.read());
+      res.writeHead(out.status, out.headers);
+      res.end(req.method === 'HEAD' ? undefined : out.body);
+    },
+  );
   server.keepAliveTimeout = 5_000;
+  // A flood of connections must not crowd out the sync on one event loop.
+  server.maxConnections = 64;
+  server.setTimeout(10_000, (socket) => socket.destroy());
   const where = `${opts.host ?? 'all interfaces'}, port ${opts.port}`;
   server.on('error', (err) => opts.log(`Status page could not start on ${where}: ${err.message}`));
   server.listen(opts.port, opts.host, () => opts.log(`Status page listening on ${where} (GET /status)`));

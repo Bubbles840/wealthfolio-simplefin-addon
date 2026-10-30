@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach, onTestFinished } from 'vitest';
-import { maskUrl, publishLiveReports, validateStartupEnv, startupWarnings, runCompanionSync, resolvePassword, sendDailyTelegramReport, sendWeeklyTelegramReport, sendMonthlyTelegramReport, previousYearMonth, sendImportNotice, readBudgetSnapshot, composeDailyDigestMessage, composeDailyDigest, composeWeeklyReportMessage, composeMonthlyWrapUpMessage, runCompanionSyncExclusive, markNotTransferExclusive, FIX_SYNC_RUNNING, syncStatus, wealthfolioDbPath, verifyProfileDatabase, createWealthfolioClient, buildTelegramCommandHandler, applyTelegramDismissal, undoTelegramDismissal, formatDismissedReply, buildTelegramListenerDeps, buildCategorizeController, buildCategorizeDeps, rememberImportScope, sendUnmappedAccountsNotice, updateCheckDeps, buildAskSessions, cubeBuildDeps } from './index.js';
+import { maskUrl, publishLiveReports, validateStartupEnv, startupWarnings, runCompanionSync, resolvePassword, sendDailyTelegramReport, sendWeeklyTelegramReport, sendMonthlyTelegramReport, previousYearMonth, sendImportNotice, readBudgetSnapshot, composeDailyDigestMessage, composeDailyDigest, composeWeeklyReportMessage, composeMonthlyWrapUpMessage, runCompanionSyncExclusive, markNotTransferExclusive, FIX_SYNC_RUNNING, syncStatus, wealthfolioDbPath, verifyProfileDatabase, createWealthfolioClient, resetProfileDbPinForTest, buildTelegramCommandHandler, applyTelegramDismissal, undoTelegramDismissal, formatDismissedReply, buildTelegramListenerDeps, buildCategorizeController, buildCategorizeDeps, rememberImportScope, sendUnmappedAccountsNotice, updateCheckDeps, buildAskSessions, cubeBuildDeps } from './index.js';
 import { findingHandle } from '../../shared/findings.js';
 import { whyRunHandle } from './why-menu.js';
 import { formatHelpReply, parseCommand } from '../../shared/telegram-commands.js';
@@ -283,10 +283,36 @@ describe('WEALTHFOLIO_PROFILE_ID (#50)', () => {
       expect(() => verifyProfileDatabase([], deps([]))).not.toThrow();
     });
 
-    it('lets a missing file through (nothing is read from it), but not an unreadable one', () => {
-      expect(() => verifyProfileDatabase([{ id: 'a' }], deps([], false))).not.toThrow();
+    it('refuses a missing or unreadable file: a check that cannot run is not a pass', () => {
+      expect(() => verifyProfileDatabase([{ id: 'a' }], deps([], false))).toThrow(/No database file at \/mnt\/w\/profiles\/x\/app\.db/);
+      expect(() => verifyProfileDatabase([], deps([], false))).toThrow(/No database file/);
       expect(() => verifyProfileDatabase([{ id: 'a' }], deps(new Error('locked')))).toThrow('locked');
     });
+  });
+
+  it('pins the file its check proved, so a vanished profile folder never hands readers another file', async () => {
+    const { WealthfolioClient } = await import('./wealthfolio.js');
+    const { existsSync: exists } = await import('fs');
+    const { getNativeAccountIds } = await import('./sqlite-native.js');
+    resetProfileDbPinForTest();
+    process.env.WEALTHFOLIO_DB_PATH = '/mnt/wealthfolio/wealthfolio.db';
+    process.env.WEALTHFOLIO_PROFILE_ID = PROFILE;
+    const own = `/mnt/wealthfolio/profiles/${PROFILE}/app.db`;
+    vi.mocked(exists).mockImplementation((p) => p === own);
+    vi.mocked(getNativeAccountIds).mockReturnValue(['acc-1']);
+    try {
+      createWealthfolioClient('http://wf');
+      const opts = vi.mocked(WealthfolioClient).mock.calls.at(-1)![1] as { verify: (a: Array<{ id: string }>) => void };
+      opts.verify([{ id: 'acc-1' }]);
+      expect(vi.mocked(getNativeAccountIds)).toHaveBeenLastCalledWith(own);
+      vi.mocked(exists).mockImplementation(() => false);
+      expect(wealthfolioDbPath()).toBe(own);
+    } finally {
+      vi.mocked(exists).mockImplementation(() => true);
+      vi.mocked(getNativeAccountIds).mockReturnValue([]);
+      delete process.env.WEALTHFOLIO_DB_PATH;
+      resetProfileDbPinForTest();
+    }
   });
 
   it('builds every client with the profile and its check when the ID is set, and plainly otherwise', async () => {
