@@ -1,3 +1,5 @@
+import { randomUUID } from 'node:crypto';
+import { isUuid, PROFILE_ID_FORMAT } from './profile-id.js';
 import type { BudgetTarget } from '../../shared/budget-suggest.js';
 import type { CategoryRuleLike } from '../../shared/tx-story.js';
 
@@ -63,10 +65,152 @@ export function parseBudgetSnapshot(body: unknown): { enabled: boolean; targets:
   return { enabled: Array.isArray(state.groups) && state.groups.length > 0, targets };
 }
 
+/** Wealthfolio 3.10's profile scope header (crates/core/src/profiles). */
+export const PROFILE_SCOPE_HEADER = 'x-wf-profile-scope';
+
+
+/** `WEALTHFOLIO_PROFILE_ID` and what the companion does around opening it (#50). */
+export interface ProfileOptions {
+  /** The profile's ID, a UUID in any case. */
+  id: string;
+  /** Runs each time the profile is opened, with its accounts, before any other
+   *  request uses the session. Throwing refuses the profile. */
+  verify?: (accounts: Array<{ id: string }>) => void | Promise<void>;
+  /** Where the profile list goes when the ID is unknown: the log, never the error. */
+  log?: (line: string) => void;
+}
+
+/**
+ * Open profile sessions, shared by every client in the process. Wealthfolio
+ * keeps ONE grant per signed-in owner and every unlock replaces it, so two
+ * clients on one credential (an API key: the sync and the long-lived Telegram
+ * client) must share a session rather than cancel each other's. Keyed by
+ * profile and credential; a password login is a new owner, so a new key.
+ */
+const profileSessions = new Map<string, string>();
+const profileOpenings = new Map<string, Promise<string>>();
+/** Old logins' sessions are dropped; a client whose entry goes simply reopens. */
+const MAX_PROFILE_SESSIONS = 16;
+/** Wealthfolio's owner when its auth is off: without a steady cookie every
+ *  request would be a new owner, and no session could ever be used. */
+const BROWSER_ID = randomUUID();
+
+/** Test-only: forget every shared profile session. */
+export function resetProfileSessionsForTest(): void {
+  profileSessions.clear();
+  profileOpenings.clear();
+}
+
+const NO_PROFILE_API =
+  'WEALTHFOLIO_PROFILE_ID is set, but this Wealthfolio has no profiles to pick from (profiles arrived in Wealthfolio 3.10). Remove WEALTHFOLIO_PROFILE_ID, or upgrade Wealthfolio.';
+
 export class WealthfolioClient {
   private token: string | null = null;
+  private profile: (ProfileOptions & { id: string }) | null;
 
-  constructor(private baseUrl: string) {}
+  constructor(private baseUrl: string, profile?: ProfileOptions) {
+    if (profile && !isUuid(profile.id)) throw new Error(PROFILE_ID_FORMAT);
+    // Wealthfolio names a profile's folder and compares IDs in lower case.
+    this.profile = profile ? { ...profile, id: profile.id.toLowerCase() } : null;
+  }
+
+  /**
+   * Every request but the login goes through here. Without a profile it is
+   * plain `fetch`, unchanged. With one, the request carries the profile's
+   * session, opened (and checked) first if need be; a 423 means the session is
+   * gone, because Wealthfolio restarted or another client on this credential
+   * reopened it, so the request is retried once on the current session.
+   */
+  private async send(url: string, init: RequestInit = {}): Promise<Response> {
+    if (!this.profile) return fetch(url, init);
+    const scope = await this.profileScope();
+    const res = await fetch(url, this.scoped(init, scope));
+    if (res.status !== 423) return res;
+    return fetch(url, this.scoped(init, await this.profileScope(scope)));
+  }
+
+  private scoped(init: RequestInit, scope: string): RequestInit {
+    return {
+      ...init,
+      headers: { ...(init.headers as Record<string, string> | undefined), [PROFILE_SCOPE_HEADER]: scope, Cookie: `wf_browser=${BROWSER_ID}` },
+    };
+  }
+
+  private profileKey(): string {
+    return `${this.profile!.id}\u0000${this.token ?? ''}`;
+  }
+
+  /** The current session, opening one when there is none or it is `stale`.
+   *  Concurrent callers share one opening. */
+  private async profileScope(stale?: string): Promise<string> {
+    const key = this.profileKey();
+    const current = profileSessions.get(key);
+    if (current && current !== stale) return current;
+    let opening = profileOpenings.get(key);
+    if (!opening) {
+      opening = this.openProfile()
+        .then((scope) => {
+          profileSessions.delete(key);
+          profileSessions.set(key, scope);
+          while (profileSessions.size > MAX_PROFILE_SESSIONS) profileSessions.delete(profileSessions.keys().next().value!);
+          return scope;
+        })
+        .finally(() => profileOpenings.delete(key));
+      profileOpenings.set(key, opening);
+    }
+    return opening;
+  }
+
+  /**
+   * Opens the profile for this credential: find it (unknown, locked, or a
+   * Wealthfolio without profiles is refused), unlock it, then check it with
+   * its accounts before the session is handed to anything else.
+   */
+  private async openProfile(): Promise<string> {
+    const { id, verify, log } = this.profile!;
+    const state = await this.profileCommand('get_profile_state', {});
+    const profiles = (state as { profiles?: unknown } | null)?.profiles;
+    if (!Array.isArray(profiles)) throw new Error(NO_PROFILE_API);
+    const listed = profiles.filter((p): p is { id: string; name?: unknown; lockEnabled?: unknown } =>
+      !!p && typeof (p as { id?: unknown }).id === 'string');
+    const match = listed.find((p) => p.id.toLowerCase() === id);
+    if (!match) {
+      const clean = (s: unknown) => String(s ?? '').replace(/[\u0000-\u001f\u007f]+/g, ' ').slice(0, 80);
+      log?.(`Wealthfolio's profiles: ${listed.map((p) => `${clean(p.name)} (${clean(p.id)})`).join(', ') || 'none'}.`);
+      throw new Error(`Wealthfolio has no profile with ID ${id} (WEALTHFOLIO_PROFILE_ID). The companion log lists its profiles.`);
+    }
+    if (match.lockEnabled === true) {
+      throw new Error(`Profile ${id} has a lock. The companion can only sync a profile without one: remove its lock in Wealthfolio, or pick another profile.`);
+    }
+    const session = await this.profileCommand('unlock_profile', { profileId: id });
+    const scope = (session as { scopeId?: unknown } | null)?.scopeId;
+    if (typeof scope !== 'string' || !isUuid(scope)) {
+      throw new Error(`Wealthfolio opened profile ${id} but sent back no usable session.`);
+    }
+    const res = await fetch(`${this.baseUrl}/api/v1/accounts`, this.scoped({ headers: this.authHeaders() }, scope));
+    if (!res.ok) throw await this.httpError('Profile check (getAccounts)', res);
+    const accounts: unknown = await res.json();
+    if (!Array.isArray(accounts)) throw new Error(`Profile check: Wealthfolio's account list for profile ${id} was not a list.`);
+    await verify?.(accounts as Array<{ id: string }>);
+    return scope;
+  }
+
+  /** `POST /api/v1/profiles/<command>`. A server without that route (before
+   *  3.10), or one that answers with something other than JSON, has no profiles. */
+  private async profileCommand(command: 'get_profile_state' | 'unlock_profile', body: Record<string, string>): Promise<unknown> {
+    const res = await fetch(`${this.baseUrl}/api/v1/profiles/${command}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...this.authHeaders(), Cookie: `wf_browser=${BROWSER_ID}` },
+      body: JSON.stringify(body),
+    });
+    if (res.status === 404 || res.status === 405) throw new Error(NO_PROFILE_API);
+    if (!res.ok) throw await this.httpError(`Wealthfolio ${command}`, res);
+    try {
+      return await res.json();
+    } catch {
+      throw new Error(NO_PROFILE_API);
+    }
+  }
 
   /**
    * Wealthfolio's server uses password-only auth: POST /api/v1/auth/login
@@ -110,9 +254,9 @@ export class WealthfolioClient {
   private async httpError(action: string, res: Response): Promise<Error> {
     // Wealthfolio 3.10 answers 423 PROFILE_LOCKED to a request with no profile
     // scope when the instance has several profiles or a locked one.
-    if (res.status === 423) {
+    if (res.status === 423 && !this.profile) {
       return new Error(
-        'Wealthfolio refused the request: a profile is locked or there is more than one profile (HTTP 423 PROFILE_LOCKED). The companion supports one default profile with no lock.',
+        'Wealthfolio refused the request: a profile is locked or there is more than one profile (HTTP 423 PROFILE_LOCKED). Set WEALTHFOLIO_PROFILE_ID to the profile to sync; it must have no lock.',
       );
     }
     const MAX_BODY_CHARS = 300;
@@ -126,11 +270,15 @@ export class WealthfolioClient {
       body = `${body.slice(0, MAX_BODY_CHARS)}…`;
     }
     const detail = body ? ` - ${body}` : '';
+    if (res.status === 423 && this.profile) {
+      // Still a temporary failure to `isRowRefusal`, which reads only 400/422.
+      return new Error(`${action} failed: Wealthfolio refused profile ${this.profile.id} (HTTP 423)${detail}`);
+    }
     return new Error(`${action} failed: ${res.status}${detail}`);
   }
 
   async checkImport(accountId: string, activities: unknown[]): Promise<unknown[]> {
-    const res = await fetch(`${this.baseUrl}/api/v1/activities/import/check`, {
+    const res = await this.send(`${this.baseUrl}/api/v1/activities/import/check`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ...this.authHeaders() },
       body: JSON.stringify({ accountId, activities }),
@@ -143,7 +291,7 @@ export class WealthfolioClient {
    *  forecast (project 5); every field is optional because the server's DTO
    *  is not ours to pin. */
   async getAccounts(): Promise<Array<{ id: string; name?: string; accountType?: string; isArchived?: boolean; isActive?: boolean }>> {
-    const res = await fetch(`${this.baseUrl}/api/v1/accounts`, {
+    const res = await this.send(`${this.baseUrl}/api/v1/accounts`, {
       headers: this.authHeaders(),
     });
     if (!res.ok) throw await this.httpError('getAccounts', res);
@@ -155,7 +303,7 @@ export class WealthfolioClient {
    * field — totalValue here is the real current account balance.
    */
   async getLatestValuations(): Promise<Array<{ accountId: string; totalValue: string | number }>> {
-    const res = await fetch(`${this.baseUrl}/api/v1/valuations/latest`, {
+    const res = await this.send(`${this.baseUrl}/api/v1/valuations/latest`, {
       headers: this.authHeaders(),
     });
     if (!res.ok) throw await this.httpError('getLatestValuations', res);
@@ -170,7 +318,7 @@ export class WealthfolioClient {
    * RFC 3339, both ends inclusive.
    */
   async getSpendingInsightSpent(startDate: string, endDate: string): Promise<number> {
-    const res = await fetch(`${this.baseUrl}/api/v1/spending/insight`, {
+    const res = await this.send(`${this.baseUrl}/api/v1/spending/insight`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ...this.authHeaders() },
       body: JSON.stringify({ startDate, endDate }),
@@ -188,7 +336,7 @@ export class WealthfolioClient {
    * `'default'` view skips the month's actuals). See `parseBudgetSnapshot`.
    */
   async getBudgetTargets(): Promise<{ enabled: boolean; targets: BudgetTarget[] }> {
-    const res = await fetch(`${this.baseUrl}/api/v1/spending/budget?periodKey=default`, { headers: this.authHeaders() });
+    const res = await this.send(`${this.baseUrl}/api/v1/spending/budget?periodKey=default`, { headers: this.authHeaders() });
     if (!res.ok) throw await this.httpError('getBudgetTargets', res);
     return parseBudgetSnapshot(await res.json());
   }
@@ -206,7 +354,7 @@ export class WealthfolioClient {
    * never throws after a 2xx, and the caller must record it without an id.
    */
   async setDefaultBudgetTarget(categoryId: string, amountCents: number): Promise<BudgetTarget | null> {
-    const res = await fetch(`${this.baseUrl}/api/v1/spending/budget/targets?periodKey=default`, {
+    const res = await this.send(`${this.baseUrl}/api/v1/spending/budget/targets?periodKey=default`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ...this.authHeaders() },
       body: JSON.stringify({
@@ -229,7 +377,7 @@ export class WealthfolioClient {
   /** Deletes a budget target (`DELETE /spending/budget/targets/{id}`). Upstream
    *  deleting one that is already gone succeeds; Undo re-reads first anyway. */
   async deleteBudgetTarget(id: string): Promise<void> {
-    const res = await fetch(`${this.baseUrl}/api/v1/spending/budget/targets/${encodeURIComponent(id)}?periodKey=default`, {
+    const res = await this.send(`${this.baseUrl}/api/v1/spending/budget/targets/${encodeURIComponent(id)}?periodKey=default`, {
       method: 'DELETE',
       headers: this.authHeaders(),
     });
@@ -240,7 +388,7 @@ export class WealthfolioClient {
    *  /activities/link`, Wealthfolio 3.8+): one transaction that refuses with
    *  nothing written. Resolves to the two rows it wrote, transfer-in first. */
   async linkTransferActivities(activityAId: string, activityBId: string): Promise<unknown[]> {
-    const res = await fetch(`${this.baseUrl}/api/v1/activities/link`, {
+    const res = await this.send(`${this.baseUrl}/api/v1/activities/link`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ...this.authHeaders() },
       body: JSON.stringify({ activityAId, activityBId }),
@@ -252,7 +400,7 @@ export class WealthfolioClient {
 
   /** An account's holdings (`GET /holdings?accountId=`). */
   async getHoldings(accountId: string): Promise<unknown[]> {
-    const res = await fetch(`${this.baseUrl}/api/v1/holdings?accountId=${encodeURIComponent(accountId)}`, {
+    const res = await this.send(`${this.baseUrl}/api/v1/holdings?accountId=${encodeURIComponent(accountId)}`, {
       headers: this.authHeaders(),
     });
     if (!res.ok) throw await this.httpError('getHoldings', res);
@@ -263,7 +411,7 @@ export class WealthfolioClient {
   /** An account's holdings snapshots dated `from`..`to` (`GET /snapshots`). */
   async getSnapshots(accountId: string, from: string, to: string): Promise<unknown[]> {
     const q = new URLSearchParams({ accountId, dateFrom: from, dateTo: to });
-    const res = await fetch(`${this.baseUrl}/api/v1/snapshots?${q}`, { headers: this.authHeaders() });
+    const res = await this.send(`${this.baseUrl}/api/v1/snapshots?${q}`, { headers: this.authHeaders() });
     if (!res.ok) throw await this.httpError('getSnapshots', res);
     const rows = (await res.json()) as unknown;
     return Array.isArray(rows) ? rows : [];
@@ -272,7 +420,7 @@ export class WealthfolioClient {
   /** The holdings in an account's snapshot of `date` (`GET /snapshots/holdings`). */
   async getSnapshotHoldings(accountId: string, date: string): Promise<unknown[]> {
     const q = new URLSearchParams({ accountId, date });
-    const res = await fetch(`${this.baseUrl}/api/v1/snapshots/holdings?${q}`, { headers: this.authHeaders() });
+    const res = await this.send(`${this.baseUrl}/api/v1/snapshots/holdings?${q}`, { headers: this.authHeaders() });
     if (!res.ok) throw await this.httpError('getSnapshotHoldings', res);
     const rows = (await res.json()) as unknown;
     return Array.isArray(rows) ? rows : [];
@@ -280,7 +428,7 @@ export class WealthfolioClient {
 
   /** Property, vehicles, loans and the rest (`GET /alternative-holdings`). */
   async getAlternativeHoldings(): Promise<unknown[]> {
-    const res = await fetch(`${this.baseUrl}/api/v1/alternative-holdings`, {
+    const res = await this.send(`${this.baseUrl}/api/v1/alternative-holdings`, {
       headers: this.authHeaders(),
     });
     if (!res.ok) throw await this.httpError('getAlternativeHoldings', res);
@@ -291,7 +439,7 @@ export class WealthfolioClient {
   /** An asset's quotes (`GET /market-data/quotes/history`). A liability's are its
    *  recorded balances. */
   async getQuoteHistory(assetId: string): Promise<Array<{ timestamp: string; close: string | number; dataSource: string; notes?: string | null }>> {
-    const res = await fetch(`${this.baseUrl}/api/v1/market-data/quotes/history?symbol=${encodeURIComponent(assetId)}`, {
+    const res = await this.send(`${this.baseUrl}/api/v1/market-data/quotes/history?symbol=${encodeURIComponent(assetId)}`, {
       headers: this.authHeaders(),
     });
     if (!res.ok) throw await this.httpError('getQuoteHistory', res);
@@ -302,7 +450,7 @@ export class WealthfolioClient {
   /** Saves one quote (`PUT /market-data/quotes/{assetId}`), the route the app's
    *  own manual quote edit uses. A MANUAL one replaces that day's MANUAL quote. */
   async updateQuote(assetId: string, quote: Record<string, unknown>): Promise<void> {
-    const res = await fetch(`${this.baseUrl}/api/v1/market-data/quotes/${encodeURIComponent(assetId)}`, {
+    const res = await this.send(`${this.baseUrl}/api/v1/market-data/quotes/${encodeURIComponent(assetId)}`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json', ...this.authHeaders() },
       body: JSON.stringify(quote),
@@ -313,7 +461,7 @@ export class WealthfolioClient {
   /** Unlinks a linked pair in place (`POST /activities/unlink`, 3.8+): both
    *  rows lose their group and are marked external; nothing else changes. */
   async unlinkTransferActivities(activityAId: string, activityBId: string): Promise<unknown[]> {
-    const res = await fetch(`${this.baseUrl}/api/v1/activities/unlink`, {
+    const res = await this.send(`${this.baseUrl}/api/v1/activities/unlink`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ...this.authHeaders() },
       body: JSON.stringify({ activityAId, activityBId }),
@@ -333,7 +481,7 @@ export class WealthfolioClient {
     dateFrom?: string;
     dateTo?: string;
   }): Promise<ActivitySearchItem[]> {
-    const res = await fetch(`${this.baseUrl}/api/v1/activities/search`, {
+    const res = await this.send(`${this.baseUrl}/api/v1/activities/search`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ...this.authHeaders() },
       body: JSON.stringify(body),
@@ -344,7 +492,7 @@ export class WealthfolioClient {
   }
 
   async importActivities(activities: unknown[]): Promise<void> {
-    const res = await fetch(`${this.baseUrl}/api/v1/activities/import`, {
+    const res = await this.send(`${this.baseUrl}/api/v1/activities/import`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ...this.authHeaders() },
       body: JSON.stringify({ activities }),
@@ -353,7 +501,7 @@ export class WealthfolioClient {
   }
 
   async getAddonSecret(addonId: string, key: string): Promise<string | null> {
-    const res = await fetch(
+    const res = await this.send(
       `${this.baseUrl}/api/v1/addons/${encodeURIComponent(addonId)}/secrets?key=${encodeURIComponent(key)}`,
       { headers: this.authHeaders() },
     );
@@ -376,7 +524,7 @@ export class WealthfolioClient {
   }
 
   async setAddonSecret(addonId: string, key: string, value: string): Promise<void> {
-    const res = await fetch(
+    const res = await this.send(
       `${this.baseUrl}/api/v1/addons/${encodeURIComponent(addonId)}/secrets`,
       {
         method: 'POST',
@@ -393,7 +541,7 @@ export class WealthfolioClient {
    *  literal `'spending_categories'` today, but the server takes it explicitly
    *  because Wealthfolio also has income/savings taxonomies. */
   async assignActivityCategory(activityId: string, taxonomyId: string, categoryId: string): Promise<void> {
-    const res = await fetch(
+    const res = await this.send(
       `${this.baseUrl}/api/v1/spending/activities/${encodeURIComponent(activityId)}/assignments`,
       {
         method: 'PUT',
@@ -410,7 +558,7 @@ export class WealthfolioClient {
     name: string,
     description = 'Balances an account already had when syncing began. Not spending.',
   ): Promise<string> {
-    const res = await fetch(`${this.baseUrl}/api/v1/taxonomies/categories`, {
+    const res = await this.send(`${this.baseUrl}/api/v1/taxonomies/categories`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ...this.authHeaders() },
       body: JSON.stringify({
@@ -433,7 +581,7 @@ export class WealthfolioClient {
    *  or null on any failure: callers treat an unknown host as an old one. */
   async getAppVersion(): Promise<string | null> {
     try {
-      const res = await fetch(`${this.baseUrl}/api/v1/app/info`, { headers: this.authHeaders() });
+      const res = await this.send(`${this.baseUrl}/api/v1/app/info`, { headers: this.authHeaders() });
       if (!res.ok) return null;
       const body = (await res.json()) as { version?: unknown };
       return typeof body?.version === 'string' && body.version ? body.version : null;
@@ -446,7 +594,7 @@ export class WealthfolioClient {
    *  3.9+). Throws when it cannot be read: a writer that replaces the list whole
    *  must not guess. */
   async getExcludedSpendingCategories(): Promise<string[]> {
-    const res = await fetch(`${this.baseUrl}/api/v1/spending/settings`, { headers: this.authHeaders() });
+    const res = await this.send(`${this.baseUrl}/api/v1/spending/settings`, { headers: this.authHeaders() });
     if (!res.ok) throw await this.httpError('getExcludedSpendingCategories', res);
     const body = (await res.json()) as { excludedCategoryIds?: unknown };
     const ids = body?.excludedCategoryIds;
@@ -457,7 +605,7 @@ export class WealthfolioClient {
   /** Sets `spending.excluded_category_ids`. The route is a patch: omitted
    *  fields (the account list, the enabled flag) are left as they are. */
   async setExcludedSpendingCategories(categoryIds: string[]): Promise<void> {
-    const res = await fetch(`${this.baseUrl}/api/v1/spending/settings`, {
+    const res = await this.send(`${this.baseUrl}/api/v1/spending/settings`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json', ...this.authHeaders() },
       body: JSON.stringify({ excludedCategoryIds: categoryIds }),
@@ -473,7 +621,7 @@ export class WealthfolioClient {
   async sendNotification(notification: {
     title: string; body: string; url?: string; tag?: string;
   }): Promise<{ delivered: number; removed: number; failed: number } | null> {
-    const res = await fetch(`${this.baseUrl}/api/v1/notifications/send`, {
+    const res = await this.send(`${this.baseUrl}/api/v1/notifications/send`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ...this.authHeaders() },
       body: JSON.stringify(notification),
@@ -487,7 +635,7 @@ export class WealthfolioClient {
    *  side of `assignActivityCategory`. No request body: the taxonomy to clear
    *  is a path segment, matching the server's DELETE route shape. */
   async unassignActivityCategory(activityId: string, taxonomyId: string): Promise<void> {
-    const res = await fetch(
+    const res = await this.send(
       `${this.baseUrl}/api/v1/spending/activities/${encodeURIComponent(activityId)}/assignments/${encodeURIComponent(taxonomyId)}`,
       {
         method: 'DELETE',
@@ -526,7 +674,7 @@ export class WealthfolioClient {
      *  matcher skips any other (`match_compiled`, 3.8–3.10). Absent: every type. */
     activityType?: string;
   }): Promise<string | null> {
-    const res = await fetch(`${this.baseUrl}/api/v1/spending/rules`, {
+    const res = await this.send(`${this.baseUrl}/api/v1/spending/rules`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ...this.authHeaders() },
       body: JSON.stringify({
@@ -557,7 +705,7 @@ export class WealthfolioClient {
    *  one that is gone included — throws, so the Undo says it couldn't reach
    *  Wealthfolio and changes nothing. */
   async getActivityAssignments(activityId: string): Promise<Array<{ taxonomyId: string; categoryId: string; source?: string }>> {
-    const res = await fetch(
+    const res = await this.send(
       `${this.baseUrl}/api/v1/spending/activities/${encodeURIComponent(activityId)}/assignments`,
       { headers: this.authHeaders() },
     );
@@ -580,7 +728,7 @@ export class WealthfolioClient {
    *  first, then oldest first — which is the order Wealthfolio applies them in
    *  (upstream `CategorizationRulesRepository::list`). */
   async listCategorizationRules(): Promise<WealthfolioRule[]> {
-    const res = await fetch(`${this.baseUrl}/api/v1/spending/rules`, { headers: this.authHeaders() });
+    const res = await this.send(`${this.baseUrl}/api/v1/spending/rules`, { headers: this.authHeaders() });
     if (!res.ok) throw await this.httpError('listCategorizationRules', res);
     const rows = (await res.json()) as unknown;
     if (!Array.isArray(rows)) return [];
@@ -612,7 +760,7 @@ export class WealthfolioClient {
    *  means the rule is already gone (deleted in Wealthfolio): that resolves, so
    *  an undo of it is not stranded. */
   async deleteCategorizationRule(id: string): Promise<void> {
-    const res = await fetch(`${this.baseUrl}/api/v1/spending/rules/${encodeURIComponent(id)}`, {
+    const res = await this.send(`${this.baseUrl}/api/v1/spending/rules/${encodeURIComponent(id)}`, {
       method: 'DELETE',
       headers: this.authHeaders(),
     });
@@ -625,7 +773,7 @@ export class WealthfolioClient {
     updates?: unknown[];
     deleteIds?: string[];
   }): Promise<{ created: any[]; updated: any[]; errors: any[] }> {
-    const res = await fetch(`${this.baseUrl}/api/v1/activities/bulk`, {
+    const res = await this.send(`${this.baseUrl}/api/v1/activities/bulk`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ...this.authHeaders() },
       body: JSON.stringify(req),

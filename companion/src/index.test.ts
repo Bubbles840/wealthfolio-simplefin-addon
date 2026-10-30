@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach, onTestFinished } from 'vitest';
-import { maskUrl, publishLiveReports, validateStartupEnv, startupWarnings, runCompanionSync, resolvePassword, sendDailyTelegramReport, sendWeeklyTelegramReport, sendMonthlyTelegramReport, previousYearMonth, sendImportNotice, readBudgetSnapshot, composeDailyDigestMessage, composeDailyDigest, composeWeeklyReportMessage, composeMonthlyWrapUpMessage, runCompanionSyncExclusive, markNotTransferExclusive, FIX_SYNC_RUNNING, syncStatus, buildTelegramCommandHandler, applyTelegramDismissal, undoTelegramDismissal, formatDismissedReply, buildTelegramListenerDeps, buildCategorizeController, buildCategorizeDeps, rememberImportScope, sendUnmappedAccountsNotice, updateCheckDeps, buildAskSessions, cubeBuildDeps } from './index.js';
+import { maskUrl, publishLiveReports, validateStartupEnv, startupWarnings, runCompanionSync, resolvePassword, sendDailyTelegramReport, sendWeeklyTelegramReport, sendMonthlyTelegramReport, previousYearMonth, sendImportNotice, readBudgetSnapshot, composeDailyDigestMessage, composeDailyDigest, composeWeeklyReportMessage, composeMonthlyWrapUpMessage, runCompanionSyncExclusive, markNotTransferExclusive, FIX_SYNC_RUNNING, syncStatus, wealthfolioDbPath, verifyProfileDatabase, createWealthfolioClient, buildTelegramCommandHandler, applyTelegramDismissal, undoTelegramDismissal, formatDismissedReply, buildTelegramListenerDeps, buildCategorizeController, buildCategorizeDeps, rememberImportScope, sendUnmappedAccountsNotice, updateCheckDeps, buildAskSessions, cubeBuildDeps } from './index.js';
 import { findingHandle } from '../../shared/findings.js';
 import { whyRunHandle } from './why-menu.js';
 import { formatHelpReply, parseCommand } from '../../shared/telegram-commands.js';
@@ -87,6 +87,8 @@ vi.mock('./wealthfolio.js', () => {
 
 vi.mock('./sqlite-native.js', () => ({
   getNativeUncategorizedSpending: vi.fn(() => []),
+  // #50's database check; createWealthfolioClient's verify reads it.
+  getNativeAccountIds: vi.fn(() => []),
   getNativeRuleCategorizedAmazonRows: vi.fn(() => []),
   // v1.48 drill-down reader — bound by cubeBuildDeps, so it must exist here.
   getNativeDrillRows: vi.fn(() => []),
@@ -224,6 +226,77 @@ describe('startupWarnings', () => {
     const warnings = startupWarnings({ WEALTHFOLIO_PASSWORD: 'p' }, () => true);
     expect(warnings).toHaveLength(1);
     expect(warnings[0]).toMatch(/TZ is not set/);
+  });
+});
+
+const PROFILE = '22222222-2222-4222-8222-222222222222';
+
+describe('WEALTHFOLIO_PROFILE_ID (#50)', () => {
+  afterEach(() => {
+    delete process.env.WEALTHFOLIO_PROFILE_ID;
+  });
+
+  it('refuses a value that is not a profile ID at startup, before it reaches a path or a request', () => {
+    process.env.WEALTHFOLIO_API_URL = 'http://wf';
+    process.env.WEALTHFOLIO_PASSWORD = 'pw';
+    for (const bad of ['../../etc/passwd', 'Business', `${PROFILE}/..`, '22222222-2222-4222-8222-22222222222']) {
+      process.env.WEALTHFOLIO_PROFILE_ID = bad;
+      expect(() => validateStartupEnv()).toThrow('WEALTHFOLIO_PROFILE_ID');
+    }
+    process.env.WEALTHFOLIO_PROFILE_ID = ` ${PROFILE.toUpperCase()} `;
+    expect(() => validateStartupEnv()).not.toThrow();
+  });
+
+  it("reads the profile's own database file when it exists, else WEALTHFOLIO_DB_PATH", () => {
+    const env = { WEALTHFOLIO_DB_PATH: '/mnt/wealthfolio/wealthfolio.db', WEALTHFOLIO_PROFILE_ID: PROFILE.toUpperCase() };
+    const own = `/mnt/wealthfolio/profiles/${PROFILE}/app.db`;
+    expect(wealthfolioDbPath(env, (p) => p === own)).toBe(own);
+    expect(wealthfolioDbPath(env, () => false)).toBe('/mnt/wealthfolio/wealthfolio.db');
+    expect(wealthfolioDbPath({ WEALTHFOLIO_DB_PATH: '/mnt/wealthfolio/wealthfolio.db' }, () => true)).toBe('/mnt/wealthfolio/wealthfolio.db');
+  });
+
+  it('never builds a path from an ID that is not a UUID', () => {
+    const seen: string[] = [];
+    expect(wealthfolioDbPath({ WEALTHFOLIO_DB_PATH: '/mnt/w/w.db', WEALTHFOLIO_PROFILE_ID: '../../x' }, (p) => { seen.push(p); return true; })).toBe('/mnt/w/w.db');
+    expect(seen).toEqual([]);
+  });
+
+  describe('verifyProfileDatabase', () => {
+    const deps = (ids: string[] | Error, exists = true) => ({
+      dbPath: '/mnt/w/profiles/x/app.db',
+      exists: () => exists,
+      readIds: () => { if (ids instanceof Error) throw ids; return ids; },
+    });
+
+    it('passes when every account the API lists is in the file', () => {
+      expect(() => verifyProfileDatabase([{ id: 'a' }, { id: 'b' }], deps(['a', 'b', 'c']))).not.toThrow();
+    });
+
+    it("refuses when an account is missing from the file, naming the file and the fix", () => {
+      expect(() => verifyProfileDatabase([{ id: 'a' }, { id: 'z' }], deps(['a', 'b']))).toThrow(
+        /\/mnt\/w\/profiles\/x\/app\.db.*1 of its 2 accounts.*profiles\.json/,
+      );
+    });
+
+    it('refuses an empty profile read against a file that has accounts', () => {
+      expect(() => verifyProfileDatabase([], deps(['a']))).toThrow(/has no accounts/);
+      expect(() => verifyProfileDatabase([], deps([]))).not.toThrow();
+    });
+
+    it('lets a missing file through (nothing is read from it), but not an unreadable one', () => {
+      expect(() => verifyProfileDatabase([{ id: 'a' }], deps([], false))).not.toThrow();
+      expect(() => verifyProfileDatabase([{ id: 'a' }], deps(new Error('locked')))).toThrow('locked');
+    });
+  });
+
+  it('builds every client with the profile and its check when the ID is set, and plainly otherwise', async () => {
+    const { WealthfolioClient } = await import('./wealthfolio.js');
+    vi.mocked(WealthfolioClient).mockClear();
+    createWealthfolioClient('http://wf');
+    expect(vi.mocked(WealthfolioClient).mock.calls.at(-1)).toEqual(['http://wf', undefined]);
+    process.env.WEALTHFOLIO_PROFILE_ID = PROFILE.toUpperCase();
+    createWealthfolioClient('http://wf');
+    expect(vi.mocked(WealthfolioClient).mock.calls.at(-1)).toEqual(['http://wf', { id: PROFILE, verify: expect.any(Function), log: expect.any(Function) }]);
   });
 });
 

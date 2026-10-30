@@ -19,6 +19,8 @@ import { parseFiledState } from '../../shared/bookkeeping-filing.js';
 import { CARD_REWRITE_SECRET_KEY, rewriteCardBookkeeping } from './card-bookkeeping-rewrite.js';
 import cron from 'node-cron';
 import { readFileSync, existsSync } from 'fs';
+import { dirname, join } from 'path';
+import { profileIdFromEnv } from './profile-id.js';
 import { SIMPLEFIN_REQUESTS_SECRET_KEY, requestsToday } from '../../shared/simplefin-budget.js';
 import { runSyncCore, descriptionFromComment, txIdFromComment } from '../../shared/sync-core.js';
 import type { SyncResult } from '../../shared/sync-core.js';
@@ -49,8 +51,58 @@ import { DISMISSAL_MAX_AGE_DAYS } from '../../shared/uncategorized.js';
  * agreement, plus the loud startup line when the file is absent.
  */
 const DEFAULT_WEALTHFOLIO_DB_PATH = '/mnt/wealthfolio.db';
-export function wealthfolioDbPath(): string {
-  return process.env.WEALTHFOLIO_DB_PATH || DEFAULT_WEALTHFOLIO_DB_PATH;
+/**
+ * With `WEALTHFOLIO_PROFILE_ID` (#50): Wealthfolio 3.10 keeps every profile but
+ * the original in `<data dir>/profiles/<id>/app.db`, with its add-ons beside
+ * it, so that file is read when it exists. Otherwise `WEALTHFOLIO_DB_PATH`
+ * itself: the original profile, or a path that already points at the
+ * profile's file. `verifyProfileDatabase` proves the pick before it is used.
+ */
+export function wealthfolioDbPath(env: NodeJS.ProcessEnv = process.env, fileExists: (path: string) => boolean = existsSync): string {
+  const configured = env.WEALTHFOLIO_DB_PATH || DEFAULT_WEALTHFOLIO_DB_PATH;
+  let profileId: string | null;
+  try {
+    profileId = profileIdFromEnv(env);
+  } catch {
+    // Refused at startup (validateStartupEnv); never part of a path.
+    return configured;
+  }
+  if (!profileId) return configured;
+  const own = join(dirname(configured), 'profiles', profileId, 'app.db');
+  return fileExists(own) ? own : configured;
+}
+
+/**
+ * #50's refusal: the database file must be the profile the API serves, or the
+ * companion would read one profile and write what it decides into another.
+ * Every account the API lists must be in the file, and an API with no accounts
+ * needs a file with none. A missing file passes: nothing is read from it, and
+ * the startup ERROR already names it. An unreadable one throws.
+ */
+export function verifyProfileDatabase(
+  accounts: Array<{ id: string }>,
+  deps: { dbPath: string; exists: (path: string) => boolean; readIds: (path: string) => string[] } =
+    { dbPath: wealthfolioDbPath(), exists: existsSync, readIds: getNativeAccountIds },
+): void {
+  const { dbPath } = deps;
+  if (!deps.exists(dbPath)) return;
+  const inFile = new Set(deps.readIds(dbPath));
+  const fix = "Mount Wealthfolio's whole data folder (the one with profiles.json), or set WEALTHFOLIO_DB_PATH to this profile's profiles/<id>/app.db.";
+  if (accounts.length === 0) {
+    if (inFile.size > 0) throw new Error(`The database file ${dbPath} is not this profile's: the profile has no accounts and the file has ${inFile.size}. ${fix}`);
+    return;
+  }
+  const missing = accounts.filter((a) => !inFile.has(String(a?.id))).length;
+  if (missing > 0) {
+    throw new Error(`The database file ${dbPath} is not this profile's: ${missing} of its ${accounts.length} accounts are not in it. ${fix}`);
+  }
+}
+
+/** Every Wealthfolio client the companion uses, with the profile and its
+ *  database check when `WEALTHFOLIO_PROFILE_ID` is set (#50). */
+export function createWealthfolioClient(apiUrl: string): WealthfolioClient {
+  const profileId = profileIdFromEnv(process.env);
+  return new WealthfolioClient(apiUrl, profileId ? { id: profileId, verify: (accounts) => verifyProfileDatabase(accounts), log } : undefined);
 }
 import { formatSelfCheckBlock, formatFindingsSummary, printsInFull } from '../../shared/self-check.js';
 import { readInstalledAddonVersion } from './installed-addon.js';
@@ -76,7 +128,7 @@ import type { GlyphStyle, InlineKeyboard } from '../../shared/telegram.js';
 import type { DismissalLedger } from './dismissals.js';
 import type { SyncHealth } from '../../shared/telegram.js';
 import { addonUnderstandsDividends, SIMPLEFIN_SYNC_VERSION, COMPANION_VERSION_SECRET_KEY, INSTALLED_ADDON_VERSION_SECRET_KEY, isNewerVersion } from '../../shared/version.js';
-import { getNativeWealthfolioSpending, getNativeWealthfolioSpendingBetween, getNativeWealthfolioBudgets, getNativeWealthfolioTopSpending, getNativeUncategorizedSpending, getNativeRuleCategorizedAmazonRows, getNativeCategorizedSpending, getNativeSpendingCategories, getNativeCategoryCatalog, getNativeSubcategorySpending, getNativeUncategorizedSpendingTotal, countRulePatternMatches, getNativeBudgetSpend, getNativeIncomeByMonthAccount, getNativeUncategorizedByMonthAccount, getNativeMerchantRows, getNativeDrillRows, getNativeFeesInterestByMonth, getNativeSpendDailyTotals, getNativeValuationByMonth, getNativeIncomeCategories } from './sqlite-native.js';
+import { getNativeWealthfolioSpending, getNativeWealthfolioSpendingBetween, getNativeWealthfolioBudgets, getNativeWealthfolioTopSpending, getNativeUncategorizedSpending, getNativeAccountIds, getNativeRuleCategorizedAmazonRows, getNativeCategorizedSpending, getNativeSpendingCategories, getNativeCategoryCatalog, getNativeSubcategorySpending, getNativeUncategorizedSpendingTotal, countRulePatternMatches, getNativeBudgetSpend, getNativeIncomeByMonthAccount, getNativeUncategorizedByMonthAccount, getNativeMerchantRows, getNativeDrillRows, getNativeFeesInterestByMonth, getNativeSpendDailyTotals, getNativeValuationByMonth, getNativeIncomeCategories } from './sqlite-native.js';
 import { publishUncategorizedStatusForDbPath } from './uncategorized-status.js';
 import { getNativePastFilings } from './sqlite-guess.js';
 import { createCategorizeController, SPENDING_TAXONOMY_ID } from './categorize.js';
@@ -182,6 +234,8 @@ export function validateStartupEnv(): void {
   if (!hasPassword) {
     throw new Error('Missing required authentication: set WEALTHFOLIO_PASSWORD, WEALTHFOLIO_PASSWORD_FILE, or WEALTHFOLIO_API_KEY');
   }
+  // #50: a malformed ID stops the daemon here, before it reaches a path or a request.
+  profileIdFromEnv(process.env);
 }
 
 /**
@@ -987,7 +1041,7 @@ async function runCompanionSyncOnce(opts: { force?: boolean; manual?: boolean })
   const apiUrl = process.env.WEALTHFOLIO_API_URL ?? '';
   if (!apiUrl) throw new Error('Missing WEALTHFOLIO_API_URL');
 
-  const wfClient = new WealthfolioClient(apiUrl);
+  const wfClient = createWealthfolioClient(apiUrl);
   const apiKey = process.env.WEALTHFOLIO_API_KEY;
   log(`Connecting to Wealthfolio at ${apiUrl}...`);
   if (apiKey) {
@@ -4310,7 +4364,7 @@ if (!process.env.VITEST) {
   for (const warning of startupWarnings()) log(`WARNING: ${warning}`);
 
   const apiUrl = process.env.WEALTHFOLIO_API_URL ?? '';
-  const wfClient = new WealthfolioClient(apiUrl);
+  const wfClient = createWealthfolioClient(apiUrl);
 
   // Version FIRST in the banner: "which build is running?" is the first
   // question any live diagnosis asks, and until 1.7.0 the only answer was
@@ -4324,6 +4378,8 @@ if (!process.env.VITEST) {
     log(`ERROR: Wealthfolio database not found at ${wealthfolioDbPath()} — reports will be empty until it appears. Check the volume mount and WEALTHFOLIO_DB_PATH.`);
   }
   log(`Starting companion v${SIMPLEFIN_SYNC_VERSION} — sync schedule: ${schedule}, daily report schedule: ${dailySchedule}, weekly report schedule: ${weeklySchedule}, monthly report schedule: ${monthlySchedule}`);
+  const profileId = profileIdFromEnv(process.env);
+  if (profileId) log(`Wealthfolio profile ${profileId}; reading its database at ${wealthfolioDbPath()}`);
   // Only the running daemon checks for updates; see updateCheckDeps.
   updateCheckDeps.armed = true;
 

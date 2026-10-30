@@ -529,6 +529,20 @@ function hasActivityTypeOverride(dbPath: string): boolean {
   return Number(Object.values(rows[0] ?? {})[0]) > 0;
 }
 
+/**
+ * Every account id in the database, archived ones included. With
+ * `WEALTHFOLIO_PROFILE_ID` set (#50) this is how the companion proves the file
+ * it reads is the profile the API serves before anything uses that profile.
+ * Strict: a file that cannot be read throws, never "no accounts".
+ */
+export function getNativeAccountIds(dbPath: string): string[] {
+  return queryNativeDbStrict<Record<string, unknown>>(
+    dbPath, 'account ids',
+    'SELECT id AS id FROM accounts ORDER BY id;',
+    (parts) => (parts.length >= 1 ? { id: parts[0] } : null),
+  ).map((r) => String(Object.values(r)[0]));
+}
+
 /** Whether the database has the spending module's split lines (Wealthfolio 3.8+). */
 function hasSpendingSplits(dbPath: string): boolean {
   const rows = queryNativeDb<Record<string, unknown>>(

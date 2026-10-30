@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+Companion only. Pull the image; the add-on is unchanged.
+
+### Added
+- **The companion can sync one profile of a Wealthfolio with several (#50).**
+  Set `WEALTHFOLIO_PROFILE_ID` to the profile's ID, which `profiles.json` in
+  Wealthfolio's data folder lists. The companion opens that profile for itself,
+  so the profile you see in the browser doesn't change. It reads the profile's
+  own database file from the data folder it already mounts. Before it uses the
+  profile, it checks that every account Wealthfolio lists is in that file, and
+  refuses to run otherwise: reading one profile and writing into another is the
+  one thing it must never do. An unknown ID, a profile with a lock, or a
+  Wealthfolio older than 3.10 also stops it, with a message that says which.
+  Without the setting nothing changes. Checked against a live Wealthfolio 3.10.
+- **An optional status page (#51).** Set `STATUS_PORT` and the companion answers
+  `GET /status` with its last run: the outcome, the imported and skipped counts,
+  the times, and its version. The status is 503 when the last run failed, so it
+  works as a Docker healthcheck. It catches a failed Wealthfolio login, which
+  the add-on's last-sync line can't see. The page is read-only and has no login,
+  so it holds no amounts or names, and the error text has passwords and URL
+  credentials masked out.
+
+### Fixed
+- **A split transaction leaves the needs-a-category list (#52, @mandishshah).**
+  Its categories are on its split lines, so the import notice, the Home tile and
+  `/categorize` kept asking about it. The spending totals already counted it
+  as categorized.
+
 ## [1.70.0] - 2026-10-25
 
 Update both halves. The add-on asks to read holdings snapshots (two more
