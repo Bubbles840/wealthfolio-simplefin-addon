@@ -73,9 +73,10 @@ export const PROFILE_SCOPE_HEADER = 'x-wf-profile-scope';
 export interface ProfileOptions {
   /** The profile's ID, a UUID in any case. */
   id: string;
-  /** Runs each time the profile is opened, with its accounts, before any other
-   *  request uses the session. Throwing refuses the profile. */
-  verify?: (accounts: Array<{ id: string }>) => void | Promise<void>;
+  /** Runs each time the profile is opened, with its accounts and whether it is
+   *  the original profile (which keeps the pre-profile database), before any
+   *  other request uses the session. Throwing refuses the profile. */
+  verify?: (accounts: Array<{ id: string }>, profile: { legacy: boolean }) => void | Promise<void>;
   /** Where the profile list goes when the ID is unknown: the log, never the error. */
   log?: (line: string) => void;
 }
@@ -114,6 +115,12 @@ export class WealthfolioClient {
     this.profile = profile ? { ...profile, id: profile.id.toLowerCase() } : null;
   }
 
+  /** With a profile: open (and check) it now, so the caller can read the
+   *  database file the check proved before its first request (#50). */
+  async ensureProfile(): Promise<void> {
+    if (this.profile) await this.profileScope(this.token);
+  }
+
   /**
    * Every request but the login goes through here. Without a profile it is
    * plain `fetch`, unchanged. With one, the request carries the profile's
@@ -147,6 +154,8 @@ export class WealthfolioClient {
    *  `stale`. Concurrent callers share one opening. */
   private async profileScope(token: string | null, stale?: string): Promise<string> {
     const key = `${this.profile!.id}\u0000${token ?? ''}`;
+    // A refused session goes at once, so nothing else picks it up meanwhile.
+    if (stale && profileSessions.get(key) === stale) profileSessions.delete(key);
     const current = profileSessions.get(key);
     if (current && current !== stale) return current;
     let opening = profileOpenings.get(key);
@@ -174,7 +183,7 @@ export class WealthfolioClient {
     const state = await this.profileCommand(token, 'get_profile_state', {});
     const profiles = (state as { profiles?: unknown } | null)?.profiles;
     if (!Array.isArray(profiles)) throw new Error(NO_PROFILE_API);
-    const listed = profiles.filter((p): p is { id: string; name?: unknown; lockEnabled?: unknown } =>
+    const listed = profiles.filter((p): p is { id: string; name?: unknown; lockEnabled?: unknown; isLegacy?: unknown } =>
       !!p && typeof (p as { id?: unknown }).id === 'string');
     const match = listed.find((p) => p.id.toLowerCase() === id);
     if (!match) {
@@ -194,7 +203,7 @@ export class WealthfolioClient {
     if (!res.ok) throw await this.httpError('Profile check (getAccounts)', res);
     const accounts: unknown = await res.json();
     if (!Array.isArray(accounts)) throw new Error(`Profile check: Wealthfolio's account list for profile ${id} was not a list.`);
-    await verify?.(accounts as Array<{ id: string }>);
+    await verify?.(accounts as Array<{ id: string }>, { legacy: match.isLegacy === true });
     return scope;
   }
 

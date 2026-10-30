@@ -17,6 +17,7 @@ function fakeWealthfolio(opts: { profilesRoute?: 'missing' | 'html'; scopeId?: (
   let unlocks = 0;
   let logins = 0;
   let alwaysStale = false;
+  let unlockGate: Promise<void> | null = null;
   const profiles = [
     { id: PERSONAL, name: 'Personal', avatarId: 'a', lockEnabled: false, isLegacy: true, hasConnectBinding: false },
     { id: BUSINESS, name: 'Business', avatarId: 'b', lockEnabled: false, isLegacy: false, hasConnectBinding: false },
@@ -47,6 +48,7 @@ function fakeWealthfolio(opts: { profilesRoute?: 'missing' | 'html'; scopeId?: (
       const command = path.slice('/api/v1/profiles/'.length);
       if (command === 'get_profile_state') return json(200, { profiles, pendingDeletions: [], session: null, starting: false });
       if (command === 'unlock_profile') {
+        if (unlockGate) await unlockGate;
         const target = profiles.find((p) => p.id === (body as { profileId?: string }).profileId);
         if (!target) return text(423, 'Profile not found');
         if (target.lockEnabled) return text(423, 'PROFILE_LOCKED: Unlock this profile to continue.');
@@ -71,6 +73,12 @@ function fakeWealthfolio(opts: { profilesRoute?: 'missing' | 'html'; scopeId?: (
     unlocks: () => unlocks,
     restart: () => grants.clear(),
     breakEveryScope: () => { alwaysStale = true; },
+    /** Holds every unlock reply until the returned function is called. */
+    holdUnlocks: () => {
+      let release!: () => void;
+      unlockGate = new Promise((r) => { release = r; });
+      return () => { unlockGate = null; release(); };
+    },
     sent: (path: string) => calls.filter((c) => c.path === path),
   };
 }
@@ -115,13 +123,37 @@ describe('WealthfolioClient with a profile (#50)', () => {
       'GET /api/v1/accounts',
     ]);
     expect(wf.calls[1].body).toEqual({ profileId: BUSINESS });
-    expect(verify).toHaveBeenCalledWith([{ id: 'acc-b1' }, { id: 'acc-b2' }]);
+    expect(verify).toHaveBeenCalledWith([{ id: 'acc-b1' }, { id: 'acc-b2' }], { legacy: false });
     const last = wf.calls.at(-1)!.headers;
     expect(last[PROFILE_SCOPE_HEADER]).toBe(wf.grants.get('Bearer api-key')!.scope);
     expect(last.Cookie).toMatch(/^wf_browser=[0-9a-f-]{36}$/);
     expect(new Set(wf.calls.map((x) => x.headers.Cookie))).toEqual(new Set([last.Cookie]));
     await c.getAccounts();
     expect(wf.unlocks()).toBe(1);
+  });
+
+  it("tells the check whether the profile keeps the original database", async () => {
+    const wf = fakeWealthfolio();
+    const verify = vi.fn();
+    await client(wf, { id: PERSONAL, verify }).getAccounts();
+    expect(verify).toHaveBeenCalledWith([{ id: 'acc-p' }], { legacy: true });
+  });
+
+  it('ensureProfile opens and checks the profile before any other request, once', async () => {
+    const wf = fakeWealthfolio();
+    const verify = vi.fn();
+    const c = client(wf, { id: BUSINESS, verify });
+    await c.ensureProfile();
+    expect(verify).toHaveBeenCalledTimes(1);
+    expect(wf.calls.map((x) => x.path)).toEqual(['/api/v1/profiles/get_profile_state', '/api/v1/profiles/unlock_profile', '/api/v1/accounts']);
+    await c.ensureProfile();
+    expect(wf.unlocks()).toBe(1);
+  });
+
+  it('ensureProfile does nothing without a profile', async () => {
+    const wf = fakeWealthfolio();
+    await client(wf).ensureProfile();
+    expect(wf.calls).toHaveLength(0);
   });
 
   it('accepts the ID in any case', async () => {
@@ -213,6 +245,24 @@ describe('WealthfolioClient with a profile (#50)', () => {
     await listener.getAccounts();
     await sync.getAccounts();
     expect(wf.unlocks()).toBe(2);
+  });
+
+  it('a request arriving while a refused session is being reopened waits for the new one', async () => {
+    const wf = fakeWealthfolio();
+    const c = client(wf, { id: BUSINESS });
+    await c.getAccounts();
+    wf.restart();
+    const release = wf.holdUnlocks();
+    const first = c.getAccounts();
+    // The first request has its 423 and its reopen is waiting on the unlock.
+    await vi.waitFor(() => expect(wf.sent('/api/v1/profiles/unlock_profile')).toHaveLength(2));
+    const second = c.getHoldings('acc-b1');
+    await new Promise((r) => setTimeout(r, 20));
+    expect(wf.sent('/api/v1/holdings')).toHaveLength(0);
+    release();
+    await Promise.all([first, second]);
+    expect(wf.unlocks()).toBe(2);
+    expect(wf.sent('/api/v1/holdings')).toHaveLength(1);
   });
 
   it('opens once for requests that arrive together', async () => {

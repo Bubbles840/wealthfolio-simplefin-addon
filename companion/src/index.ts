@@ -85,6 +85,28 @@ export function wealthfolioDbPath(env: NodeJS.ProcessEnv = process.env, fileExis
 }
 
 /**
+ * The database file of profile `profileId` as its check decides it (#50), once
+ * Wealthfolio has said whether it is the original profile:
+ * - the original profile keeps the pre-profile file, `WEALTHFOLIO_DB_PATH`;
+ * - any other keeps `<data dir>/profiles/<id>/app.db`. Beside `profiles.json`
+ *   the configured file is the ORIGINAL profile's, so it is never this one's,
+ *   even while this profile's folder does not exist yet: the answer is then
+ *   the missing file, and the check refuses it. Only a configured file with no
+ *   `profiles.json` beside it (pointed straight at the profile's file) stands.
+ */
+export function profileDbFile(
+  configured: string,
+  profileId: string,
+  legacy: boolean,
+  fileExists: (path: string) => boolean = existsSync,
+): string {
+  if (legacy) return configured;
+  const own = join(dirname(configured), 'profiles', profileId, 'app.db');
+  if (fileExists(own) || fileExists(join(dirname(configured), 'profiles.json'))) return own;
+  return configured;
+}
+
+/**
  * #50's refusal: the database file must be the profile the API serves, or the
  * companion would read one profile and write what it decides into another.
  * Every account the API lists must be in the file, and an API with no accounts
@@ -117,9 +139,12 @@ export function createWealthfolioClient(apiUrl: string): WealthfolioClient {
   if (!profileId) return new WealthfolioClient(apiUrl, undefined);
   return new WealthfolioClient(apiUrl, {
     id: profileId,
-    verify: (accounts) => {
-      const dbPath = wealthfolioDbPath();
+    // Decided afresh on every open, from what Wealthfolio says, and pinned only
+    // once proved.
+    verify: (accounts, { legacy }) => {
+      const dbPath = profileDbFile(process.env.WEALTHFOLIO_DB_PATH || DEFAULT_WEALTHFOLIO_DB_PATH, profileId, legacy);
       verifyProfileDatabase(accounts, { dbPath, exists: existsSync, readIds: getNativeAccountIds });
+      if (pinnedProfileDb?.path !== dbPath) log(`Wealthfolio profile ${profileId}: reading its database at ${dbPath}`);
       pinnedProfileDb = { id: profileId, path: dbPath };
     },
     log,
@@ -1100,6 +1125,9 @@ async function runCompanionSyncOnce(opts: { force?: boolean; manual?: boolean })
     }
   }
 
+  // #50: open and check the profile first, so the database path read just below
+  // is the file the check proved, not a guess made before the profile existed.
+  if (profileIdFromEnv(process.env)) await wfClient.ensureProfile();
   const store = new RestSyncStore(wfClient);
   // The database path enables the ledger-balance fallback, which is what lets a
   // credit card get a starting balance at all (Wealthfolio values cash only).
@@ -4412,7 +4440,7 @@ if (!process.env.VITEST) {
   }
   log(`Starting companion v${SIMPLEFIN_SYNC_VERSION} — sync schedule: ${schedule}, daily report schedule: ${dailySchedule}, weekly report schedule: ${weeklySchedule}, monthly report schedule: ${monthlySchedule}`);
   const profileId = profileIdFromEnv(process.env);
-  if (profileId) log(`Wealthfolio profile ${profileId}; reading its database at ${wealthfolioDbPath()}`);
+  if (profileId) log(`Syncing Wealthfolio profile ${profileId}; its database file is checked against Wealthfolio before use.`);
   // Only the running daemon checks for updates; see updateCheckDeps.
   updateCheckDeps.armed = true;
 

@@ -74,10 +74,14 @@ export function scrubStatusError(message: string, secrets: readonly string[] = [
   const scrubbed = text
     .replace(/\/\/[^/?#]*@/g, '//***@')
     .replace(/\bbot\d+:[\w-]+/g, 'bot***')
-    .replace(/\b(Bearer|Basic)\s+[^\s,;"']+/gi, '$1 ***')
+    .replace(/\bBearer\s+[^\s,;"']+/gi, 'Bearer ***')
+    // Case-sensitive: "basic" is an ordinary English word.
+    .replace(/\bBasic\s+[A-Za-z0-9+/=]+/g, 'Basic ***')
     .replace(/\beyJ[\w-]*\.[\w-]*\.[\w-]*/g, '***')
     .replace(/(failed: \d{3}|\(HTTP 423\)) - [\s\S]*$/, '$1')
-    .replace(/(Unexpected token .{1,8}, )?"[\s\S]*?"(\.\.\.)? is not valid JSON/g, 'a reply that is not valid JSON')
+    // Anchored on V8's own wording, so an earlier quote in the message stays.
+    .replace(/Unexpected token .{1,8}, "[\s\S]*?"(\.\.\.)? is not valid JSON/g, 'a reply that is not valid JSON')
+    .replace(/"[^"\r\n]*"(\.\.\.)? is not valid JSON/g, 'a reply that is not valid JSON')
     .replace(/[\u0000-\u001f\u007f-\u009f]+/g, ' ')
     .replace(/\s+/g, ' ')
     .trim();
@@ -169,7 +173,7 @@ export function statusServerConfig(
   if (!(port >= 1 && port <= 65535)) {
     return { warning: `STATUS_PORT must be a port number from 1 to 65535; the status page is off.` };
   }
-  if ((env.MINIAPP_PORT ?? '').trim() === raw) {
+  if (Number((env.MINIAPP_PORT ?? '').trim()) === port) {
     return { warning: `STATUS_PORT is the same as MINIAPP_PORT; give the status page its own port. The status page is off.` };
   }
   const host = (env.STATUS_HOST ?? '').trim();

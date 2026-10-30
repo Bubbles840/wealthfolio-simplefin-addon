@@ -122,6 +122,12 @@ describe('scrubStatusError', () => {
     }
   });
 
+  it('keeps an ordinary message whole: an earlier quote, the word "basic"', () => {
+    expect(scrubStatusError('Account "Checking": Unexpected token \'<\', "<!doctype "... is not valid JSON'))
+      .toBe('Account "Checking": a reply that is not valid JSON');
+    expect(scrubStatusError('Sync failed: basic validation check failed')).toBe('Sync failed: basic validation check failed');
+  });
+
   it('collapses control characters and newlines into one line', () => {
     expect(scrubStatusError('first\nsecond\r\n\tthird\u0007')).toBe('first second third');
   });
@@ -194,6 +200,8 @@ describe('statusServerConfig', () => {
       expect(statusServerConfig({ STATUS_PORT: bad })).toEqual({ warning: expect.stringContaining('STATUS_PORT') });
     }
     expect(statusServerConfig({ STATUS_PORT: '8090', MINIAPP_PORT: '8090' })).toEqual({ warning: expect.stringContaining('MINIAPP_PORT') });
+    expect(statusServerConfig({ STATUS_PORT: '8090', MINIAPP_PORT: ' 08090 ' })).toEqual({ warning: expect.stringContaining('MINIAPP_PORT') });
+    expect(statusServerConfig({ STATUS_PORT: '8090', MINIAPP_PORT: '8091' })).toEqual({ port: 8090 });
   });
 });
 

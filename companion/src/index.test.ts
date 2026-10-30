@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach, onTestFinished } from 'vitest';
-import { maskUrl, publishLiveReports, validateStartupEnv, startupWarnings, runCompanionSync, resolvePassword, sendDailyTelegramReport, sendWeeklyTelegramReport, sendMonthlyTelegramReport, previousYearMonth, sendImportNotice, readBudgetSnapshot, composeDailyDigestMessage, composeDailyDigest, composeWeeklyReportMessage, composeMonthlyWrapUpMessage, runCompanionSyncExclusive, markNotTransferExclusive, FIX_SYNC_RUNNING, syncStatus, wealthfolioDbPath, verifyProfileDatabase, createWealthfolioClient, resetProfileDbPinForTest, buildTelegramCommandHandler, applyTelegramDismissal, undoTelegramDismissal, formatDismissedReply, buildTelegramListenerDeps, buildCategorizeController, buildCategorizeDeps, rememberImportScope, sendUnmappedAccountsNotice, updateCheckDeps, buildAskSessions, cubeBuildDeps } from './index.js';
+import { maskUrl, publishLiveReports, validateStartupEnv, startupWarnings, runCompanionSync, resolvePassword, sendDailyTelegramReport, sendWeeklyTelegramReport, sendMonthlyTelegramReport, previousYearMonth, sendImportNotice, readBudgetSnapshot, composeDailyDigestMessage, composeDailyDigest, composeWeeklyReportMessage, composeMonthlyWrapUpMessage, runCompanionSyncExclusive, markNotTransferExclusive, FIX_SYNC_RUNNING, syncStatus, wealthfolioDbPath, verifyProfileDatabase, createWealthfolioClient, resetProfileDbPinForTest, profileDbFile, buildTelegramCommandHandler, applyTelegramDismissal, undoTelegramDismissal, formatDismissedReply, buildTelegramListenerDeps, buildCategorizeController, buildCategorizeDeps, rememberImportScope, sendUnmappedAccountsNotice, updateCheckDeps, buildAskSessions, cubeBuildDeps } from './index.js';
 import { findingHandle } from '../../shared/findings.js';
 import { whyRunHandle } from './why-menu.js';
 import { formatHelpReply, parseCommand } from '../../shared/telegram-commands.js';
@@ -72,6 +72,8 @@ vi.mock('./wealthfolio.js', () => {
   return {
     WealthfolioClient: vi.fn().mockImplementation(function (this: any) {
       this.login = vi.fn(async () => {});
+      // #50: opens the profile before the sync reads its database; a no-op here.
+      this.ensureProfile = vi.fn(async () => {});
       this.getAddonSecret = vi.fn(async (_addon: string, key: string) => {
         if (key === 'simplefin_access_url') return 'https://user:pass@bridge.simplefin.org/simplefin';
         return null;
@@ -255,6 +257,28 @@ describe('WEALTHFOLIO_PROFILE_ID (#50)', () => {
     expect(wealthfolioDbPath({ WEALTHFOLIO_DB_PATH: '/mnt/wealthfolio/wealthfolio.db' }, () => true)).toBe('/mnt/wealthfolio/wealthfolio.db');
   });
 
+  describe('profileDbFile: the file the check decides on, knowing whether the profile is the original', () => {
+    const configured = '/mnt/wealthfolio/wealthfolio.db';
+    const own = `/mnt/wealthfolio/profiles/${PROFILE}/app.db`;
+    const registry = '/mnt/wealthfolio/profiles.json';
+
+    it('the original profile keeps WEALTHFOLIO_DB_PATH', () => {
+      expect(profileDbFile(configured, PROFILE, true, () => true)).toBe(configured);
+    });
+
+    it('another profile reads its own file', () => {
+      expect(profileDbFile(configured, PROFILE, false, (p) => p === own || p === registry)).toBe(own);
+    });
+
+    it("beside profiles.json, a profile whose folder is missing gets its missing file, never the original's", () => {
+      expect(profileDbFile(configured, PROFILE, false, (p) => p === registry || p === configured)).toBe(own);
+    });
+
+    it("a path pointed straight at the profile's file (no profiles.json beside it) stands", () => {
+      expect(profileDbFile('/mnt/business/app.db', PROFILE, false, (p) => p === '/mnt/business/app.db')).toBe('/mnt/business/app.db');
+    });
+  });
+
   it('never builds a path from an ID that is not a UUID', () => {
     const seen: string[] = [];
     expect(wealthfolioDbPath({ WEALTHFOLIO_DB_PATH: '/mnt/w/w.db', WEALTHFOLIO_PROFILE_ID: '../../x' }, (p) => { seen.push(p); return true; })).toBe('/mnt/w/w.db');
@@ -302,8 +326,8 @@ describe('WEALTHFOLIO_PROFILE_ID (#50)', () => {
     vi.mocked(getNativeAccountIds).mockReturnValue(['acc-1']);
     try {
       createWealthfolioClient('http://wf');
-      const opts = vi.mocked(WealthfolioClient).mock.calls.at(-1)![1] as { verify: (a: Array<{ id: string }>) => void };
-      opts.verify([{ id: 'acc-1' }]);
+      const opts = vi.mocked(WealthfolioClient).mock.calls.at(-1)![1] as { verify: (a: Array<{ id: string }>, p: { legacy: boolean }) => void };
+      opts.verify([{ id: 'acc-1' }], { legacy: false });
       expect(vi.mocked(getNativeAccountIds)).toHaveBeenLastCalledWith(own);
       vi.mocked(exists).mockImplementation(() => false);
       expect(wealthfolioDbPath()).toBe(own);
@@ -367,6 +391,21 @@ describe('runCompanionSync', () => {
   it('calls runSyncCore using REST host and store adapters', async () => {
     await runCompanionSync();
     expect(runSyncCore).toHaveBeenCalledTimes(1);
+  });
+
+  it('with a profile, opens it before it reads the database path; without one, does not (#50)', async () => {
+    const { WealthfolioClient } = await import('./wealthfolio.js');
+    await runCompanionSync();
+    expect((vi.mocked(WealthfolioClient).mock.results.at(-1)!.value as any).ensureProfile).not.toHaveBeenCalled();
+    process.env.WEALTHFOLIO_PROFILE_ID = '22222222-2222-4222-8222-222222222222';
+    try {
+      await runCompanionSync();
+      const client = vi.mocked(WealthfolioClient).mock.results.at(-1)!.value as any;
+      expect(client.ensureProfile).toHaveBeenCalledTimes(1);
+      expect(client.ensureProfile.mock.invocationCallOrder[0]).toBeLessThan(client.getAddonSecret.mock.invocationCallOrder[0]);
+    } finally {
+      delete process.env.WEALTHFOLIO_PROFILE_ID;
+    }
   });
 
   it('records a returned run for the status page, with its counts (#51)', async () => {

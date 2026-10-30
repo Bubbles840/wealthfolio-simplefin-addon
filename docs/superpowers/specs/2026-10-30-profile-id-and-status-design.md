@@ -54,10 +54,19 @@ companion then stops, and the README says to keep one profile with no lock.
 - The check runs inside the client every time the profile opens. So it guards
   every consumer (the sync, the Telegram bot, the scheduled reports, the mini app),
   not only the sync.
-- **Finding the file:** use `<dir of WEALTHFOLIO_DB_PATH>/profiles/<id>/app.db` when
-  it exists, otherwise `WEALTHFOLIO_DB_PATH` itself. That covers the original
-  profile and someone who points straight at the profile's file. The add-on
-  folder follows the file, as it already does.
+- **Finding the file:** the check decides it each time the profile opens, from
+  what Wealthfolio says:
+  - The original profile (`isLegacy`) uses `WEALTHFOLIO_DB_PATH`.
+  - Any other profile uses `<dir of WEALTHFOLIO_DB_PATH>/profiles/<id>/app.db`.
+  - If `profiles.json` sits beside the configured file, that file is the
+    original profile's, so another profile never falls back to it; a missing
+    file is refused instead. Only a path with no `profiles.json` beside it
+    (pointed straight at the profile's file) stands as given.
+  - The sync opens the profile before it reads the path, so a profile's very
+    first sync reads the file Wealthfolio has just created, not a guess.
+  - The add-on folder follows the file, as it already does.
+  (Changed after the correctness review: the first draft fell back to the
+  configured file whenever the profile's own file didn't exist yet.)
 - Without a profile ID, the 423 message now says to set `WEALTHFOLIO_PROFILE_ID`.
 
 **Security:**
