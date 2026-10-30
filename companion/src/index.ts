@@ -19,6 +19,8 @@ import { parseFiledState } from '../../shared/bookkeeping-filing.js';
 import { CARD_REWRITE_SECRET_KEY, rewriteCardBookkeeping } from './card-bookkeeping-rewrite.js';
 import cron from 'node-cron';
 import { readFileSync, existsSync } from 'fs';
+import { dirname, join } from 'path';
+import { profileIdFromEnv } from './profile-id.js';
 import { SIMPLEFIN_REQUESTS_SECRET_KEY, requestsToday } from '../../shared/simplefin-budget.js';
 import { runSyncCore, descriptionFromComment, txIdFromComment } from '../../shared/sync-core.js';
 import type { SyncResult } from '../../shared/sync-core.js';
@@ -49,11 +51,108 @@ import { DISMISSAL_MAX_AGE_DAYS } from '../../shared/uncategorized.js';
  * agreement, plus the loud startup line when the file is absent.
  */
 const DEFAULT_WEALTHFOLIO_DB_PATH = '/mnt/wealthfolio.db';
-export function wealthfolioDbPath(): string {
-  return process.env.WEALTHFOLIO_DB_PATH || DEFAULT_WEALTHFOLIO_DB_PATH;
+/** The database file #50's check proved for this process's profile. Once set,
+ *  every reader uses it instead of deciding again: a profile folder that went
+ *  away must not quietly hand the readers another profile's file. */
+let pinnedProfileDb: { id: string; path: string } | null = null;
+
+/** Test-only: forget the proved file. */
+export function resetProfileDbPinForTest(): void {
+  pinnedProfileDb = null;
+}
+
+/**
+ * With `WEALTHFOLIO_PROFILE_ID` (#50): Wealthfolio 3.10 keeps every profile but
+ * the original in `<data dir>/profiles/<id>/app.db`, with its add-ons beside
+ * it, so that file is read when it exists. Otherwise `WEALTHFOLIO_DB_PATH`
+ * itself: the original profile, or a path that already points at the
+ * profile's file. `verifyProfileDatabase` proves the pick before it is used,
+ * and from then on the proved file is the answer.
+ */
+export function wealthfolioDbPath(env: NodeJS.ProcessEnv = process.env, fileExists: (path: string) => boolean = existsSync): string {
+  const configured = env.WEALTHFOLIO_DB_PATH || DEFAULT_WEALTHFOLIO_DB_PATH;
+  let profileId: string | null;
+  try {
+    profileId = profileIdFromEnv(env);
+  } catch {
+    // Refused at startup (validateStartupEnv); never part of a path.
+    return configured;
+  }
+  if (!profileId) return configured;
+  if (env === process.env && pinnedProfileDb?.id === profileId) return pinnedProfileDb.path;
+  const own = join(dirname(configured), 'profiles', profileId, 'app.db');
+  return fileExists(own) ? own : configured;
+}
+
+/**
+ * The database file of profile `profileId` as its check decides it (#50), once
+ * Wealthfolio has said whether it is the original profile:
+ * - the original profile keeps the pre-profile file, `WEALTHFOLIO_DB_PATH`;
+ * - any other keeps `<data dir>/profiles/<id>/app.db`. Beside `profiles.json`
+ *   the configured file is the ORIGINAL profile's, so it is never this one's,
+ *   even while this profile's folder does not exist yet: the answer is then
+ *   the missing file, and the check refuses it. Only a configured file with no
+ *   `profiles.json` beside it (pointed straight at the profile's file) stands.
+ */
+export function profileDbFile(
+  configured: string,
+  profileId: string,
+  legacy: boolean,
+  fileExists: (path: string) => boolean = existsSync,
+): string {
+  if (legacy) return configured;
+  const own = join(dirname(configured), 'profiles', profileId, 'app.db');
+  if (fileExists(own) || fileExists(join(dirname(configured), 'profiles.json'))) return own;
+  return configured;
+}
+
+/**
+ * #50's refusal: the database file must be the profile the API serves, or the
+ * companion would read one profile and write what it decides into another.
+ * Every account the API lists must be in the file, and an API with no accounts
+ * needs a file with none. A missing or unreadable file is refused too: a check
+ * that cannot run is not a pass.
+ */
+export function verifyProfileDatabase(
+  accounts: Array<{ id: string }>,
+  deps: { dbPath: string; exists: (path: string) => boolean; readIds: (path: string) => string[] } =
+    { dbPath: wealthfolioDbPath(), exists: existsSync, readIds: getNativeAccountIds },
+): void {
+  const { dbPath } = deps;
+  const fix = "Mount Wealthfolio's whole data folder (the one with profiles.json), or set WEALTHFOLIO_DB_PATH to this profile's profiles/<id>/app.db.";
+  if (!deps.exists(dbPath)) throw new Error(`No database file at ${dbPath} to check the profile against. ${fix}`);
+  const inFile = new Set(deps.readIds(dbPath));
+  if (accounts.length === 0) {
+    if (inFile.size > 0) throw new Error(`The database file ${dbPath} is not this profile's: the profile has no accounts and the file has ${inFile.size}. ${fix}`);
+    return;
+  }
+  const missing = accounts.filter((a) => !inFile.has(String(a?.id))).length;
+  if (missing > 0) {
+    throw new Error(`The database file ${dbPath} is not this profile's: ${missing} of its ${accounts.length} accounts are not in it. ${fix}`);
+  }
+}
+
+/** Every Wealthfolio client the companion uses, with the profile and its
+ *  database check when `WEALTHFOLIO_PROFILE_ID` is set (#50). */
+export function createWealthfolioClient(apiUrl: string): WealthfolioClient {
+  const profileId = profileIdFromEnv(process.env);
+  if (!profileId) return new WealthfolioClient(apiUrl, undefined);
+  return new WealthfolioClient(apiUrl, {
+    id: profileId,
+    // Decided afresh on every open, from what Wealthfolio says, and pinned only
+    // once proved.
+    verify: (accounts, { legacy }) => {
+      const dbPath = profileDbFile(process.env.WEALTHFOLIO_DB_PATH || DEFAULT_WEALTHFOLIO_DB_PATH, profileId, legacy);
+      verifyProfileDatabase(accounts, { dbPath, exists: existsSync, readIds: getNativeAccountIds });
+      if (pinnedProfileDb?.path !== dbPath) log(`Wealthfolio profile ${profileId}: reading its database at ${dbPath}`);
+      pinnedProfileDb = { id: profileId, path: dbPath };
+    },
+    log,
+  });
 }
 import { formatSelfCheckBlock, formatFindingsSummary, printsInFull } from '../../shared/self-check.js';
 import { readInstalledAddonVersion } from './installed-addon.js';
+import { createSyncStatus, outcomeOf, startStatusServer, statusServerConfig } from './status-server.js';
 import { getLedgerFacts } from './ledger-facts.js';
 import { REFUSED_ALERTED_SECRET_KEY, parseAnnouncedRefusals, unannouncedRefusals, withAnnouncedRefusals } from '../../shared/refused-alerts.js';
 import { gatherFindings, readSyncHealth, updateSnoozes, type FindingsDeps } from './daily-findings.js';
@@ -75,7 +174,7 @@ import type { GlyphStyle, InlineKeyboard } from '../../shared/telegram.js';
 import type { DismissalLedger } from './dismissals.js';
 import type { SyncHealth } from '../../shared/telegram.js';
 import { addonUnderstandsDividends, SIMPLEFIN_SYNC_VERSION, COMPANION_VERSION_SECRET_KEY, INSTALLED_ADDON_VERSION_SECRET_KEY, isNewerVersion } from '../../shared/version.js';
-import { getNativeWealthfolioSpending, getNativeWealthfolioSpendingBetween, getNativeWealthfolioBudgets, getNativeWealthfolioTopSpending, getNativeUncategorizedSpending, getNativeRuleCategorizedAmazonRows, getNativeCategorizedSpending, getNativeSpendingCategories, getNativeCategoryCatalog, getNativeSubcategorySpending, getNativeUncategorizedSpendingTotal, countRulePatternMatches, getNativeBudgetSpend, getNativeIncomeByMonthAccount, getNativeUncategorizedByMonthAccount, getNativeMerchantRows, getNativeDrillRows, getNativeFeesInterestByMonth, getNativeSpendDailyTotals, getNativeValuationByMonth, getNativeIncomeCategories } from './sqlite-native.js';
+import { getNativeWealthfolioSpending, getNativeWealthfolioSpendingBetween, getNativeWealthfolioBudgets, getNativeWealthfolioTopSpending, getNativeUncategorizedSpending, getNativeAccountIds, getNativeRuleCategorizedAmazonRows, getNativeCategorizedSpending, getNativeSpendingCategories, getNativeCategoryCatalog, getNativeSubcategorySpending, getNativeUncategorizedSpendingTotal, countRulePatternMatches, getNativeBudgetSpend, getNativeIncomeByMonthAccount, getNativeUncategorizedByMonthAccount, getNativeMerchantRows, getNativeDrillRows, getNativeFeesInterestByMonth, getNativeSpendDailyTotals, getNativeValuationByMonth, getNativeIncomeCategories } from './sqlite-native.js';
 import { publishUncategorizedStatusForDbPath } from './uncategorized-status.js';
 import { getNativePastFilings } from './sqlite-guess.js';
 import { createCategorizeController, SPENDING_TAXONOMY_ID } from './categorize.js';
@@ -181,6 +280,8 @@ export function validateStartupEnv(): void {
   if (!hasPassword) {
     throw new Error('Missing required authentication: set WEALTHFOLIO_PASSWORD, WEALTHFOLIO_PASSWORD_FILE, or WEALTHFOLIO_API_KEY');
   }
+  // #50: a malformed ID stops the daemon here, before it reaches a path or a request.
+  profileIdFromEnv(process.env);
 }
 
 /**
@@ -955,14 +1056,50 @@ export async function sendUnmappedAccountsNotice(
  * cron or startup run is scheduled (an hour since the last request, 16 a day).
  * The add-on's Sync button passes `manual` the same way; since 1.64 there is no
  * "Sync anyway" (src/pages/SyncPage.tsx).
+ *
+ * Every run, thrown or returned, is recorded for the status page (#51). The
+ * record wraps the WHOLE run because a failed Wealthfolio login throws before
+ * `sync_health` can be written, and that is the failure a headless install
+ * most needs to see.
  */
 export async function runCompanionSync(opts: { force?: boolean; manual?: boolean } = {}): Promise<SyncResult> {
+  const run = syncStatus.begin();
+  try {
+    const result = await runCompanionSyncOnce(opts);
+    run.finish(outcomeOf(result, notConfiguredResults.has(result)), result);
+    return result;
+  } catch (err) {
+    run.fail(formatError(err));
+    throw err;
+  }
+}
+
+/** The values the status page must never show, whatever an error says (#51). */
+function statusSecrets(): string[] {
+  const values = [process.env.WEALTHFOLIO_API_KEY ?? ''];
+  try {
+    const password = resolvePassword();
+    values.push(password, encodeURIComponent(password));
+  } catch {
+    // An unreadable password file: nothing to blank out.
+  }
+  return values.filter((v) => v.length >= 4);
+}
+
+/** The status page's record of this process's runs (#51). */
+export const syncStatus = createSyncStatus(undefined, statusSecrets);
+
+/** The companion's own "no access URL" return, which says nothing in `errors`
+ *  (its callers log and reply from that list), told apart for the status page. */
+const notConfiguredResults = new WeakSet<SyncResult>();
+
+async function runCompanionSyncOnce(opts: { force?: boolean; manual?: boolean }): Promise<SyncResult> {
   // The checks compare the report's figure only from a cube THIS run published (M-2).
   const runStartedAt = new Date();
   const apiUrl = process.env.WEALTHFOLIO_API_URL ?? '';
   if (!apiUrl) throw new Error('Missing WEALTHFOLIO_API_URL');
 
-  const wfClient = new WealthfolioClient(apiUrl);
+  const wfClient = createWealthfolioClient(apiUrl);
   const apiKey = process.env.WEALTHFOLIO_API_KEY;
   log(`Connecting to Wealthfolio at ${apiUrl}...`);
   if (apiKey) {
@@ -988,6 +1125,9 @@ export async function runCompanionSync(opts: { force?: boolean; manual?: boolean
     }
   }
 
+  // #50: open and check the profile first, so the database path read just below
+  // is the file the check proved, not a guess made before the profile existed.
+  if (profileIdFromEnv(process.env)) await wfClient.ensureProfile();
   const store = new RestSyncStore(wfClient);
   // The database path enables the ledger-balance fallback, which is what lets a
   // credit card get a starting balance at all (Wealthfolio values cash only).
@@ -1016,6 +1156,7 @@ export async function runCompanionSync(opts: { force?: boolean; manual?: boolean
       // acceptable blind spot since nothing in this codebase clears that
       // secret except the addon's own setup flow.
       await updateSyncHealth(wfClient, null);
+      notConfiguredResults.add(empty);
       return empty;
     }
 
@@ -4284,7 +4425,7 @@ if (!process.env.VITEST) {
   for (const warning of startupWarnings()) log(`WARNING: ${warning}`);
 
   const apiUrl = process.env.WEALTHFOLIO_API_URL ?? '';
-  const wfClient = new WealthfolioClient(apiUrl);
+  const wfClient = createWealthfolioClient(apiUrl);
 
   // Version FIRST in the banner: "which build is running?" is the first
   // question any live diagnosis asks, and until 1.7.0 the only answer was
@@ -4298,6 +4439,8 @@ if (!process.env.VITEST) {
     log(`ERROR: Wealthfolio database not found at ${wealthfolioDbPath()} — reports will be empty until it appears. Check the volume mount and WEALTHFOLIO_DB_PATH.`);
   }
   log(`Starting companion v${SIMPLEFIN_SYNC_VERSION} — sync schedule: ${schedule}, daily report schedule: ${dailySchedule}, weekly report schedule: ${weeklySchedule}, monthly report schedule: ${monthlySchedule}`);
+  const profileId = profileIdFromEnv(process.env);
+  if (profileId) log(`Syncing Wealthfolio profile ${profileId}; its database file is checked against Wealthfolio before use.`);
   // Only the running daemon checks for updates; see updateCheckDeps.
   updateCheckDeps.armed = true;
 
@@ -4366,6 +4509,16 @@ if (!process.env.VITEST) {
         });
       });
     }).listen(miniappPort, () => log(`Mini app dashboard listening on :${miniappPort}`));
+  }
+
+  // The status page (#51), served only when STATUS_PORT is set. Read-only and
+  // unauthenticated by design: it serializes the in-memory run record and
+  // nothing else; see status-server.ts.
+  const statusConfig = statusServerConfig();
+  if (statusConfig && 'warning' in statusConfig) {
+    log(`WARNING: ${statusConfig.warning}`);
+  } else if (statusConfig) {
+    startStatusServer({ ...statusConfig, version: SIMPLEFIN_SYNC_VERSION, read: () => syncStatus.snapshot(), log });
   }
 
   cron.schedule(schedule, () => {

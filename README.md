@@ -184,8 +184,9 @@ Before or right after you upgrade:
 - If you reach Wealthfolio through a proxy (Tailscale or tsdproxy), set
   `WF_CORS_ALLOW_ORIGINS` to the exact URL you open it at. Otherwise the app and
   the add-on may not load.
-- Keep one default profile with no lock. The companion stops with
-  `PROFILE_LOCKED` otherwise.
+- Several profiles, or a profile with a lock? The companion stops with
+  `PROFILE_LOCKED` unless you set `WEALTHFOLIO_PROFILE_ID` to the profile to
+  sync, which must have no lock. See [Several Wealthfolio profiles](#several-wealthfolio-profiles).
 - Keep the database unencrypted (`WF_DB_REQUIRE_ENCRYPTION` off). The companion
   reads it directly.
 - After the upgrade, Wealthfolio rebuilds every account's history. Wait until its
@@ -420,6 +421,78 @@ Pin `:vX.Y.Z` instead of `:latest` if you would rather upgrade deliberately.
 The companion logs its version on startup (`Starting companion v…`), and the
 addon shows a banner when the tab, the installed addon and the companion
 are different versions, naming the fix (reload, upload the zip, or pull the image).
+
+#### Several Wealthfolio profiles
+
+Since 3.10, Wealthfolio can hold several profiles. With more than one, or with
+a lock on the only one, the companion has to be told which profile to sync:
+
+```yaml
+    environment:
+      - WEALTHFOLIO_PROFILE_ID=5b4bfbdb-d5c3-46f0-bda0-be33681322f5
+```
+
+- **Finding the ID.** `profiles.json` in Wealthfolio's data folder lists every
+  profile's `id` and `name`. If the ID you set doesn't exist, the companion's
+  log lists the profiles.
+- **The profile's session.** The companion opens the profile for itself, so it
+  doesn't change the profile anyone sees in the browser. The add-on has to be
+  set up in that same profile.
+- **The database file.** Keep the volume mount from the snippet above, the
+  whole data folder. Wealthfolio keeps each profile's database at
+  `profiles/<id>/app.db` in that folder, and the companion reads the right file
+  for the profile without any change to `WEALTHFOLIO_DB_PATH`.
+- **The safety check.** Before the companion uses the profile, it checks that
+  every account Wealthfolio lists is in the database file it reads. If not, or
+  if it can't find the file, it doesn't sync. It would otherwise read one
+  profile and write into another. The log names the file it found and how to
+  fix the mount.
+- **Locks.** A profile with a lock can't be synced. Remove the lock in
+  Wealthfolio, or pick another profile.
+
+#### Status page (optional)
+
+Running the companion headless? Set `STATUS_PORT` (say `8099`) and it answers
+`GET /status` on that port with its last run:
+
+```json
+{ "version": "1.71.0", "ok": true, "running": false,
+  "lastRun": { "startedAt": "…", "finishedAt": "…", "outcome": "synced",
+               "imported": 3, "skipped": 120, "error": null },
+  "lastSyncedAt": "…" }
+```
+
+Each `outcome` and the status it returns:
+- `synced`: 200.
+- `limited`: 200. SimpleFin's daily request limit stopped the download.
+- `too-soon`: 200. The last sync was under an hour ago.
+- `not-configured`: 200. The add-on isn't set up yet.
+- `failed`: **503**, with the reason in `error`.
+
+Before the first run finishes, `lastRun` is `null` and the status is 200.
+The record covers the companion's own syncs since it started. A sync started
+from the add-on in Wealthfolio isn't included.
+
+The page has no login, so it holds nothing private:
+- no amounts, account names or bank names;
+- passwords, tokens and URL credentials are masked out of `error`, and any text
+  a server sent is left out (the log keeps the full message);
+- requests to it never start a sync or touch Wealthfolio.
+
+Anyone who can reach the port can read it, so only publish the port where you
+want it seen. `STATUS_HOST=127.0.0.1` keeps it inside the container, for a
+healthcheck only:
+
+```yaml
+    environment:
+      - STATUS_PORT=8099
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8099/status').then(r => process.exit(r.ok ? 0 : 1), () => process.exit(1))"]
+      interval: 5m
+      start_period: 2m
+```
+
+Docker only marks the container unhealthy. It doesn't restart it.
 
 ### Amazon auto-categorization
 

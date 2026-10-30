@@ -456,7 +456,7 @@ describe('WealthfolioClient', () => {
     mockFetch.mockResolvedValueOnce({ ok: false, status: 423, text: async () => '{"code":"PROFILE_LOCKED"}' });
     const client = new WealthfolioClient('http://wf');
     await expect(client.getAccounts()).rejects.toThrow(
-      'Wealthfolio refused the request: a profile is locked or there is more than one profile (HTTP 423 PROFILE_LOCKED). The companion supports one default profile with no lock.',
+      'Wealthfolio refused the request: a profile is locked or there is more than one profile (HTTP 423 PROFILE_LOCKED). Set WEALTHFOLIO_PROFILE_ID to the profile to sync; it must have no lock.',
     );
   });
 });

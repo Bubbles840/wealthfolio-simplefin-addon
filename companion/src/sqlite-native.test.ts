@@ -1,7 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import { neutralAdjustmentFields } from '../../shared/sync-core.js';
 import { getNativeRuleCategorizedAmazonRows, getNativeWealthfolioSpending, getNativeWealthfolioSpendingBetween, getNativeWealthfolioBudgets, getNativeWealthfolioTopSpending,
-  getNativeAccountBalances, nativeDbUris, getNativeUncategorizedSpendingTotal, getNativeUncategorizedSpending, getNativeCategoryCatalog, getNativeSubcategorySpending, getNativeSpendingCategories, getNativeCategorizedSpending } from './sqlite-native.js';
+  getNativeAccountBalances, nativeDbUris, getNativeUncategorizedSpendingTotal, getNativeUncategorizedSpending, getNativeCategoryCatalog, getNativeSubcategorySpending, getNativeSpendingCategories, getNativeCategorizedSpending, getNativeAccountIds } from './sqlite-native.js';
 import { DatabaseSync } from 'node:sqlite';
 import { mkdtempSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
@@ -1975,5 +1975,36 @@ describe('nativeDbUris — a live read or none (1.64, B2)', () => {
       'file:/mnt/wealthfolio.db?mode=ro', 'file:/mnt/wealthfolio.db?mode=ro&readonly_shm=1',
     ]);
     expect(nativeDbUris('file:/x.db', true)).toEqual(['file:/x.db']);
+  });
+});
+
+describe('getNativeAccountIds (#50: is this file the profile the API serves?)', () => {
+  it('lists every account id, archived ones included', () => {
+    const { path, cleanup } = makeTestDb();
+    try {
+      const db = new DatabaseSync(path);
+      db.exec(`DELETE FROM accounts;
+               INSERT INTO accounts (id, name, account_type, is_archived) VALUES ('wf-b', 'B', 'CASH', 1), ('wf-a', 'A', 'CREDIT_CARD', 0);`);
+      db.close();
+      expect(getNativeAccountIds(path)).toEqual(['wf-a', 'wf-b']);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it('is empty for a database with no accounts', () => {
+    const { path, cleanup } = makeTestDb();
+    try {
+      const db = new DatabaseSync(path);
+      db.exec('DELETE FROM accounts;');
+      db.close();
+      expect(getNativeAccountIds(path)).toEqual([]);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it('throws, never "no accounts", when the file cannot be read', () => {
+    expect(() => getNativeAccountIds('/nonexistent/wealthfolio.db')).toThrow(NativeDbUnreadableError);
   });
 });
