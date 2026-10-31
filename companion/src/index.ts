@@ -249,6 +249,8 @@ import { parseCustomReports } from '../../shared/report-eval.js';
 import { sliceCubeMonths } from '../../shared/report-cube.js';
 import { handleReportsRequest } from './reports-server.js';
 import { buildReportCube, type CubeBuildDeps } from './report-cube-build.js';
+import { createReceiptHost } from './receipt-host.js';
+import { getNativeSpendRows, getNativeSpendingSettings } from './sqlite-native.js';
 
 const logLevel: 'info' | 'debug' =
   process.env.LOG_LEVEL === 'debug' ? 'debug' : 'info';
@@ -4039,6 +4041,78 @@ export function buildTelegramCommandHandler(
  *  outlive a process that runs for weeks. Half an hour sits between the two. */
 const LISTENER_SESSION_MAX_AGE_MS = 30 * 60 * 1000;
 
+/** The receipt reader, shared by the listener (photos, taps) and the schedule (drain, after-sync filing). */
+let sharedReceiptHost: ReturnType<typeof createReceiptHost> | null = null;
+
+/** The Telegram bot's token and chat, or null when Telegram is off. */
+async function readTelegramTarget(wfClient: WealthfolioClient): Promise<{ botToken: string; chatId: string } | null> {
+  const tg = parseSecretJson<any>(await wfClient.getAddonSecret('simplefin-sync', 'telegram_config').catch(() => null), 'telegram_config');
+  return tg?.botToken && tg?.chatId && tg.enabled !== false ? { botToken: String(tg.botToken), chatId: String(tg.chatId) } : null;
+}
+
+/** The receipt reader over the companion's client, database and bot (companion/src/receipt-host.ts). */
+export function buildReceiptHost(wfClient: WealthfolioClient): ReturnType<typeof createReceiptHost> {
+  return createReceiptHost({
+    io: {
+      get: (key) => wfClient.getAddonSecret('simplefin-sync', key),
+      set: (key, value) => wfClient.setAddonSecret('simplefin-sync', key, value),
+    },
+    fetchImpl: fetch,
+    downloadPhoto: async (fileId) => {
+      const tg = await readTelegramTarget(wfClient);
+      if (!tg) throw new Error('Telegram is not set up');
+      const signal = AbortSignal.timeout(60_000);
+      const meta = await fetch(`https://api.telegram.org/bot${tg.botToken}/getFile?file_id=${encodeURIComponent(fileId)}`, { signal }).then((r) => r.json()) as any;
+      if (!meta?.ok || typeof meta.result?.file_path !== 'string') throw new Error(`Telegram getFile failed: ${meta?.description ?? 'no file path'}`);
+      const res = await fetch(`https://api.telegram.org/file/bot${tg.botToken}/${meta.result.file_path}`, { signal });
+      if (!res.ok) throw new Error(`downloading the photo failed: HTTP ${res.status}`);
+      return new Uint8Array(await res.arrayBuffer());
+    },
+    send: async (text, keyboard) => {
+      const tg = await readTelegramTarget(wfClient);
+      if (!tg) return;
+      const result = await sendTelegramMessage(tg.botToken, tg.chatId, text, undefined, keyboard).catch((err) => ({ ok: false, description: formatError(err) }));
+      if (!result.ok) log(`Receipt reader: a message was not delivered: ${result.description}`);
+    },
+    categories: () => getNativeSpendingCategories(wealthfolioDbPath()).map((c) => ({ id: c.id, name: c.name, parentId: c.parentId })),
+    spendRows: (from, to) => getNativeSpendRows(wealthfolioDbPath(), from, to),
+    spendingAccountIds: () => {
+      const ids = getNativeSpendingSettings(wealthfolioDbPath()).spendingAccountIds;
+      return ids.length > 0 ? ids : null;
+    },
+    cashAccounts: async () => (await wfClient.getAccounts())
+      .filter((a) => a.accountType === 'CASH' && !a.isArchived && a.isActive !== false)
+      .map((a) => ({ id: a.id, name: a.name ?? a.id, currency: a.currency || 'USD' })),
+    wf: {
+      replaceSplits: (id, lines) => wfClient.replaceActivitySplits(id, lines),
+      clearSplits: (id) => wfClient.clearActivitySplits(id),
+      spendingCategoryOf: async (id) => (await wfClient.getActivityAssignments(id)).find((a) => a.taxonomyId === 'spending_categories')?.categoryId ?? null,
+      assign: (id, categoryId) => wfClient.assignActivityCategory(id, 'spending_categories', categoryId),
+      // One request per row: each new id then belongs to exactly the row that asked for it.
+      create: async (writes) => {
+        const ids: string[] = [];
+        for (const write of writes) {
+          const res = await wfClient.saveMany({ creates: [write] });
+          const id = res.created[0]?.id;
+          if (res.errors.length || typeof id !== 'string') {
+            if (ids.length) await wfClient.saveMany({ deleteIds: ids }).catch(() => {});
+            throw new Error(String(res.errors[0]?.message ?? 'create refused'));
+          }
+          ids.push(id);
+        }
+        return ids;
+      },
+      remove: async (ids) => {
+        const res = await wfClient.saveMany({ deleteIds: ids });
+        if (res.errors.length) throw new Error(String(res.errors[0]?.message ?? 'delete refused'));
+      },
+    },
+    log,
+    now: () => new Date(),
+    randomId: () => Math.random().toString(36).slice(2, 10).padEnd(8, '0'),
+  });
+}
+
 /**
  * Everything `startTelegramListener` needs, built around one `wfClient`.
  *
@@ -4086,6 +4160,8 @@ export function buildTelegramListenerDeps(wfClient: WealthfolioClient): Telegram
   /** ONE question slot for commands, plain answers and taps alike. */
   const asks = buildAskSessions(wfClient, categorize, why);
   const runCommand = buildTelegramCommandHandler(wfClient, categorize, asks, why, audit, budgets);
+  /** The receipt reader: photos arrive through `onPhoto`, its buttons through `onMenuCallback`. */
+  const receipts = sharedReceiptHost ??= buildReceiptHost(wfClient);
 
   /** The Amazon label picker. Shares the `cz:` callback prefix, so
    *  `onMenuCallback` below asks it first and only then falls through to the
@@ -4304,6 +4380,7 @@ export function buildTelegramListenerDeps(wfClient: WealthfolioClient): Telegram
       await runCommand(cmd, reply);
     },
     onText: (text, reply, ctx) => asks.onText(text, reply, ctx),
+    onPhoto: (photo, reply) => receipts.onPhoto(photo, reply),
     // Every `cz:` tap, including the import notice's `Categorize these` (which
     // the controller special-cases into a FRESH message — the notice is not the
     // menu). Written as a lambda rather than `categorize.onCallback` so the
@@ -4320,6 +4397,11 @@ export function buildTelegramListenerDeps(wfClient: WealthfolioClient): Telegram
     // because editing would draw the menu over the notice and destroy the only
     // record in the chat of what just imported.
     onMenuCallback: async (cb, ui) => {
+      // `cz:rc:` is the receipt reader's, before anything that would read it as an expired menu.
+      if (receipts.handles(cb.data)) {
+        await receipts.onCallback(cb, ui);
+        return;
+      }
       // First: `cz:ak:` is the question engine's, and the transaction menu
       // below would read it as an expired menu.
       if (asks.handles(cb.data)) {
@@ -4525,7 +4607,16 @@ if (!process.env.VITEST) {
     // Exclusive: `/sync` (Task 6) can fire in between two schedule ticks, and
     // the two must share one lock rather than run two syncs against the same
     // SimpleFin session and database at once.
-    runCompanionSyncExclusive().result.catch((err) => log(`Sync error: ${formatError(err)}`));
+    // After it, a confirmed receipt whose card charge just arrived is filed.
+    runCompanionSyncExclusive().result
+      .then(() => sharedReceiptHost?.retryWaiting())
+      .catch((err) => log(`Sync error: ${formatError(err)}`));
+  });
+
+  // The receipt reader's queue: a photo sent while the reading computer was
+  // asleep is read within 5 minutes of it waking. Never rejects.
+  cron.schedule('*/5 * * * *', () => {
+    void sharedReceiptHost?.tick();
   });
 
   cron.schedule(dailySchedule, () => {
@@ -4590,5 +4681,7 @@ if (!process.env.VITEST) {
   // of starting a second sync against the same SimpleFin session and database.
   // The `.catch` is not optional: an unhandled rejection here takes the daemon
   // down and stops syncing entirely.
-  runCompanionSyncExclusive().result.catch((err) => log(`Initial sync error: ${formatError(err)}`));
+  runCompanionSyncExclusive().result
+    .then(() => sharedReceiptHost?.retryWaiting())
+    .catch((err) => log(`Initial sync error: ${formatError(err)}`));
 }

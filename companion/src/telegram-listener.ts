@@ -73,6 +73,16 @@ export interface TelegramListenerDeps {
     ctx: { privateChat: boolean },
   ) => Promise<void>;
   /**
+   * A photo — or an image sent as a file — from the configured chat: a receipt
+   * for the receipt reader (companion/src/receipt-host.ts). OPTIONAL: absent
+   * keeps the old behaviour of ignoring photos. `reply` carries the same
+   * never-rejects guarantee as `onCommand`'s.
+   */
+  onPhoto?: (
+    photo: { fileId: string; fileUniqueId: string },
+    reply: (text: string, keyboard?: InlineKeyboard) => Promise<void>,
+  ) => Promise<void>;
+  /**
    * Menu-button taps (callback_data starting with 'cz:'). OPTIONAL: absent
    * means such callbacks are answered with a generic expiry notice. `ui`
    * mirrors `reply`'s guarantee: NONE of its methods ever reject — transport
@@ -97,6 +107,21 @@ export interface TelegramListenerDeps {
     },
   ) => Promise<void>;
   sleep: (ms: number) => Promise<void>;
+}
+
+/** A message's photo — the largest size Telegram sent — or an image sent as a file; null when it has neither. */
+export function photoOf(message: any): { fileId: string; fileUniqueId: string } | null {
+  const sizes = Array.isArray(message?.photo) ? message.photo : [];
+  const largest = sizes.at(-1);
+  if (typeof largest?.file_id === 'string' && typeof largest?.file_unique_id === 'string') {
+    return { fileId: largest.file_id, fileUniqueId: largest.file_unique_id };
+  }
+  const doc = message?.document;
+  if (typeof doc?.mime_type === 'string' && doc.mime_type.startsWith('image/')
+    && typeof doc.file_id === 'string' && typeof doc.file_unique_id === 'string') {
+    return { fileId: doc.file_id, fileUniqueId: doc.file_unique_id };
+  }
+  return null;
 }
 
 /** Derived from the dep rather than declared twice, so the two cannot drift. */
@@ -283,6 +308,23 @@ export function startTelegramListener(deps: TelegramListenerDeps): { stop: () =>
     // on a field that isn't there is how a bot answers strangers.
     if (message?.chat?.id !== Number(config.chatId)) {
       noteForeignChat(message?.chat?.id);
+      return;
+    }
+    const photo = photoOf(message);
+    if (photo) {
+      if (!deps.onPhoto) return;
+      const safePhotoReply = async (body: string, keyboard?: InlineKeyboard): Promise<void> => {
+        try {
+          await reply(config, body, keyboard);
+        } catch (err) {
+          safeLog(`Telegram listener: reply to a photo was not delivered: ${formatError(err)}`);
+        }
+      };
+      try {
+        await deps.onPhoto(photo, safePhotoReply);
+      } catch (err) {
+        safeLog(`Telegram listener: handling a photo failed: ${formatError(err)}`);
+      }
       return;
     }
     const parsed = parseCommand(message?.text, config.botName);

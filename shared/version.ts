@@ -265,3 +265,16 @@ export function versionMismatchNotice(
     text: `This tab is running v${thisBuild} and the companion is v${companion}. Reload this tab (Cmd/Ctrl+Shift+R); if this stays, upload simplefin-sync-${companion}.zip in Wealthfolio's addon settings.`,
   };
 }
+
+/**
+ * The first release whose companion reads receipts sent to the bot
+ * (companion/src/receipt-host.ts). Only the companion can reach the computer
+ * running the model, so the add-on shows the Receipt reader card only with
+ * such a companion. Raise to the release that ships this.
+ */
+export const RECEIPTS_SINCE = '1.72.0';
+
+/** No companion (null) is false: nothing else would read the photos. */
+export function companionReadsReceipts(companionVersion: string | null): boolean {
+  return companionVersion !== null && isAtLeastVersion(companionVersion.trim(), RECEIPTS_SINCE);
+}

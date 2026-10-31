@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, onTestFinished } from 'vitest';
-import { startTelegramListener, type TelegramListenerDeps } from './telegram-listener.js';
+import { photoOf, startTelegramListener, type TelegramListenerDeps } from './telegram-listener.js';
 import { TELEGRAM_COMMAND_MENU } from '../../shared/telegram-commands.js';
 
 const CHAT_ID = '42';
@@ -274,6 +274,30 @@ describe('startTelegramListener — command dispatch', () => {
     expect(onText.mock.calls[0][0]).toBe('  25  ');
     expect(h.onCommand).not.toHaveBeenCalled();
     expect(bodyOf(h.calls('/sendMessage')[0])).toMatchObject({ chat_id: CHAT_ID, text: 'got it' });
+  });
+
+  it('hands the largest size of a photo to onPhoto, and replies through sendMessage', async () => {
+    const onPhoto = vi.fn(async (_p: unknown, reply: (t: string) => Promise<void>) => { await reply('reading it'); });
+    const h = harness({ onPhoto: onPhoto as any });
+    const photo = {
+      update_id: 16,
+      message: { chat: { id: Number(CHAT_ID), type: 'private' }, photo: [{ file_id: 'small', file_unique_id: 'us' }, { file_id: 'big', file_unique_id: 'ub' }] },
+    };
+    h.fetchImpl
+      .mockResolvedValueOnce(apiOkResponse())
+      .mockResolvedValueOnce(updatesResponse([photo]))
+      .mockResolvedValue(updatesResponse([]));
+    const listener = start(h.deps);
+    await waitFor('reply sent', () => h.calls('/sendMessage').length >= 1);
+    await listener.stop();
+    expect(onPhoto.mock.calls[0][0]).toEqual({ fileId: 'big', fileUniqueId: 'ub' });
+    expect(bodyOf(h.calls('/sendMessage')[0])).toMatchObject({ text: 'reading it' });
+  });
+
+  it('reads an image sent as a file as a photo, and nothing else as one', () => {
+    expect(photoOf({ document: { mime_type: 'image/jpeg', file_id: 'f', file_unique_id: 'u' } })).toEqual({ fileId: 'f', fileUniqueId: 'u' });
+    expect(photoOf({ document: { mime_type: 'application/pdf', file_id: 'f', file_unique_id: 'u' } })).toBeNull();
+    expect(photoOf({ text: 'hi' })).toBeNull();
   });
 
   it("does not hand another bot's /cmd@Other to onText", async () => {

@@ -95,6 +95,9 @@ const makeProps = () => ({
     getSubcategoryDisplay: vi.fn(async () => 'rollup' as const),
     setSubcategoryDisplay: vi.fn(async () => {}),
     getCompanionVersion: vi.fn(async () => null),
+    getReceiptReaderConfig: vi.fn(async () => ({ enabled: true, url: '', model: 'qwen2.5vl:32b' })),
+    setReceiptReaderConfig: vi.fn(async () => {}),
+    getReceiptHostStatus: vi.fn(async () => null),
     getOpenCards: vi.fn(async () => ({}) as Record<string, boolean>),
     // async, like the real SecretsStore method — the page fires it and forgets,
     // so it has to be thenable
