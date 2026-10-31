@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'fs';
 import { join } from 'path';
 import {
-  addonUnderstandsDividends, companionUnderstandsDividends,
+  addonUnderstandsDividends, companionReadsReceipts, companionUnderstandsDividends, RECEIPTS_SINCE,
   companionUnderstandsIgnoreRules, companionUnderstandsLoanBalances, companionUnderstandsRelinks, DIVIDEND_SECURITIES_SINCE,
   IGNORE_RULES_SINCE, LOAN_BALANCES_SINCE, RELINKS_SINCE, SIMPLEFIN_SYNC_VERSION,
 } from './version.js';
@@ -146,5 +146,13 @@ describe('the dividend gate', () => {
     expect(addonUnderstandsDividends(DIVIDEND_SECURITIES_SINCE)).toBe(true);
     expect(addonUnderstandsDividends('1.68.0')).toBe(false);
     expect(addonUnderstandsDividends(null)).toBe(false);
+  });
+});
+
+describe('the receipt reader gate', () => {
+  it('opens at the release whose companion reads receipts, and never without a companion', () => {
+    expect(companionReadsReceipts(RECEIPTS_SINCE)).toBe(true);
+    expect(companionReadsReceipts('1.71.0')).toBe(false);
+    expect(companionReadsReceipts(null)).toBe(false);
   });
 });
