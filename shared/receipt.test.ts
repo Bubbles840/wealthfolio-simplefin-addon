@@ -220,6 +220,23 @@ describe('buildReceipt', () => {
     expect(buildReceipt(till({ subtotal: '84.99' })).ok).toBe(true);
   });
 
+  it('accepts a till subtotal that counts a fee, and shares the fee out once', () => {
+    const lines: TranscriptLine[] = [
+      item('TOYS', '20.00', { flag: 'T' }), item('TOPS', '30.00', { flag: 'T' }),
+      { kind: 'charge', text: 'BAG FEE', amount: '0.10', flag: 'N' },
+    ];
+    const r = built(till({ lines, subtotal: '50.10', tax: '4.25', total: '54.35', taxLines: [{ flag: '', rate: '8.5%', amount: '4.25' }],
+      payments: [{ label: 'MASTERCARD', amount: '54.35' }] }));
+    expect([r.chargesCents, r.totalCents, itemTotal(r)]).toEqual([10, 5435, 5435]);
+    expect(r.items.map((i) => i.taxCents)).toEqual([170, 255]);
+  });
+
+  it('still refuses a subtotal that is neither the items alone nor the items and fees', () => {
+    const lines: TranscriptLine[] = [item('TOYS', '20.00'), { kind: 'charge', text: 'BAG FEE', amount: '0.10' }];
+    expect(buildReceipt(till({ lines, subtotal: '20.20', tax: '0.00', total: '20.30', taxLines: [], payments: [{ label: 'VISA', amount: '20.30' }] })))
+      .toEqual({ ok: false, problem: 'lines-dont-add-up' });
+  });
+
   it.each([
     ['no-date', { date: '03/14/2027' }],
     ['no-items', { lines: [] }],

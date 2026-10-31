@@ -316,8 +316,9 @@ export function buildReceipt(t: ReceiptTranscript, knownRates: readonly number[]
     net -= missing[0].cents;
   }
   const gross = kept.reduce((s, i) => s + i.gross, 0);
-  // An order page prints the subtotal before its item discounts, a till receipt after them.
-  if (subtotal !== net && subtotal !== gross) return { ok: false, problem: 'lines-dont-add-up' };
+  // An order page prints the subtotal before its item discounts, a till receipt
+  // after them; a till's subtotal also counts a fee such as a bag fee.
+  if (![net, gross, net + charges, gross + charges].includes(subtotal)) return { ok: false, problem: 'lines-dont-add-up' };
   const orderCents = net + charges + tax;
 
   // Payments: what each printed line paid. A card whose amount is not printed
