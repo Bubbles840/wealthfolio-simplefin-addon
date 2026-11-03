@@ -580,9 +580,11 @@ export function getNativeUncategorizedSpending(
   const T = hasActivityTypeOverride(dbPath)
     ? "UPPER(COALESCE(NULLIF(TRIM(a.activity_type_override), ''), a.activity_type, ''))"
     : "UPPER(COALESCE(a.activity_type, ''))";
-  // A split row is filed on its lines and carries no assignment of its own.
+  // A split row is filed on its lines and carries no assignment of its own. In
+  // ANY taxonomy: a deposit splits on its own bucket's (income), and
+  // Wealthfolio 3.12 refuses a category on a row split in any of them.
   const NOT_SPLIT = hasSpendingSplits(dbPath)
-    ? `AND NOT EXISTS (SELECT 1 FROM spending_activity_splits s WHERE s.activity_id = a.id AND s.taxonomy_id = '${SPENDING_TAXONOMY}')`
+    ? 'AND NOT EXISTS (SELECT 1 FROM spending_activity_splits s WHERE s.activity_id = a.id)'
     : '';
   const query = `
     SELECT a.id, COALESCE(a.account_id, ''), COALESCE(a.notes, ''),

@@ -67,6 +67,33 @@ describe('fileCardOpeningDebts', () => {
     expect(res).toEqual({ filed: 1 });
   });
 
+  // Wealthfolio 3.12 refuses a category on a row with split lines, and it
+  // answers 500, so trying would fail again on every sync.
+  it('leaves a card opening debt that has split lines alone', async () => {
+    const d = deps(ledger(`
+      CREATE TABLE spending_activity_splits (id TEXT, activity_id TEXT, taxonomy_id TEXT, category_id TEXT, amount TEXT, sort_order INTEGER);
+      INSERT INTO activities VALUES ('o','card','WITHDRAWAL','2026-04-20','464.6','Starting balance · sfc');
+      INSERT INTO spending_activity_splits VALUES ('s1','o','spending_categories','c1','464.6',0);
+    `));
+    expect(await fileCardOpeningDebts(d)).toEqual({ filed: 0 });
+    expect(d.assign).not.toHaveBeenCalled();
+    expect(d.createCategory).not.toHaveBeenCalled();
+  });
+
+  // Renaming the category keeps its key, and Wealthfolio 3.12 refuses a
+  // second category with that key: creating it again would fail every sync.
+  it('reuses the category by its key after the person renamed it', async () => {
+    const d = deps(ledger(`
+      ALTER TABLE taxonomy_categories ADD COLUMN key TEXT;
+      INSERT INTO taxonomy_categories VALUES ('ob','Card openings',NULL,'spending_categories','opening_balances');
+      INSERT INTO app_settings VALUES ('spending.excluded_category_ids','["ob"]');
+      INSERT INTO activities VALUES ('o','card','WITHDRAWAL','2026-04-20','464.6','Starting balance · sfc');
+    `));
+    expect(await fileCardOpeningDebts(d)).toEqual({ filed: 1 });
+    expect(d.createCategory).not.toHaveBeenCalled();
+    expect(d.assign).toHaveBeenCalledWith('o', 'ob');
+  });
+
   it('does nothing — no category, no setting — when there is no card opening debt', async () => {
     // A cash opening balance is a neutral CREDIT, a card opening credit a
     // neutral TRANSFER_IN, and a user's own purchase is theirs to file.

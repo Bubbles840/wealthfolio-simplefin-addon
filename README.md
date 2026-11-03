@@ -24,7 +24,7 @@ That's it: saving the mapping runs the first sync and turns on auto-sync every
 6 hours. Rules, the Telegram bot and Amazon categorization are optional, and
 live in **Settings** when you want them.
 
-You need Wealthfolio **3.8 or newer** (it works with 3.10) and a SimpleFin account with a one-time
+You need Wealthfolio **3.8 or newer** (it works with 3.12) and a SimpleFin account with a one-time
 **setup token**. The token is exchanged once for a long-lived access URL, kept
 in Wealthfolio's encrypted secret storage; the token itself is not kept.
 
@@ -163,7 +163,7 @@ The addon has three tabs: **Home**, **Reports** and **Settings**.
 
 ## Requirements
 
-- Wealthfolio **3.8 or newer** (works with 3.10). Newer versions unlock more:
+- Wealthfolio **3.8 or newer** (works with 3.12). Newer versions unlock more:
   - **3.9 and newer:** the app links and unlinks transfers in place (the
     companion does on 3.8 too), and reads whether a transaction is linked and
     what it is filed under, so its Link, Remove for good… and Undo go by
@@ -200,6 +200,22 @@ Before or right after you upgrade:
   leaves rows in a transfer group, rows you split, retyped or filed yourself,
   a real security, and a starting balance whose opening-balance filing you
   undid).
+
+### Upgrading Wealthfolio to 3.11 or 3.12
+
+Nothing to change: no new settings, and the same routes, database and add-on
+API. Back up the database first, as always (3.12 runs three small data-only
+migrations on its first start). Three things look different afterwards:
+
+- **The sync's starting balances and balance plugs show in Spending →
+  Transactions** (3.12) as neutral rows. They count toward no total.
+- **Your spending rules no longer file deposits** (3.12): a rule only files a
+  transaction of its own kind. A new deposit a spending rule used to file now
+  waits in the needs-a-category list.
+- **A split transaction can't be given a single category** (3.12). Wealthfolio
+  refuses it, so change its categories on the split itself. The companion
+  leaves split rows alone, including a deposit split across income categories
+  (1.72.0).
 
 ### Updating the add-on to 1.62.0
 

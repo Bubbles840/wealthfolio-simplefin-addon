@@ -695,6 +695,22 @@ describe('sqlite-native', () => {
       }
     });
 
+    // Wealthfolio 3.12 refuses a category on a row split in ANY taxonomy, and a
+    // deposit splits on its own bucket's (income) taxonomy.
+    it('leaves out a deposit split across income categories', () => {
+      const { path, cleanup } = makeTestDb();
+      try {
+        seed(path);
+        const db = new DatabaseSync(path);
+        db.exec(`INSERT INTO spending_activity_splits (id, activity_id, taxonomy_id, category_id, amount, sort_order)
+                 VALUES ('s1', 'act-4', 'income_categories', 'inc-1', '61.05', 0);`);
+        db.close();
+        expect(getNativeUncategorizedSpending(path, '2026-07-01', '2026-08-01').map((r) => r.activityId)).toEqual(['act-4b', 'act-1']);
+      } finally {
+        cleanup();
+      }
+    });
+
     it('still reads a database from before split lines existed', () => {
       const { path, cleanup } = makeTestDb();
       try {
