@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
-  CHARGE_WINDOW_DAYS, DEFAULT_RECEIPT_MODEL, modelProblem, parseReceiptHostStatus, RECEIPT_LIMITS, confirmedFilings, giftAccountKey, giftCardWrite, matchingCharges,
+  CHARGE_WINDOW_DAYS, DEFAULT_RECEIPT_MODEL, droppedByPrune, giftCardAccounts, modelHostUrlProblem, modelProblem, parseReceiptHostStatus, RECEIPT_LIMITS, confirmedFilings, giftAccountKey, giftCardWrite, matchingCharges,
   moveItem, newProposal, parseReceiptReaderConfig, parseReceiptState, parseReceiptTap, proposalRows, proposalRowsByPayment,
   pruneReceiptState, receiptFingerprint, receiptReaderConfigForEditing, renderCategoryPicker, renderGiftAccountPicker,
   renderChargePicker, renderItemPicker, renderProposal, splitLines, undoKeyboard, fullyCategorized, NO_CATEGORY,
@@ -8,6 +8,7 @@ import {
 } from './receipt-flow.js';
 import { buildReceipt, type Receipt } from './receipt.js';
 import type { SpendRow } from './wf-spending.js';
+import { PENDING_SUFFIX } from './sync-core.js';
 
 const NOW = new Date('2027-03-15T15:00:00Z');
 const DAY = 86_400_000;
@@ -132,8 +133,8 @@ describe('the proposal', () => {
     expect([fullyCategorized(p), fullyCategorized(proposal())]).toEqual([false, true]);
   });
 
-  it('remembers what was confirmed, item by item', () => {
-    expect(confirmedFilings(proposal())[1]).toEqual({ text: 'LAMP', categoryId: UUID(3) });
+  it('remembers what was confirmed, item by item, and which receipt taught it', () => {
+    expect(confirmedFilings(proposal())[1]).toEqual({ text: 'LAMP', categoryId: UUID(3), receiptId: 'abcd1234' });
   });
 });
 
@@ -192,9 +193,17 @@ describe('the writes', () => {
       row({ id: 'deposit', type: 'DEPOSIT' }),
       row({ id: 'brokerage', accountType: 'SECURITIES' }),
       row({ id: 'not-spending', accountId: 'elsewhere' }),
+      row({ id: 'pending', notes: `CORNER MARKET${PENDING_SUFFIX}` }),
     ];
+    expect(matchingCharges(rows, 10200, '2027-03-14', ['card', 'elsewhere']).map((r) => r.id)).toEqual(['a1', 'not-spending']);
     expect(matchingCharges(rows, 10200, '2027-03-14', ['card']).map((r) => r.id)).toEqual(['a1']);
-    expect(matchingCharges(rows, 10200, '2027-03-14', null).map((r) => r.id)).toEqual(['a1', 'not-spending']);
+    // Spending off: Wealthfolio refuses a split on every account, so nothing matches.
+    expect(matchingCharges(rows, 10200, '2027-03-14', [])).toEqual([]);
+  });
+
+  it('offers a gift card only cash accounts the Spending page reads and no bank feed fills', () => {
+    const accounts = [{ id: 'gift' }, { id: 'checking' }, { id: 'not-spending' }];
+    expect(giftCardAccounts(accounts, ['gift', 'checking'], ['checking']).map((a) => a.id)).toEqual(['gift']);
   });
 
   it('splits the card payment into exact decimal lines that add up to the charge', () => {
@@ -212,5 +221,27 @@ describe('the writes', () => {
     expect(write).toMatchObject({ accountId: 'gift-acct', activityType: 'WITHDRAWAL', symbol: { symbol: '$CASH-USD' }, currency: 'USD' });
     expect(write.comment).toMatch(/^Corner Market: BREAD/);
     expect(write.activityDate.startsWith('2027-03-14')).toBe(true);
+  });
+});
+
+describe('modelHostUrlProblem', () => {
+  it('accepts an http or https address with a host, and says what is wrong otherwise', () => {
+    expect(modelHostUrlProblem('http://192.168.1.20:11434')).toBeNull();
+    expect(modelHostUrlProblem(' https://models.example.test ')).toBeNull();
+    expect(modelHostUrlProblem('192.168.1.20:11434')).toMatch(/http:\/\/ or https:\/\//);
+    expect(modelHostUrlProblem('htp//192.168.1.20')).toMatch(/full address/);
+    expect(modelHostUrlProblem('ftp://192.168.1.20')).toMatch(/must start with/);
+  });
+});
+
+describe('droppedByPrune', () => {
+  it('lists the photos and waiting receipts a prune dropped, not the ones it kept', () => {
+    const old = new Date(NOW.getTime() - 8 * DAY).toISOString();
+    const s = parseReceiptState(JSON.stringify({
+      queue: [{ fileId: 'f1', fileUniqueId: 'old', receivedAt: old }, { fileId: 'f2', fileUniqueId: 'new', receivedAt: NOW.toISOString() }],
+      waiting: [{ id: 'w-old', items: [], createdAt: old, confirmedAt: old }, { id: 'w-new', items: [], createdAt: old, confirmedAt: NOW.toISOString() }],
+    }));
+    const d = droppedByPrune(s, pruneReceiptState(s, NOW));
+    expect([d.queue.map((q) => q.fileUniqueId), d.waiting.map((p) => p.id)]).toEqual([['old'], ['w-old']]);
   });
 });

@@ -642,8 +642,11 @@ while reading), and the bot proposes a category for each item for you to confirm
 
 The model only copies what is printed; the add-up checks are done in code, and a
 receipt that does not add up is never filed. Each filed receipt has an Undo
-button. Set it up under **Settings → Receipt reader**: start Ollama with
-`OLLAMA_HOST=0.0.0.0` so the companion can reach it, and `ollama pull qwen2.5vl:32b`.
+button. Set it up under **Settings → Receipt reader**: start Ollama listening on
+the computer's home network or Tailscale address so the companion can reach it
+(`OLLAMA_HOST=192.168.1.20:11434`), and `ollama pull qwen2.5vl:32b`. Ollama has no
+password: never forward its port to the internet. The bot files a receipt paid
+with one card, gift cards, or both; one paid in cash or with two cards is refused.
 A photo sent while the computer is asleep is read when it wakes, for up to 7 days.
 
 ## Privacy
@@ -658,7 +661,7 @@ A photo sent while the computer is asleep is read when it wakes, for up to 7 day
 - The receipt reader is off unless configured. Photos go from Telegram to the
   companion and to the model on your own computer, nowhere else; the companion
   keeps only Telegram's reference to the photo, never the image. Ollama has no
-  password, so keep it on your home network.
+  password, so keep it on your home network (see [PRIVACY.md](PRIVACY.md)).
 
 ## Development
 

@@ -22,7 +22,7 @@ import {
 import {
   NO_CATEGORY, RECEIPT_CALLBACK_PREFIX, RECEIPT_LIMITS, RECEIPT_CONFIG_SECRET_KEY, RECEIPT_STATE_SECRET_KEY, RECEIPT_STATUS_SECRET_KEY,
   modelProblem, parseReceiptHostStatus,
-  confirmedFilings, filedSummary, fullyCategorized, giftAccountKey, giftCardWrite, matchingCharges, money, moveItem,
+  confirmedFilings, droppedByPrune, filedSummary, fullyCategorized, giftAccountKey, giftCardAccounts, giftCardWrite, matchingCharges, money, moveItem,
   newProposal, parseReceiptReaderConfig, parseReceiptState, parseReceiptTap, proposalRowsByPayment, pruneReceiptState,
   receiptFingerprint, renderCategoryPicker, renderChargePicker, renderGiftAccountPicker, renderItemPicker, renderProposal,
   splitLines, undoKeyboard,
@@ -57,9 +57,11 @@ export interface ReceiptHostDeps {
   categories: () => ReceiptCategory[];
   /** Activities whose stored date is in [fromDay, toDayExclusive). */
   spendRows: (fromDay: string, toDayExclusive: string) => SpendRow[];
-  /** The accounts the Spending page reads; null: every account. */
-  spendingAccountIds: () => string[] | null;
+  /** The accounts the Spending page reads; none when Spending is off. */
+  spendingAccountIds: () => string[];
   cashAccounts: () => Promise<Array<{ id: string; name: string; currency: string }>>;
+  /** The accounts a bank feed fills. */
+  feedAccountIds: () => Promise<string[]>;
   wf: {
     replaceSplits: (activityId: string, lines: SplitLine[]) => Promise<void>;
     clearSplits: (activityId: string) => Promise<void>;
@@ -86,6 +88,8 @@ export const RECEIPT_COPY = {
   gone: 'That receipt is no longer open.',
   needsCategory: 'Pick a category for every item first.',
   cancelled: 'Cancelled — nothing was filed.',
+  noSpendingAccounts: "Wealthfolio's Spending page has no accounts yet, and it refuses a split anywhere else. Add the card's account (and any gift card's) in Wealthfolio's Spending settings, then tap Confirm again.",
+  noGiftAccount: "No account can take this gift card's rows. In Wealthfolio, create a cash account for the gift card and add it in the Spending settings, then tap Confirm again.",
   undone: 'Undone — the receipt is no longer filed.',
 } as const;
 
@@ -112,17 +116,32 @@ export function createReceiptHost(deps: ReceiptHostDeps) {
   /** Whether the bot has said it is waiting on open proposals; said once per pause. */
   let pausedNoticeSent = false;
 
-  /** Runs `fn` on the current state, alone, and saves what it returns. */
+  /** Runs `fn` on the current state, alone, and saves what it returns. What the prune drops is said once, here. */
   function withState<T>(fn: (s: ReceiptState) => Promise<{ state: ReceiptState; result: T }> | { state: ReceiptState; result: T }): Promise<T> {
     const run = lock.then(async () => {
       const now = deps.now();
-      const state = pruneReceiptState(parseReceiptState(await deps.io.get(RECEIPT_STATE_SECRET_KEY)), now);
+      const raw = parseReceiptState(await deps.io.get(RECEIPT_STATE_SECRET_KEY));
+      const state = pruneReceiptState(raw, now);
       const out = await fn(state);
-      await deps.io.set(RECEIPT_STATE_SECRET_KEY, JSON.stringify(pruneReceiptState(out.state, now)));
+      const saved = pruneReceiptState(out.state, now);
+      await deps.io.set(RECEIPT_STATE_SECRET_KEY, JSON.stringify(saved));
+      const before = droppedByPrune(raw, state);
+      const after = droppedByPrune(out.state, saved);
+      if (before.queue.length + after.queue.length > 0) await deps.send(RECEIPT_COPY.expired);
+      for (const p of [...before.waiting, ...after.waiting]) {
+        await deps.send(escapeMarkdown(`The ${money(p.payments.find((x) => x.kind === 'card')?.cents ?? 0)} charge for the receipt from ${p.date} never showed up, so I stopped waiting. Nothing was filed.`));
+      }
       return out.result;
     });
     lock = run.catch(() => {});
     return run;
+  }
+
+  /** Saves the prune when it would drop something, so its messages go out now, not at the next write. */
+  async function sweep(): Promise<void> {
+    const raw = parseReceiptState(await deps.io.get(RECEIPT_STATE_SECRET_KEY));
+    const dropped = droppedByPrune(raw, pruneReceiptState(raw, deps.now()));
+    if (dropped.queue.length + dropped.waiting.length > 0) await withState((s) => ({ state: s, result: undefined }));
   }
 
   const readState = async () => pruneReceiptState(parseReceiptState(await deps.io.get(RECEIPT_STATE_SECRET_KEY)), deps.now());
@@ -206,12 +225,7 @@ export function createReceiptHost(deps: ReceiptHostDeps) {
   async function drainOnce(): Promise<void> {
     const config = await readConfig();
     if (!config) return;
-    // A photo queued a week ago is dropped by the prune; say so once, as the prune is written.
-    const cutoff = new Date(deps.now().getTime() - 7 * DAY_MS).toISOString();
-    if (parseReceiptState(await deps.io.get(RECEIPT_STATE_SECRET_KEY)).queue.some((q) => q.receivedAt < cutoff)) {
-      await withState((s) => ({ state: s, result: undefined }));
-      await deps.send(RECEIPT_COPY.expired);
-    }
+    await sweep();
     for (;;) {
       const state = await readState();
       const head = state.queue[0];
@@ -250,7 +264,8 @@ export function createReceiptHost(deps: ReceiptHostDeps) {
       if (!built) {
         reply = { text: RECEIPT_COPY.unreadable };
       } else if (!built.ok) {
-        reply = { text: `${RECEIPT_PROBLEM_TEXT[built.problem]} Nothing was filed — try a sharper photo.` };
+        const advice = built.problem === 'payment-not-supported' ? '' : ' — try a sharper photo';
+        reply = { text: `${RECEIPT_PROBLEM_TEXT[built.problem]} Nothing was filed${advice}.` };
       } else {
         const receipt = built.receipt;
         const categoryOf = await categorize(config, receipt.store, receipt.items.map((i) => i.text), state);
@@ -282,7 +297,8 @@ export function createReceiptHost(deps: ReceiptHostDeps) {
     | { kind: 'filed'; filed: Filed }
     | { kind: 'waiting'; text: string }
     | { kind: 'ask'; view: { text: string; keyboard: InlineKeyboard } }
-    | { kind: 'error'; text: string };
+    /** `forgetGiftAccount`: Wealthfolio refused the remembered gift card account, so the next try asks again. */
+    | { kind: 'error'; text: string; forgetGiftAccount?: boolean };
 
   /**
    * Files a proposal: the gift-card rows, then the card charge's split. With
@@ -294,11 +310,19 @@ export function createReceiptHost(deps: ReceiptHostDeps) {
   async function fileProposal(p: ReceiptProposal, state: ReceiptState, chargeId?: string): Promise<FileOutcome> {
     const byPayment = proposalRowsByPayment(p);
     const giftIdx = p.payments.flatMap((x, n) => (x.kind === 'gift_card' ? [n] : []));
-    const cardIdx = p.payments.findIndex((x) => x.kind === 'card');
+    const cardIdxs = p.payments.flatMap((x, n) => (x.kind === 'card' ? [n] : []));
+    // A second card's charge is never looked for: refused, never filed in part.
+    if (cardIdxs.length > 1) return { kind: 'error', text: `${RECEIPT_PROBLEM_TEXT['payment-not-supported']} Nothing was filed.` };
+    const cardIdx = cardIdxs[0] ?? -1;
+    // Wealthfolio refuses a split or category on an account its Spending page doesn't read.
+    const spending = deps.spendingAccountIds();
+    if (spending.length === 0) return { kind: 'error', text: RECEIPT_COPY.noSpendingAccounts };
 
     let giftAccount: { id: string; currency: string } | undefined;
     if (giftIdx.length > 0) {
-      const accounts = await deps.cashAccounts();
+      const accounts = giftCardAccounts(await deps.cashAccounts(), spending, await deps.feedAccountIds());
+      if (accounts.length === 0) return { kind: 'error', text: RECEIPT_COPY.noGiftAccount };
+      // A remembered account that no longer qualifies is asked about again.
       giftAccount = accounts.find((a) => a.id === state.giftAccounts[giftAccountKey(p)]);
       if (!giftAccount) return { kind: 'ask', view: renderGiftAccountPicker(p, accounts) };
     }
@@ -306,7 +330,7 @@ export function createReceiptHost(deps: ReceiptHostDeps) {
     let charge: SpendRow | undefined;
     if (cardIdx >= 0) {
       const rows = deps.spendRows(addDays(p.date, -4), addDays(p.date, 5));
-      const candidates = matchingCharges(rows, p.payments[cardIdx].cents, p.date, deps.spendingAccountIds());
+      const candidates = matchingCharges(rows, p.payments[cardIdx].cents, p.date, spending);
       charge = chargeId ? candidates.find((c) => c.id === chargeId) : candidates.length === 1 ? candidates[0] : undefined;
       if (!charge && chargeId) return { kind: 'error', text: 'That charge no longer matches — it may have been split or changed. Nothing was filed.' };
       if (!charge && candidates.length > 1) return { kind: 'ask', view: renderChargePicker(p, candidates) };
@@ -316,6 +340,7 @@ export function createReceiptHost(deps: ReceiptHostDeps) {
     }
 
     const createdIds: string[] = [];
+    let giftRows = true;
     try {
       for (const n of giftIdx) {
         if (byPayment[n].length === 0) continue;
@@ -324,6 +349,7 @@ export function createReceiptHost(deps: ReceiptHostDeps) {
         if (byPayment[n].length === 1) await deps.wf.assign(id, byPayment[n][0].categoryId);
         else await deps.wf.replaceSplits(id, splitLines(byPayment[n]));
       }
+      giftRows = false;
       let split: Filed['split'];
       if (charge) {
         const before = await deps.wf.spendingCategoryOf(charge.id);
@@ -335,9 +361,19 @@ export function createReceiptHost(deps: ReceiptHostDeps) {
     } catch (err) {
       if (createdIds.length) await deps.wf.remove(createdIds).catch(() => {});
       deps.log(`Receipt reader: filing failed: ${(err as Error).message}`);
-      return { kind: 'error', text: `Couldn't file it — Wealthfolio refused: ${(err as Error).message}. Nothing was filed.` };
+      return {
+        kind: 'error', text: `Couldn't file it — Wealthfolio refused: ${(err as Error).message}. Nothing was filed.`,
+        forgetGiftAccount: giftRows && giftIdx.length > 0,
+      };
     }
   }
+
+  /** Forgets the store's gift card account, so the next try asks which one. */
+  const forgetGiftAccount = (p: ReceiptProposal) => withState((s) => {
+    const giftAccounts = { ...s.giftAccounts };
+    delete giftAccounts[giftAccountKey(p)];
+    return { state: { ...s, giftAccounts }, result: undefined };
+  });
 
   /** Records a filed receipt: its Undo, what it taught, its fingerprint; it leaves the open and waiting lists. */
   function recordFiled(s: ReceiptState, p: ReceiptProposal, filed: Filed): ReceiptState {
@@ -346,7 +382,10 @@ export function createReceiptHost(deps: ReceiptHostDeps) {
       ...s,
       proposals: s.proposals.filter((x) => x.id !== p.id),
       waiting: s.waiting.filter((x) => x.id !== p.id),
-      filed: [...s.filed, { id: p.id, at, summary: filed.text, ...(filed.split ? { split: filed.split } : {}), createdIds: filed.createdIds }],
+      filed: [...s.filed, {
+        id: p.id, at, summary: filed.text, ...(filed.split ? { split: filed.split } : {}), createdIds: filed.createdIds,
+        fingerprint: receiptFingerprint(p), ...(filed.createdIds.length ? { giftAccountKey: giftAccountKey(p) } : {}),
+      }],
       filings: [...s.filings, ...confirmedFilings(p)],
       fingerprints: [...s.fingerprints, { key: receiptFingerprint(p), at }],
     };
@@ -366,7 +405,22 @@ export function createReceiptHost(deps: ReceiptHostDeps) {
       deps.log(`Receipt reader: undo failed: ${(err as Error).message}`);
       return `Couldn't undo it — Wealthfolio refused: ${(err as Error).message}.`;
     }
-    await withState((s) => ({ state: { ...s, filed: s.filed.filter((x) => x.id !== id) }, result: undefined }));
+    // What the receipt taught goes too: a corrected resend is not a duplicate, its items are asked about again,
+    // and so is its gift card's account, in case that was the mistake.
+    await withState((s) => {
+      const giftAccounts = { ...s.giftAccounts };
+      if (f.giftAccountKey) delete giftAccounts[f.giftAccountKey];
+      return {
+        state: {
+          ...s,
+          filed: s.filed.filter((x) => x.id !== id),
+          filings: s.filings.filter((x) => x.receiptId !== id),
+          fingerprints: s.fingerprints.filter((x) => !(x.key === f.fingerprint && x.at === f.at)),
+          giftAccounts,
+        },
+        result: undefined,
+      };
+    });
     return RECEIPT_COPY.undone;
   }
 
@@ -455,6 +509,7 @@ export function createReceiptHost(deps: ReceiptHostDeps) {
         await ui.edit(outcome.view.text, outcome.view.keyboard);
         return;
       case 'error':
+        if (outcome.forgetGiftAccount) await forgetGiftAccount(p);
         await ui.edit(escapeMarkdown(outcome.text), renderProposal(p, deps.categories()).keyboard);
         return;
       case 'waiting':
@@ -476,26 +531,23 @@ export function createReceiptHost(deps: ReceiptHostDeps) {
   /**
    * After a sync: files each confirmed receipt whose card charge has now been
    * imported. More than one match asks; a receipt still unmatched after 7 days
-   * is dropped with a message. Never rejects.
+   * is dropped with a message (`withState`). Never rejects.
    */
   async function retryWaiting(): Promise<void> {
     try {
-      const raw = parseReceiptState(await deps.io.get(RECEIPT_STATE_SECRET_KEY));
-      const cutoff = new Date(deps.now().getTime() - 7 * DAY_MS).toISOString();
-      for (const p of raw.waiting) {
-        if ((p.confirmedAt ?? p.createdAt) < cutoff) {
-          await withState((s) => ({ state: { ...s, waiting: s.waiting.filter((x) => x.id !== p.id) }, result: undefined }));
-          await deps.send(escapeMarkdown(`The ${money(p.payments.find((x) => x.kind === 'card')?.cents ?? 0)} charge for the receipt from ${p.date} never showed up, so I stopped waiting. Nothing was filed.`));
-          continue;
-        }
+      await sweep();
+      for (const p of (await readState()).waiting) {
         const outcome = await fileProposal(p, await readState());
         if (outcome.kind === 'filed') {
           await withState((s) => ({ state: recordFiled(s, p, outcome.filed), result: undefined }));
           await deps.send(escapeMarkdown(outcome.filed.text), undoKeyboard(p.id));
         } else if (outcome.kind === 'ask') {
-          // The person answers on this message: the receipt moves back to the open list.
-          await withState((s) => ({ state: { ...s, waiting: s.waiting.filter((x) => x.id !== p.id), proposals: [...s.proposals, p] }, result: undefined }));
+          // The person answers on this message: the receipt moves back to the open list, with a fresh week to answer in.
+          const reopened = { ...p, createdAt: deps.now().toISOString() };
+          await withState((s) => ({ state: { ...s, waiting: s.waiting.filter((x) => x.id !== p.id), proposals: [...s.proposals, reopened] }, result: undefined }));
           await deps.send(outcome.view.text, outcome.view.keyboard);
+        } else if (outcome.kind === 'error' && outcome.forgetGiftAccount) {
+          await forgetGiftAccount(p);
         }
       }
     } catch (err) {

@@ -6,6 +6,7 @@ import {
 import type { ReceiptTranscript } from '../../shared/receipt.js';
 import type { ActivityWrite } from '../../shared/sync-host.js';
 import type { SpendRow } from '../../shared/wf-spending.js';
+import { PENDING_SUFFIX } from '../../shared/sync-core.js';
 import type { InlineKeyboard } from '../../shared/telegram.js';
 
 const NOW = new Date('2027-03-15T15:00:00Z');
@@ -40,7 +41,10 @@ interface Harness {
   created: ActivityWrite[];
   assigned: Array<[string, string]>;
   calls: string[];
-  set: (o: { online?: boolean; transcript?: ReceiptTranscript | string; categories?: string[]; rows?: SpendRow[] }) => void;
+  set: (o: {
+    online?: boolean; transcript?: ReceiptTranscript | string; categories?: string[]; rows?: SpendRow[];
+    spending?: string[]; fed?: string[]; refuseCreate?: boolean; now?: Date;
+  }) => void;
 }
 
 function harness(): Harness {
@@ -54,6 +58,10 @@ function harness(): Harness {
   let transcript: ReceiptTranscript | string = TILL;
   let categories = ['groceries', 'home_lamps_lighting'];
   let rows: SpendRow[] = [charge()];
+  let spending = ['card', 'gift-acct', 'checking'];
+  let fed: string[] = ['checking'];
+  let refuseCreate = false;
+  let now = NOW;
   let nextId = 0;
   const fetchImpl = (async (url: string, init?: RequestInit) => {
     calls.push(String(url));
@@ -72,18 +80,27 @@ function harness(): Harness {
     send: async (text, keyboard) => { sent.push({ text, keyboard }); },
     categories: () => CATS,
     spendRows: () => rows,
-    spendingAccountIds: () => null,
-    cashAccounts: async () => [{ id: 'gift-acct', name: 'Gift card cash', currency: 'USD' }],
+    spendingAccountIds: () => spending,
+    cashAccounts: async () => [
+      { id: 'gift-acct', name: 'Gift card cash', currency: 'USD' },
+      { id: 'checking', name: 'Checking', currency: 'USD' },
+      { id: 'not-spending', name: 'Envelope', currency: 'USD' },
+    ],
+    feedAccountIds: async () => fed,
     wf: {
       replaceSplits: async (id, lines) => { splits.push({ id, lines }); },
       clearSplits: async (id) => { calls.push(`clear:${id}`); },
       spendingCategoryOf: async () => 'c-gro',
       assign: async (id, cat) => { assigned.push([id, cat]); },
-      create: async (writes) => { created.push(...writes); return writes.map(() => `new-${++nextId}`); },
+      create: async (writes) => {
+        if (refuseCreate) throw new Error('account not in spending scope');
+        created.push(...writes);
+        return writes.map(() => `new-${++nextId}`);
+      },
       remove: async (ids) => { calls.push(`remove:${ids.join(',')}`); },
     },
     log: () => {},
-    now: () => NOW,
+    now: () => now,
     randomId: () => 'p1',
   };
   return {
@@ -93,6 +110,10 @@ function harness(): Harness {
       if (o.transcript !== undefined) transcript = o.transcript;
       if (o.categories) categories = o.categories;
       if (o.rows) rows = o.rows;
+      if (o.spending) spending = o.spending;
+      if (o.fed) fed = o.fed;
+      if (o.refuseCreate !== undefined) refuseCreate = o.refuseCreate;
+      if (o.now) now = o.now;
     },
   };
 }
@@ -229,6 +250,62 @@ describe('filing', () => {
     expect(h.calls).toContain('clear:charge-1');
     expect(h.assigned).toEqual([['charge-1', 'c-gro']]);
     expect(undone.edits[0].text).toContain('Undone');
+    // What it taught goes too: a corrected resend is not a duplicate, and its items are asked about again.
+    const after = state(h);
+    expect([after.filed.length, after.filings.length, after.fingerprints.length]).toEqual([0, 0, 0]);
+  });
+
+  it('keeps what other receipts taught when one is undone', async () => {
+    const h = harness();
+    h.secrets.set(RECEIPT_STATE_SECRET_KEY, JSON.stringify({
+      filings: [{ text: 'SOAP', categoryId: 'c-home', receiptId: 'older' }],
+      fingerprints: [{ key: 'older-key', at: NOW.toISOString() }],
+    }));
+    await proposed(h);
+    await tap(h, 'cz:rc:ok:p1');
+    await tap(h, 'cz:rc:un:p1');
+    expect([state(h).filings.map((f) => f.text), state(h).fingerprints.map((f) => f.key)]).toEqual([['SOAP'], ['older-key']]);
+  });
+
+  it('refuses a receipt paid in cash when it is read, saying why', async () => {
+    const h = harness();
+    h.set({ transcript: { ...TILL, payments: [{ label: 'CASH', amount: '120.00' }] } });
+    await proposed(h);
+    expect(h.sent[0].text).toMatch(/one card, gift cards, or both/);
+    expect(h.sent[0].text).not.toMatch(/sharper photo/);
+    expect(state(h).proposals).toEqual([]);
+  });
+
+  it('refuses a stored receipt with two card payments on Confirm, filing nothing', async () => {
+    const h = harness();
+    await proposed(h);
+    const s = state(h);
+    s.proposals[0].payments = [{ kind: 'card', label: 'VISA', cents: 5000 }, { kind: 'card', label: 'MASTERCARD', cents: 7000 }];
+    h.secrets.set(RECEIPT_STATE_SECRET_KEY, JSON.stringify(s));
+    const t = await tap(h, 'cz:rc:ok:p1');
+    expect(t.edits[0].text).toMatch(/one card, gift cards, or both/);
+    expect([h.splits.length, state(h).filed.length, state(h).proposals.length]).toEqual([0, 0, 1]);
+  });
+
+  it('says to add the account in Spending settings when Spending reads no account', async () => {
+    const h = harness();
+    h.set({ spending: [] });
+    await proposed(h);
+    const t = await tap(h, 'cz:rc:ok:p1');
+    expect(t.edits[0].text).toContain('Spending settings');
+    expect([h.splits.length, state(h).waiting.length]).toEqual([0, 0]);
+  });
+
+  it('waits for the posted charge rather than splitting a pending one', async () => {
+    const h = harness();
+    h.set({ rows: [charge({ notes: `CORNER MARKET${PENDING_SUFFIX}` })] });
+    await proposed(h);
+    const t = await tap(h, 'cz:rc:ok:p1');
+    expect(t.edits[0].text).toMatch(/hasn't been imported yet/);
+    expect(h.splits).toEqual([]);
+    h.set({ rows: [charge({ id: 'posted' })] });
+    await h.host.retryWaiting();
+    expect(h.splits.map((x) => x.id)).toEqual(['posted']);
   });
 
   it('moves an item when the person picks another category', async () => {
@@ -251,6 +328,41 @@ describe('filing', () => {
     ] }]);
     expect(h.assigned).toEqual([]);
     expect(state(h).giftAccounts).toEqual({ 'corner market': 'gift-acct' });
+  });
+
+  it('offers a gift card only Spending accounts no bank feed fills, and says to create one when none does', async () => {
+    const h = harness();
+    h.set({ transcript: { ...TILL, total: '0.00', payments: [{ label: 'Gift card', amount: '120.00', kind: 'gift_card' }] } });
+    await proposed(h);
+    const asked = await tap(h, 'cz:rc:ok:p1');
+    expect(asked.edits[0].keyboard?.inline_keyboard.map((r) => r[0].text)).toEqual(['Gift card cash', '✕ Cancel']);
+    h.set({ fed: ['checking', 'gift-acct'] });
+    const none = await tap(h, 'cz:rc:ok:p1');
+    expect(none.edits[0].text).toContain('create a cash account');
+  });
+
+  it('forgets a remembered gift card account that Wealthfolio refuses, and asks again', async () => {
+    const h = harness();
+    h.secrets.set(RECEIPT_STATE_SECRET_KEY, JSON.stringify({ giftAccounts: { 'corner market': 'gift-acct' } }));
+    h.set({ transcript: { ...TILL, total: '0.00', payments: [{ label: 'Gift card', amount: '120.00', kind: 'gift_card' }] }, refuseCreate: true });
+    await proposed(h);
+    const refused = await tap(h, 'cz:rc:ok:p1');
+    expect(refused.edits[0].text).toMatch(/Wealthfolio refused/);
+    expect(state(h).giftAccounts).toEqual({});
+    h.set({ refuseCreate: false });
+    expect((await tap(h, 'cz:rc:ok:p1')).edits[0].text).toMatch(/Which account tracks/);
+  });
+
+  it('asks again for a remembered gift card account that no longer qualifies, and forgets it on Undo', async () => {
+    const h = harness();
+    h.secrets.set(RECEIPT_STATE_SECRET_KEY, JSON.stringify({ giftAccounts: { 'corner market': 'checking' } }));
+    h.set({ transcript: { ...TILL, total: '0.00', payments: [{ label: 'Gift card', amount: '120.00', kind: 'gift_card' }] } });
+    await proposed(h);
+    expect((await tap(h, 'cz:rc:ok:p1')).edits[0].text).toMatch(/Which account tracks/);
+    await tap(h, 'cz:rc:ga:p1:gift-acct');
+    expect(state(h).giftAccounts).toEqual({ 'corner market': 'gift-acct' });
+    await tap(h, 'cz:rc:un:p1');
+    expect(state(h).giftAccounts).toEqual({});
   });
 
   it('names the remembered gift card account on the next receipt, so a wrong one shows before Confirm', async () => {
@@ -285,6 +397,42 @@ describe('filing', () => {
     expect(h.splits.map((x) => x.id)).toEqual(['charge-1']);
     expect([state(h).waiting.length, state(h).filed.length]).toEqual([0, 1]);
     expect(h.sent.at(-1)?.text).toContain('Filed');
+  });
+
+  it('gives a receipt moved back to the open list a fresh week, so its charge picker still works', async () => {
+    const h = harness();
+    h.set({ rows: [] });
+    await proposed(h);
+    // Confirmed on day 6, two charges arrive on day 8: past the 7 days since the photo was read.
+    h.set({ now: new Date(NOW.getTime() + 6 * 86_400_000) });
+    await tap(h, 'cz:rc:ok:p1');
+    h.set({ rows: [charge(), charge({ id: 'charge-2' })], now: new Date(NOW.getTime() + 8 * 86_400_000) });
+    await h.host.retryWaiting();
+    expect(h.sent.at(-1)?.text).toMatch(/More than one charge/);
+    await tap(h, 'cz:rc:cg:p1:charge-2');
+    expect(h.splits.map((x) => x.id)).toEqual(['charge-2']);
+  });
+
+  it('says a waiting receipt expired even when a tap prunes it before the next sync', async () => {
+    const h = harness();
+    h.set({ rows: [] });
+    await proposed(h);
+    await tap(h, 'cz:rc:ok:p1');
+    h.set({ now: new Date(NOW.getTime() + 8 * 86_400_000) });
+    await tap(h, 'cz:rc:ok:gone');
+    await h.host.onPhoto({ fileId: 'f2', fileUniqueId: 'u2' }, async () => {});
+    expect(h.sent.filter((m) => /never showed up/.test(m.text))).toHaveLength(1);
+    expect(state(h).waiting).toEqual([]);
+  });
+
+  it('says a photo expired when a write prunes it, once', async () => {
+    const h = harness();
+    h.set({ online: false });
+    await proposed(h);
+    h.set({ now: new Date(NOW.getTime() + 8 * 86_400_000) });
+    await h.host.onPhoto({ fileId: 'f2', fileUniqueId: 'u2' }, async () => {});
+    await h.host.drain();
+    expect(h.sent.filter((m) => m.text === RECEIPT_COPY.expired)).toHaveLength(1);
   });
 
   it('cancels without filing anything', async () => {

@@ -61,25 +61,31 @@ category", and Confirm waits for it. Nothing is written before Confirm.
 By what paid for it, from the payment lines:
 
 - **A card or bank account**: the companion looks for the charge already imported: same total, a date within 3 days
-  **(my call)**, on an account in the spending set. Exactly one match → it **splits** that charge by category through
-  Wealthfolio's split API (`PUT /api/v1/spending/activities/{id}/splits`), the same lines a person makes by hand. More
-  than one → the bot asks which. None yet (the charge is often still pending) → the confirmed receipt waits and is
-  matched on each later sync for 7 days **(my call)**, then the bot asks.
+  **(my call)**, on an account in the spending set, and posted. Exactly one match → it **splits** that charge by
+  category through Wealthfolio's split API (`PUT /api/v1/spending/activities/{id}/splits`), the same lines a person
+  makes by hand. More than one → the bot asks which. None yet, or only the pending copy (the sync may replace a pending
+  row under a new id, taking its split with it) → the confirmed receipt waits and is matched on each later sync for 7
+  days **(my call)**, then the bot says it stopped waiting. With no account in the spending set, Wealthfolio refuses
+  every split, so Confirm says to add one in its Spending settings.
 - **A gift card or store credit**: one WITHDRAWAL for what it paid, in the cash account that tracks that card, dated on
   the receipt's date, with the item names in the note, split by category (one category is assigned whole), so a visit
   is one row, as the store's own records show it. The first time a store's gift card is used, the bot asks which cash
-  account tracks it (a button per cash account) and remembers the answer by store name. With no such account, it asks
-  the person to create one rather than creating it itself.
+  account tracks it and remembers the answer by store name. It offers only cash accounts in the spending set (Wealthfolio
+  refuses a split anywhere else) that no bank feed fills (an extra row would disagree with the bank). With no such
+  account, it asks the person to create one rather than creating it itself. A remembered account that Wealthfolio
+  refuses, or that no longer qualifies, is forgotten and asked about again.
 - **Both**: the receipt does not say which items the gift card paid for, so every payment gets the same category mix,
   in proportion to what it covered (largest-remainder cents, so each side still adds up exactly).
 
-A payment line of $0 is ignored. Loading a gift card and a refund back onto one stay manual in this version.
+A payment line of $0 is ignored. Cash, a benefit card, or a second card is refused with a message, never filed in
+part: cash leaves no imported charge to split, and only one card's charge is looked for. Loading a gift card and a refund back onto one stay manual in this version.
 
 A charge that already has splits is never re-split without asking. A split charge counts as categorized (PR #52), so the
 needs-a-category list and the order-email filing leave it alone.
 
 The Done message carries an Undo button for 7 days: it removes the gift-card rows, and takes the splits off the charge
-and puts back the category it had before. The change log's own Undo does not cover receipts yet; that is a separate
+and puts back the category it had before. It also forgets what the receipt taught: its fingerprint (so a corrected
+resend is not flagged as a duplicate), its items' categories, and the store's gift card account. The change log's own Undo does not cover receipts yet; that is a separate
 piece of work, as the change log has no entry kind for splits.
 
 ## Who reads it: the companion, through a queue
@@ -103,9 +109,10 @@ manifest. So only the companion talks to the model.
 A "Receipt reader" card in Settings, with its own Save: the model host URL (for example `http://192.168.1.20:11434`),
 the vision model (default `qwen2.5vl:32b`) and on/off. Every 5 minutes the companion calls the host's `/api/tags` and
 writes `receipt_status` (`{ checkedAt, error }`) when the answer changes, and hourly otherwise; the card shows it, so a
-wrong address or a model that was never pulled is visible without reading container logs. The card notes that Ollama listens only on its own machine
-unless started with `OLLAMA_HOST=0.0.0.0`, and that it has no password, so it should only be reachable on a home
-network.
+wrong address or a model that was never pulled is visible without reading container logs. The card accepts only an
+`http://` or `https://` address with a host, and says so when it is wrong. It notes that Ollama listens only on its own
+machine unless `OLLAMA_HOST` says otherwise, and that it has no password: set it to the machine's home network or
+Tailscale address, not `0.0.0.0`, and never forward its port to the internet.
 
 The card only appears when the companion understands it (a new `RECEIPTS_SINCE` in shared/version.ts).
 

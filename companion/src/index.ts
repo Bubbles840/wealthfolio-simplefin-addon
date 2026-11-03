@@ -4074,15 +4074,14 @@ export function buildReceiptHost(wfClient: WealthfolioClient): ReturnType<typeof
       const result = await sendTelegramMessage(tg.botToken, tg.chatId, text, undefined, keyboard).catch((err) => ({ ok: false, description: formatError(err) }));
       if (!result.ok) log(`Receipt reader: a message was not delivered: ${result.description}`);
     },
-    categories: () => getNativeSpendingCategories(wealthfolioDbPath()).map((c) => ({ id: c.id, name: c.name, parentId: c.parentId })),
+    // The sync's own bookkeeping category is left out, as in the other categorizers: Spending excludes it.
+    categories: () => withoutSyncBookkeeping(getNativeSpendingCategories(wealthfolioDbPath())).map((c) => ({ id: c.id, name: c.name, parentId: c.parentId })),
     spendRows: (from, to) => getNativeSpendRows(wealthfolioDbPath(), from, to),
-    spendingAccountIds: () => {
-      const ids = getNativeSpendingSettings(wealthfolioDbPath()).spendingAccountIds;
-      return ids.length > 0 ? ids : null;
-    },
+    spendingAccountIds: () => getNativeSpendingSettings(wealthfolioDbPath()).spendingAccountIds,
     cashAccounts: async () => (await wfClient.getAccounts())
       .filter((a) => a.accountType === 'CASH' && !a.isArchived && a.isActive !== false)
       .map((a) => ({ id: a.id, name: a.name ?? a.id, currency: a.currency || 'USD' })),
+    feedAccountIds: async () => Object.values((await new RestSyncStore(wfClient).getAccountMapping()) ?? {}),
     wf: {
       replaceSplits: (id, lines) => wfClient.replaceActivitySplits(id, lines),
       clearSplits: (id) => wfClient.clearActivitySplits(id),

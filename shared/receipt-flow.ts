@@ -20,6 +20,7 @@ import { escapeMarkdown } from './telegram.js';
 import { bankDayInstant } from './bank-day.js';
 import type { ActivityWrite } from './sync-host.js';
 import { effectiveType, type SpendRow } from './wf-spending.js';
+import { PENDING_SUFFIX } from './sync-core.js';
 import {
   groupByCategory, rowsByPayment, type CategoryRow, type Receipt, type ReceiptItem, type ReceiptPayment, type TaxBasis,
 } from './receipt.js';
@@ -57,6 +58,19 @@ export function receiptReaderConfigForEditing(raw: string | null | undefined): R
 export function parseReceiptReaderConfig(raw: string | null | undefined): ReceiptReaderConfig | null {
   const c = receiptReaderConfigForEditing(raw);
   return c.enabled && c.url.trim() ? { ...c, url: c.url.trim().replace(/\/+$/, ''), model: c.model.trim() } : null;
+}
+
+/** What is wrong with a model host address, for the settings card; null when it is an http:// or https:// URL with a host. */
+export function modelHostUrlProblem(url: string): string | null {
+  let parsed: URL;
+  try {
+    parsed = new URL(url.trim());
+  } catch {
+    return 'Enter the full address, starting with http:// or https://, e.g. http://192.168.1.20:11434.';
+  }
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return 'The address must start with http:// or https://.';
+  if (!parsed.hostname) return 'The address needs a host name or IP address.';
+  return null;
 }
 
 /** The companion's last look at the model host, for the settings card. */
@@ -126,7 +140,13 @@ export interface FiledReceipt {
   split?: { activityId: string; before: string | null };
   /** Gift-card rows created. */
   createdIds: string[];
+  /** Its fingerprint, and the store key its gift card's account is remembered under: Undo forgets both. */
+  fingerprint?: string;
+  giftAccountKey?: string;
 }
+
+/** An item the person confirmed, and the receipt that taught it (Undo forgets it). */
+export type ReceiptFiling = ItemFiling & { receiptId?: string };
 
 export interface ReceiptState {
   queue: QueuedReceipt[];
@@ -138,7 +158,7 @@ export interface ReceiptState {
   /** Store key → the cash account that tracks its gift card. */
   giftAccounts: Record<string, string>;
   /** Items the person confirmed, newest last. */
-  filings: ItemFiling[];
+  filings: ReceiptFiling[];
   /** Tax rates receipts printed, in basis points, newest last. */
   rates: number[];
   /** Receipts filed, to flag the same one sent again. */
@@ -172,7 +192,7 @@ export function parseReceiptState(raw: string | null | undefined): ReceiptState 
       waiting: list<ReceiptProposal>(v.waiting).filter((p) => typeof p?.id === 'string' && Array.isArray(p.items)),
       filed: list<FiledReceipt>(v.filed).filter((f) => typeof f?.id === 'string'),
       giftAccounts: v.giftAccounts && typeof v.giftAccounts === 'object' && !Array.isArray(v.giftAccounts) ? v.giftAccounts : {},
-      filings: list<ItemFiling>(v.filings).filter((f) => typeof f?.text === 'string' && typeof f?.categoryId === 'string'),
+      filings: list<ReceiptFiling>(v.filings).filter((f) => typeof f?.text === 'string' && typeof f?.categoryId === 'string'),
       rates: list<number>(v.rates).filter((r) => Number.isInteger(r) && r > 0),
       fingerprints: list<{ key: string; at: string }>(v.fingerprints).filter((f) => typeof f?.key === 'string'),
     };
@@ -196,6 +216,14 @@ export function pruneReceiptState(s: ReceiptState, now: Date): ReceiptState {
     rates: keep(s.rates, RECEIPT_LIMITS.rates),
     fingerprints: keep(s.fingerprints.filter((f) => f.at >= since(RECEIPT_LIMITS.fingerprintDays)), RECEIPT_LIMITS.fingerprints),
   };
+}
+
+/** What a prune dropped: photos that were never read, and confirmed receipts whose charge never came. */
+export function droppedByPrune(before: ReceiptState, after: ReceiptState): { queue: QueuedReceipt[]; waiting: ReceiptProposal[] } {
+  const kept = (xs: Array<{ fileUniqueId?: string; id?: string }>) => new Set(xs.map((x) => x.fileUniqueId ?? x.id));
+  const queue = kept(after.queue);
+  const waiting = kept(after.waiting);
+  return { queue: before.queue.filter((q) => !queue.has(q.fileUniqueId)), waiting: before.waiting.filter((p) => !waiting.has(p.id)) };
 }
 
 /** What makes two receipts the same purchase: the day, the total and how it was paid. */
@@ -363,7 +391,18 @@ export function renderCategoryPicker(
   return { text: escapeMarkdown(`Move "${short(item?.text ?? '', 60)}" to:`), keyboard: { inline_keyboard: rows } };
 }
 
-/** Which cash account tracks this gift card: one button per cash account. */
+/**
+ * The accounts a gift card's rows can go to: a cash account the Spending page
+ * reads (Wealthfolio refuses a split or category anywhere else), and not one a
+ * bank feed fills (an extra row would make it disagree with the bank).
+ */
+export function giftCardAccounts<A extends { id: string }>(
+  cashAccounts: readonly A[], spendingAccountIds: readonly string[], fedAccountIds: readonly string[],
+): A[] {
+  return cashAccounts.filter((a) => spendingAccountIds.includes(a.id) && !fedAccountIds.includes(a.id));
+}
+
+/** Which cash account tracks this gift card: one button per account it can go to. */
 export function renderGiftAccountPicker(
   p: ReceiptProposal, accounts: ReadonlyArray<{ id: string; name: string }>,
 ): { text: string; keyboard: InlineKeyboard } {
@@ -428,17 +467,19 @@ export function moveItem(p: ReceiptProposal, n: number, categoryId: string): Rec
 /**
  * The imported charges a card payment could be: a purchase on a cash or card
  * account the Spending page reads, of exactly that amount, within
- * `CHARGE_WINDOW_DAYS` of the receipt, and not already split. More than one is
- * a question for the person; none means the charge has not been imported yet.
+ * `CHARGE_WINDOW_DAYS` of the receipt, not already split, and posted. More than
+ * one is a question for the person; none means the charge has not been
+ * imported yet. A pending charge waits: the sync may replace it with the posted
+ * one under a new id, and its split would go with it.
  */
 export function matchingCharges(
-  rows: readonly SpendRow[], cents: number, date: string, spendingAccountIds: readonly string[] | null,
+  rows: readonly SpendRow[], cents: number, date: string, spendingAccountIds: readonly string[],
 ): SpendRow[] {
   const day = Date.parse(`${date}T12:00:00Z`);
   return rows.filter((r) => {
     if (r.absCents !== cents || r.splits.length > 0 || effectiveType(r) !== 'WITHDRAWAL') return false;
     if (r.accountType !== 'CASH' && r.accountType !== 'CREDIT_CARD') return false;
-    if (spendingAccountIds && !spendingAccountIds.includes(r.accountId)) return false;
+    if (!spendingAccountIds.includes(r.accountId) || r.notes.endsWith(PENDING_SUFFIX)) return false;
     return Math.abs(Date.parse(`${r.date.slice(0, 10)}T12:00:00Z`) - day) <= CHARGE_WINDOW_DAYS * DAY_MS;
   });
 }
@@ -483,8 +524,8 @@ export function filedSummary(p: ReceiptProposal, cats: readonly ReceiptCategory[
 }
 
 /** Items the person confirmed, to answer the same item next time without asking the model. */
-export function confirmedFilings(p: ReceiptProposal): ItemFiling[] {
-  return p.items.map((i) => ({ text: i.text, categoryId: i.categoryId }));
+export function confirmedFilings(p: ReceiptProposal): ReceiptFiling[] {
+  return p.items.map((i) => ({ text: i.text, categoryId: i.categoryId, receiptId: p.id }));
 }
 
 export function undoKeyboard(id: string): InlineKeyboard {

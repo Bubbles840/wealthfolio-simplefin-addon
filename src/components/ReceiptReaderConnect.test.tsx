@@ -30,6 +30,19 @@ describe('ReceiptReaderConnect', () => {
     expect(await screen.findByRole('status')).toHaveTextContent(/within 5 minutes/);
   });
 
+  it('says what is wrong with a host address that is not an http or https URL, and will not save it', async () => {
+    const store = storeWith(EMPTY);
+    renderCard(store);
+    const save = await screen.findByRole('button', { name: 'Save' });
+    const input = screen.getByLabelText('Model host (Ollama)');
+    fireEvent.change(input, { target: { value: '192.168.1.20:11434' } });
+    expect(screen.getByText(/starting with http:\/\/ or https:\/\//)).toBeInTheDocument();
+    expect(input).toHaveAttribute('aria-invalid', 'true');
+    expect(save).toBeDisabled();
+    fireEvent.change(input, { target: { value: SAVED.url } });
+    expect(save).toBeEnabled();
+  });
+
   it("shows the companion's last look at the host", async () => {
     renderCard(storeWith(SAVED, { checkedAt: new Date().toISOString(), error: `${DEFAULT_RECEIPT_MODEL} isn't installed on the model host` }));
     expect(await screen.findByText(/Problem \(checked just now\): .*isn't installed/)).toBeInTheDocument();

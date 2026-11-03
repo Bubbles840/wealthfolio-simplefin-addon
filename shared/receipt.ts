@@ -13,7 +13,11 @@
  * - a discount comes off the item it names (or, naming none, the item above
  *   it), so a discounted taxable item is taxed on its discounted price; a
  *   savings summary the model listed anyway ("INSTANT SAVINGS", the sum of the
- *   discounts above it) is dropped;
+ *   discounts above it) is dropped, unless the receipt only adds up with it,
+ *   when it was a second coupon of the same amount;
+ * - only one bank card, gift cards, or both: cash leaves no imported charge to
+ *   split, and a second card's charge is never looked for, so either is refused
+ *   rather than filed in part;
  * - the lines must add up to the subtotal, items + charges + tax to the
  *   payments, and the printed total to the order either before or after its
  *   gift cards (a till prints it before, an order page after), or nothing is
@@ -119,7 +123,7 @@ export interface Receipt {
 
 export type ReceiptProblem =
   | 'no-items' | 'no-date' | 'unreadable-amount' | 'discount-too-large'
-  | 'lines-dont-add-up' | 'total-doesnt-add-up' | 'payments-dont-add-up' | 'tax-looks-wrong';
+  | 'lines-dont-add-up' | 'total-doesnt-add-up' | 'payments-dont-add-up' | 'tax-looks-wrong' | 'payment-not-supported';
 
 export type ReceiptResult = { ok: true; receipt: Receipt } | { ok: false; problem: ReceiptProblem };
 
@@ -133,6 +137,7 @@ export const RECEIPT_PROBLEM_TEXT: Record<ReceiptProblem, string> = {
   'total-doesnt-add-up': "The items, charges and tax I read don't add up to the order total.",
   'payments-dont-add-up': "The gift cards and total I read don't add up to the order.",
   'tax-looks-wrong': "The tax I read doesn't fit the taxed items.",
+  'payment-not-supported': 'I can only file a receipt paid with one card, gift cards, or both, and this one shows cash or a second card.',
 };
 
 /** Tax above this share of the taxed items is a misread, not a tax rate. */
@@ -167,6 +172,9 @@ const isQuantityLine = (line: TranscriptLine) => /^\s*\d+\s*@\s*\$?\d+(\.\d{1,2}
 
 /** A label that names a gift card, a store's own card or credit: paid from a balance, not by a bank card. */
 export const isGiftCardLabel = (label: string) => /gift|shop\s*card|store\s*card|store\s*credit|wallet|promotional|reward/i.test(label);
+
+/** A label that names cash or a benefit card: no bank charge to split. */
+const isCashLabel = (label: string) => /\b(cash|change|ebt|snap|wic)\b/i.test(label);
 
 /** A printed label without the colon a summary table puts after it. */
 const cleanLabel = (label: string | null | undefined) => (label ?? '').trim().replace(/\s*:$/, '');
@@ -260,6 +268,15 @@ export function shareCents(total: number, weights: readonly number[]): number[] 
 /** Checks a transcript and shares out its tax and charges. `knownRates` are
  *  rates earlier receipts printed (basis points), for an order page that prints none. */
 export function buildReceipt(t: ReceiptTranscript, knownRates: readonly number[] = []): ReceiptResult {
+  const seen = { summaries: 0 };
+  const read = readReceipt(t, knownRates, true, seen);
+  if (read.ok || seen.summaries === 0) return read;
+  // A line dropped as a savings summary may have been a second coupon of the same amount: the totals say which.
+  const kept = readReceipt(t, knownRates, false, seen);
+  return kept.ok ? kept : read;
+}
+
+function readReceipt(t: ReceiptTranscript, knownRates: readonly number[], dropSummaries: boolean, seen: { summaries: number }): ReceiptResult {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(t.date ?? '')) return { ok: false, problem: 'no-date' };
 
   interface Working { text: string; number?: string; gross: number; cents: number; flag: string }
@@ -286,7 +303,11 @@ export function buildReceipt(t: ReceiptTranscript, knownRates: readonly number[]
     } else if (line.kind === 'discount') {
       const named = line.appliesTo?.trim();
       // The receipt's own savings summary, listed although the prompt says not to: it repeats the discounts above it.
-      if (!named && discounted > 0 && cents === discounted) continue;
+      // A second coupon of the same amount looks the same, so it is kept when the receipt only adds up with it.
+      if (!named && discounted > 0 && cents === discounted) {
+        seen.summaries++;
+        if (dropSummaries) continue;
+      }
       discounted += cents;
       // A number that matches no item is a misread: guessing the line would tax the wrong price.
       const target = named ? [...items].reverse().find((i) => i.number === named) : items.at(-1);
@@ -333,6 +354,10 @@ export function buildReceipt(t: ReceiptTranscript, knownRates: readonly number[]
     if (raw !== '' && cents === null) return { ok: false, problem: 'unreadable-amount' };
     if (cents === null) { if (kind === 'card') unpriced.push(label); continue; }
     if (cents > 0) printed.push({ kind, label, cents });
+  }
+  const cards = printed.filter((p) => p.kind === 'card');
+  if ([...cards.map((p) => p.label), ...unpriced].some(isCashLabel) || cards.length + unpriced.length > 1) {
+    return { ok: false, problem: 'payment-not-supported' };
   }
   const giftCents = printed.filter((p) => p.kind === 'gift_card').reduce((s, p) => s + p.cents, 0);
   // The printed total is the order before its gift cards (a till) or after them (an order page).

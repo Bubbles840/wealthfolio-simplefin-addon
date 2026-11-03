@@ -2,7 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { Button, CollapsibleCard, statusToneClass } from './ui';
 import type { StatusMessage } from './ui';
 import type { SecretsStore } from '../utils/secrets';
-import { DEFAULT_RECEIPT_MODEL, type ReceiptHostStatus, type ReceiptReaderConfig } from '../../shared/receipt-flow';
+import { DEFAULT_RECEIPT_MODEL, modelHostUrlProblem, type ReceiptHostStatus, type ReceiptReaderConfig } from '../../shared/receipt-flow';
 import { companionReadsReceipts, RECEIPTS_SINCE } from '../../shared/version';
 
 interface Props {
@@ -62,7 +62,8 @@ export function ReceiptReaderConnect({ store, isOpen, toggleCard }: Props) {
   }, [store]);
 
   const supported = companion === undefined || companionReadsReceipts(companion);
-  const complete = !!cfg.url.trim() && !!cfg.model.trim();
+  const urlProblem = cfg.url.trim() ? modelHostUrlProblem(cfg.url) : null;
+  const complete = !!cfg.url.trim() && !urlProblem && !!cfg.model.trim();
   const dirty = JSON.stringify(cfg) !== JSON.stringify(saved);
   const savedOn = !!saved.url && saved.enabled;
   const summary = !savedOn ? 'Off' : host?.error ? 'Problem' : host ? 'Ready' : 'Not checked yet';
@@ -91,7 +92,9 @@ export function ReceiptReaderConnect({ store, isOpen, toggleCard }: Props) {
             <div>
               <label htmlFor="sfin-rr-url" className="sfin-subtle">Model host (Ollama)</label>
               <input id="sfin-rr-url" type="url" className="sfin-select" placeholder="e.g. http://192.168.1.20:11434"
+                aria-invalid={urlProblem ? true : undefined} aria-describedby={urlProblem ? 'sfin-rr-url-problem' : undefined}
                 value={cfg.url} onChange={(e) => setCfg((c) => ({ ...c, url: e.target.value }))} />
+              {urlProblem && <div id="sfin-rr-url-problem" className="sfin-subtle">{urlProblem}</div>}
             </div>
             <div>
               <label htmlFor="sfin-rr-model" className="sfin-subtle">Vision model</label>
@@ -104,8 +107,9 @@ export function ReceiptReaderConnect({ store, isOpen, toggleCard }: Props) {
             {' '}Read receipts sent to the bot
           </label>
           <div className="sfin-subtle">
-            Ollama only answers its own computer unless it is started with OLLAMA_HOST=0.0.0.0, and it has no password:
-            keep it on your home network.
+            Ollama only answers its own computer unless OLLAMA_HOST says otherwise, and it has no password. Set it to that
+            computer's home network or Tailscale address (e.g. OLLAMA_HOST=192.168.1.20:11434), not 0.0.0.0, and never
+            forward its port to the internet.
           </div>
 
           {savedOn && (

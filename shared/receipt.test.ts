@@ -262,6 +262,30 @@ describe('buildReceipt', () => {
       .toEqual({ ok: false, problem: 'discount-too-large' });
   });
 
+  it('keeps a second coupon equal to the first, and drops a summary line the subtotal only adds up without', () => {
+    const lines = (second: string): TranscriptLine[] => [
+      item('ITEM A', '5.00'), { kind: 'discount', text: 'COUPON', amount: '1.00' },
+      item('ITEM B', '4.00'), { kind: 'discount', text: second, amount: '1.00' },
+    ];
+    const coupons = buildReceipt(till({ lines: lines('COUPON'), subtotal: '7.00', tax: '0.00', total: '7.00', taxLines: [] }));
+    expect(coupons.ok && coupons.receipt.items.map((i) => i.cents)).toEqual([400, 300]);
+    const summary = buildReceipt(till({ lines: lines('SAVINGS'), subtotal: '8.00', tax: '0.00', total: '8.00', taxLines: [] }));
+    expect(summary.ok && summary.receipt.items.map((i) => i.cents)).toEqual([400, 400]);
+  });
+
+  it('refuses a receipt paid in cash or with two cards, rather than filing part of it', () => {
+    const plain = { lines: [item('BREAD', '10.00')], subtotal: '10.00', tax: '0.00', total: '10.00', taxLines: [] };
+    for (const payments of [
+      [{ label: 'CASH', amount: '20.00' }, { label: 'CHANGE', amount: '10.00' }],
+      [{ label: 'CASH', amount: '10.00' }],
+      [{ label: 'EBT', amount: '10.00' }],
+      [{ label: 'VISA', amount: '6.00' }, { label: 'MASTERCARD', amount: '4.00' }],
+    ]) {
+      expect(buildReceipt(till({ ...plain, payments }))).toEqual({ ok: false, problem: 'payment-not-supported' });
+    }
+    expect(buildReceipt(till({ ...plain, payments: [{ label: 'Gift card', amount: '4.00' }, { label: 'VISA', amount: '6.00' }] })).ok).toBe(true);
+  });
+
   it('refuses tax far above any real rate on the taxed items', () => {
     const lines = [item('BREAD', '10.00'), item('PEN', '1.00', { flag: 'A' })];
     expect(buildReceipt(till({ lines, subtotal: '11.00', tax: '3.00', total: '14.00', taxLines: [] })))
