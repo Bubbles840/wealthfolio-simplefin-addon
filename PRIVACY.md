@@ -36,6 +36,7 @@ the same two services above, plus:
 |---|---|---|---|
 | **Your Wealthfolio instance** | Yes | Its password or API key, and the transactions being imported | Your existing activities and settings |
 | **Your mail provider, over IMAP** | No — only if you set up Amazon categorisation | Your mailbox host, username, and app password | Amazon order-confirmation emails |
+| **Your model host (Ollama)** | No — only if you set up the receipt reader | Each receipt photo you send the bot, its item names, your spending category names and paths, and the descriptions of up to 40 items you filed before (as examples) | What the receipt says, and a category for each item |
 
 The mail host is whichever server you configure; this project does not choose
 one or route mail through anything. Use a dedicated app password, and if your
@@ -48,6 +49,16 @@ be labelled with the category. It does not read, store, or transmit unrelated
 mail, and message bodies are not retained. The records live in Wealthfolio's
 secret storage alongside your other settings, and are consumed once matched.
 
+**What the receipt reader sends, and where.** The model host is whichever
+address you enter in its settings card; this project does not run one or
+choose one. The photo and the category details above go to that host and
+nowhere else, so they stay on your own network as long as the host is on
+your network. Ollama has no password: give it your home network or Tailscale
+address rather than `0.0.0.0`, and never forward its port to the internet.
+The companion downloads the photo from Telegram, passes it to the host and
+does not keep it; it keeps only Telegram's reference to the photo while the
+receipt is waiting to be read.
+
 The companion also reads your `wealthfolio.db` file **read-only**, to count
 uncategorised transactions and to fill in category names and budget figures in
 its reports.
@@ -58,7 +69,11 @@ Everything this addon persists is stored in your own Wealthfolio instance, in
 its encrypted addon-secret storage: the SimpleFIN access URL, your account
 mapping, transaction rules, notification settings, the Telegram bot token and
 chat id, the mailbox settings above, and small bookkeeping ledgers used to
-avoid duplicate imports and repeated alerts.
+avoid duplicate imports and repeated alerts. The receipt reader adds its own:
+the model host address, receipts waiting to be read or confirmed, and what it
+learned from receipts you filed (item names and their categories, the account
+each store's gift card goes to, tax rates, and a fingerprint of each receipt
+to flag the same one sent twice).
 
 Nothing is stored anywhere else. Removing the addon and running **Reset** in
 Advanced clears all of it.

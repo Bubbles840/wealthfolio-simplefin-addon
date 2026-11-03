@@ -33,6 +33,10 @@ import type { SyncResult } from '../../shared/sync-core';
 import { LARGE_TX_OUTBOX_SECRET_KEY, SUBSCRIPTION_NEWS_SECRET_KEY } from '../../shared/telegram';
 import { ADDON_VERSION_SECRET_KEY, INSTALLED_ADDON_VERSION_SECRET_KEY, SIMPLEFIN_SYNC_VERSION, WEALTHFOLIO_VERSION_SECRET_KEY } from '../../shared/version';
 import { REFUSED_ALERTED_SECRET_KEY } from '../../shared/refused-alerts';
+import {
+  RECEIPT_CONFIG_SECRET_KEY, RECEIPT_STATUS_SECRET_KEY, parseReceiptHostStatus, receiptReaderConfigForEditing,
+  type ReceiptHostStatus, type ReceiptReaderConfig,
+} from '../../shared/receipt-flow';
 import { HIDDEN_SUBSCRIPTIONS_SECRET_KEY, CONFIRMED_SUBSCRIPTIONS_SECRET_KEY } from '../../shared/subscriptions';
 import {
   SUBSCRIPTION_PREFS_SECRET_KEY, editSubscriptionPrefs as editPrefsDocument, loadSubscriptionPrefs,
@@ -405,6 +409,20 @@ export class SecretsStore {
   }
   async setAnnouncedRefusals(json: string): Promise<void> {
     await this.ctx.api.secrets.set(REFUSED_ALERTED_SECRET_KEY, json);
+  }
+
+  /** The receipt reader's settings (shared/receipt-flow.ts): the companion reads them. */
+  async getReceiptReaderConfig(): Promise<ReceiptReaderConfig> {
+    return receiptReaderConfigForEditing(await this.ctx.api.secrets.get(RECEIPT_CONFIG_SECRET_KEY));
+  }
+  async setReceiptReaderConfig(config: ReceiptReaderConfig): Promise<void> {
+    await this.ctx.api.secrets.set(RECEIPT_CONFIG_SECRET_KEY, JSON.stringify({
+      enabled: config.enabled, url: config.url.trim(), model: config.model.trim(),
+    }));
+  }
+  /** The companion's last look at the model host; null before its first. */
+  async getReceiptHostStatus(): Promise<ReceiptHostStatus | null> {
+    return parseReceiptHostStatus(await this.ctx.api.secrets.get(RECEIPT_STATUS_SECRET_KEY));
   }
 
   /** Category names the companion has seen while building its last report —

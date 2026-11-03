@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Receipt reader (#55).** Send the Telegram bot a receipt photo or an order
+  screenshot; a vision model on your own computer reads it, and on Confirm the
+  card charge is split by category, or a gift card gets one row split by category.
+
 ## [1.71.0] - 2026-10-30
 
 Update both halves. Everything new is in the companion. From 1.70.0, Update

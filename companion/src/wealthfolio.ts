@@ -306,12 +306,12 @@ export class WealthfolioClient {
   /** Every account. `name` and `isActive` (false = hidden) feed the cash
    *  forecast (project 5); every field is optional because the server's DTO
    *  is not ours to pin. */
-  async getAccounts(): Promise<Array<{ id: string; name?: string; accountType?: string; isArchived?: boolean; isActive?: boolean }>> {
+  async getAccounts(): Promise<Array<{ id: string; name?: string; accountType?: string; currency?: string; isArchived?: boolean; isActive?: boolean }>> {
     const res = await this.send(`${this.baseUrl}/api/v1/accounts`, {
       headers: this.authHeaders(),
     });
     if (!res.ok) throw await this.httpError('getAccounts', res);
-    return res.json() as Promise<Array<{ id: string; name?: string; accountType?: string; isArchived?: boolean; isActive?: boolean }>>;
+    return res.json() as Promise<Array<{ id: string; name?: string; accountType?: string; currency?: string; isArchived?: boolean; isActive?: boolean }>>;
   }
 
   /**
@@ -566,6 +566,29 @@ export class WealthfolioClient {
       },
     );
     if (!res.ok) throw await this.httpError('assignActivityCategory', res);
+  }
+
+  /** Replaces an activity's split lines (Wealthfolio 3.8+). The server checks
+   *  the lines add up to the activity's amount and clears its single category. */
+  async replaceActivitySplits(
+    activityId: string,
+    lines: Array<{ taxonomyId: string; categoryId: string; amount: string; note: string | null; sortOrder: number }>,
+  ): Promise<void> {
+    const res = await this.send(`${this.baseUrl}/api/v1/spending/activities/${encodeURIComponent(activityId)}/splits`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json', ...this.authHeaders() },
+      body: JSON.stringify(lines),
+    });
+    if (!res.ok) throw await this.httpError('replaceActivitySplits', res);
+  }
+
+  /** Removes an activity's split lines. */
+  async clearActivitySplits(activityId: string): Promise<void> {
+    const res = await this.send(`${this.baseUrl}/api/v1/spending/activities/${encodeURIComponent(activityId)}/splits`, {
+      method: 'DELETE',
+      headers: this.authHeaders(),
+    });
+    if (!res.ok) throw await this.httpError('clearActivitySplits', res);
   }
 
   /** Creates a top-level spending category and returns its id. The key is the

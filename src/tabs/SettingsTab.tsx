@@ -15,6 +15,7 @@ import { PoolCard } from '../components/PoolCard';
 import { shortDate } from '../../shared/telegram';
 import type { SemesterPoolConfig } from '../../shared/pool';
 import { NotificationsTab, type TelegramDraftState } from './NotificationsTab';
+import { ReceiptReaderConnect } from '../components/ReceiptReaderConnect';
 import { fetchAccounts } from '../utils/simplefin';
 import type { SecretsStore, CategoryCatalogEntry, AccountBalanceInfo } from '../utils/secrets';
 import type { Scheduler } from '../utils/scheduler';
@@ -613,6 +614,7 @@ export function SettingsTab({
         isOpen={isOpen}
         toggleCard={toggleCard}
       />
+      <ReceiptReaderConnect store={store} isOpen={isOpen} toggleCard={toggleCard} />
 
       <h3 className="sfin-settings-group">Sync</h3>
 

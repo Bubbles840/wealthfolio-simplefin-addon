@@ -626,6 +626,29 @@ count remain. Splitting a charge into per-item rows needs per-item prices, so th
 is dead at the source — which is also why category tagging is safe: with nothing
 to split, reconciliation is never involved.
 
+### Receipts read on your own computer
+
+With the companion and Telegram, send the bot a photo of a store receipt or a
+screenshot of an online order. A vision model on your own computer reads it
+([Ollama](https://ollama.com), default `qwen2.5vl:32b`, about 21 GB of memory
+while reading), and the bot proposes a category for each item for you to confirm:
+
+- **Paid by card:** the charge the bank feed imported is split by category, the
+  same split you would make by hand. A charge not imported yet is filed when it is.
+- **Paid by gift card:** one row for the visit in the cash account that tracks
+  it, split by category (the bot asks which account once per store).
+- **Tax** comes off the items the receipt marks as taxed, at the rate it prints;
+  an order page that prints no rate uses a rate an earlier receipt printed.
+
+The model only copies what is printed; the add-up checks are done in code, and a
+receipt that does not add up is never filed. Each filed receipt has an Undo
+button. Set it up under **Settings → Receipt reader**: start Ollama listening on
+the computer's home network or Tailscale address so the companion can reach it
+(`OLLAMA_HOST=192.168.1.20:11434`), and `ollama pull qwen2.5vl:32b`. Ollama has no
+password: never forward its port to the internet. The bot files a receipt paid
+with one card, gift cards, or both; one paid in cash or with two cards is refused.
+A photo sent while the computer is asleep is read when it wakes, for up to 7 days.
+
 ## Privacy
 
 - SimpleFin access is **read-only**.
@@ -635,6 +658,10 @@ to split, reconciliation is never involved.
   `manifest.json`.
 - Amazon categorization is off unless configured, and reads only the mailbox you
   point it at — deliberately a throwaway one holding nothing but receipts.
+- The receipt reader is off unless configured. Photos go from Telegram to the
+  companion and to the model on your own computer, nowhere else; the companion
+  keeps only Telegram's reference to the photo, never the image. Ollama has no
+  password, so keep it on your home network (see [PRIVACY.md](PRIVACY.md)).
 
 ## Development
 
