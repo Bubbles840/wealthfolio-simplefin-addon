@@ -461,19 +461,20 @@ export function splitLines(rows: readonly CategoryRow[]): SplitLine[] {
   return rows.map((r, n) => ({ taxonomyId: SPENDING_TAXONOMY, categoryId: r.categoryId, amount: decimal(r.cents), note: itemsNote(r.items), sortOrder: n }));
 }
 
-/** One WITHDRAWAL per category a gift card covers, in the account that tracks it. */
-export function giftCardWrites(
+/** One WITHDRAWAL for what a gift card paid, in the account that tracks it: one row per visit, as the store's own
+ *  records show it. More than one category splits it (`splitLines`); one category is assigned whole. */
+export function giftCardWrite(
   p: Pick<ReceiptProposal, 'store' | 'date'>, rows: readonly CategoryRow[], accountId: string, currency: string,
-): ActivityWrite[] {
-  return rows.map((r) => ({
+): ActivityWrite {
+  return {
     accountId,
     activityType: 'WITHDRAWAL',
     activityDate: bankDayInstant(p.date),
     symbol: { symbol: `$CASH-${currency}` },
-    amount: r.cents / 100,
+    amount: rows.reduce((s, r) => s + r.cents, 0) / 100,
     currency,
-    comment: short(`${p.store ? `${p.store}: ` : ''}${r.items.join(', ')}`, 200),
-  }));
+    comment: short(`${p.store ? `${p.store}: ` : ''}${rows.flatMap((r) => r.items).join(', ')}`, 200),
+  };
 }
 
 /** What a filed receipt says on its Done message. */

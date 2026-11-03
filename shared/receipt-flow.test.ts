@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
-  CHARGE_WINDOW_DAYS, DEFAULT_RECEIPT_MODEL, modelProblem, parseReceiptHostStatus, RECEIPT_LIMITS, confirmedFilings, giftAccountKey, giftCardWrites, matchingCharges,
+  CHARGE_WINDOW_DAYS, DEFAULT_RECEIPT_MODEL, modelProblem, parseReceiptHostStatus, RECEIPT_LIMITS, confirmedFilings, giftAccountKey, giftCardWrite, matchingCharges,
   moveItem, newProposal, parseReceiptReaderConfig, parseReceiptState, parseReceiptTap, proposalRows, proposalRowsByPayment,
   pruneReceiptState, receiptFingerprint, receiptReaderConfigForEditing, renderCategoryPicker, renderGiftAccountPicker,
   renderChargePicker, renderItemPicker, renderProposal, splitLines, undoKeyboard, fullyCategorized, NO_CATEGORY,
@@ -205,11 +205,12 @@ describe('the writes', () => {
     expect(lines[0].note).toBe('BREAD');
   });
 
-  it('adds one withdrawal per category for the gift card, dated on the receipt', () => {
+  it('adds one withdrawal for what the gift card paid, dated on the receipt', () => {
     const [gift] = proposalRowsByPayment(proposal());
-    const writes = giftCardWrites(proposal(), gift, 'gift-acct', 'USD');
-    expect(writes.reduce((s, w) => s + Math.round((w.amount ?? 0) * 100), 0)).toBe(4000);
-    expect(writes[0]).toMatchObject({ accountId: 'gift-acct', activityType: 'WITHDRAWAL', symbol: { symbol: '$CASH-USD' }, currency: 'USD', comment: 'Corner Market: BREAD' });
-    expect(writes[0].activityDate.startsWith('2027-03-14')).toBe(true);
+    const write = giftCardWrite(proposal(), gift, 'gift-acct', 'USD');
+    expect(Math.round((write.amount ?? 0) * 100)).toBe(4000);
+    expect(write).toMatchObject({ accountId: 'gift-acct', activityType: 'WITHDRAWAL', symbol: { symbol: '$CASH-USD' }, currency: 'USD' });
+    expect(write.comment).toMatch(/^Corner Market: BREAD/);
+    expect(write.activityDate.startsWith('2027-03-14')).toBe(true);
   });
 });

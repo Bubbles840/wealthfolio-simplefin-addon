@@ -238,15 +238,18 @@ describe('filing', () => {
     expect(state(h).proposals[0].items[0].categoryId).toBe('c-home');
   });
 
-  it('asks once which account tracks a gift card, then adds a row per category there', async () => {
+  it('asks once which account tracks a gift card, then adds one row there split by category', async () => {
     const h = harness();
     h.set({ transcript: { ...TILL, total: '0.00', payments: [{ label: 'Gift card', amount: '120.00', kind: 'gift_card' }] } });
     await proposed(h);
     const asked = await tap(h, 'cz:rc:ok:p1');
     expect(asked.edits[0].text).toMatch(/Which account tracks/);
     await tap(h, 'cz:rc:ga:p1:gift-acct');
-    expect(h.created.map((w) => [w.accountId, w.amount])).toEqual([['gift-acct', 10], ['gift-acct', 110]]);
-    expect(h.assigned).toEqual([['new-1', 'c-gro'], ['new-2', 'c-lamps']]);
+    expect(h.created.map((w) => [w.accountId, w.amount])).toEqual([['gift-acct', 120]]);
+    expect(h.splits).toEqual([{ id: 'new-1', lines: [
+      expect.objectContaining({ categoryId: 'c-gro', amount: '10.00' }), expect.objectContaining({ categoryId: 'c-lamps', amount: '110.00' }),
+    ] }]);
+    expect(h.assigned).toEqual([]);
     expect(state(h).giftAccounts).toEqual({ 'corner market': 'gift-acct' });
   });
 

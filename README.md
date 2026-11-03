@@ -631,12 +631,12 @@ to split, reconciliation is never involved.
 With the companion and Telegram, send the bot a photo of a store receipt or a
 screenshot of an online order. A vision model on your own computer reads it
 ([Ollama](https://ollama.com), default `qwen2.5vl:32b`, about 21 GB of memory
-while reading), and the bot proposes one row per category for you to confirm:
+while reading), and the bot proposes a category for each item for you to confirm:
 
 - **Paid by card:** the charge the bank feed imported is split by category, the
   same split you would make by hand. A charge not imported yet is filed when it is.
-- **Paid by gift card:** one row per category in the cash account that tracks it
-  (the bot asks which account once per store).
+- **Paid by gift card:** one row for the visit in the cash account that tracks
+  it, split by category (the bot asks which account once per store).
 - **Tax** comes off the items the receipt marks as taxed, at the rate it prints;
   an order page that prints no rate uses a rate an earlier receipt printed.
 

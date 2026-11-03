@@ -65,8 +65,9 @@ By what paid for it, from the payment lines:
   Wealthfolio's split API (`PUT /api/v1/spending/activities/{id}/splits`), the same lines a person makes by hand. More
   than one → the bot asks which. None yet (the charge is often still pending) → the confirmed receipt waits and is
   matched on each later sync for 7 days **(my call)**, then the bot asks.
-- **A gift card or store credit**: one WITHDRAWAL per category in the cash account that tracks that card, dated on the
-  receipt's date, with the item names in the note. The first time a store's gift card is used, the bot asks which cash
+- **A gift card or store credit**: one WITHDRAWAL for what it paid, in the cash account that tracks that card, dated on
+  the receipt's date, with the item names in the note, split by category (one category is assigned whole), so a visit
+  is one row, as the store's own records show it. The first time a store's gift card is used, the bot asks which cash
   account tracks it (a button per cash account) and remembers the answer by store name. With no such account, it asks
   the person to create one rather than creating it itself.
 - **Both**: the receipt does not say which items the gift card paid for, so every payment gets the same category mix,

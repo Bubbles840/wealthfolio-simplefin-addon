@@ -22,7 +22,7 @@ import {
 import {
   NO_CATEGORY, RECEIPT_CALLBACK_PREFIX, RECEIPT_LIMITS, RECEIPT_CONFIG_SECRET_KEY, RECEIPT_STATE_SECRET_KEY, RECEIPT_STATUS_SECRET_KEY,
   modelProblem, parseReceiptHostStatus,
-  confirmedFilings, filedSummary, fullyCategorized, giftAccountKey, giftCardWrites, matchingCharges, money, moveItem,
+  confirmedFilings, filedSummary, fullyCategorized, giftAccountKey, giftCardWrite, matchingCharges, money, moveItem,
   newProposal, parseReceiptReaderConfig, parseReceiptState, parseReceiptTap, proposalRowsByPayment, pruneReceiptState,
   receiptFingerprint, renderCategoryPicker, renderChargePicker, renderGiftAccountPicker, renderItemPicker, renderProposal,
   splitLines, undoKeyboard,
@@ -318,9 +318,11 @@ export function createReceiptHost(deps: ReceiptHostDeps) {
     const createdIds: string[] = [];
     try {
       for (const n of giftIdx) {
-        const ids = await deps.wf.create(giftCardWrites(p, byPayment[n], giftAccount!.id, giftAccount!.currency));
-        createdIds.push(...ids);
-        for (const [k, id] of ids.entries()) await deps.wf.assign(id, byPayment[n][k].categoryId);
+        if (byPayment[n].length === 0) continue;
+        const [id] = await deps.wf.create([giftCardWrite(p, byPayment[n], giftAccount!.id, giftAccount!.currency)]);
+        createdIds.push(id);
+        if (byPayment[n].length === 1) await deps.wf.assign(id, byPayment[n][0].categoryId);
+        else await deps.wf.replaceSplits(id, splitLines(byPayment[n]));
       }
       let split: Filed['split'];
       if (charge) {
