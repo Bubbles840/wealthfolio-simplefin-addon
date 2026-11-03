@@ -22,6 +22,7 @@
  * settings need REST routes the addon SDK does not expose.
  */
 import { databaseFileExists, openLiveDatabase, whyNoLiveOpen } from './live-db.js';
+import { findCategoryByNameOrKey, hasTable } from './category-lookup.js';
 import { bookkeepingChange, openingBalanceFiledChange, type ChangeDraft } from '../../shared/change-entries.js';
 import { isNewerVersion } from '../../shared/version.js';
 import { OPENING_BALANCES_CATEGORY, STARTING_BALANCE_COMMENT_PREFIX } from '../../shared/sync-core.js';
@@ -87,6 +88,10 @@ export async function fileCardOpeningDebts(deps: OpeningBalanceFilingDeps): Prom
          WHERE UPPER(acc.account_type) = 'CREDIT_CARD'
            AND UPPER(a.activity_type) = 'WITHDRAWAL'
            AND COALESCE(a.notes,'') LIKE 'Starting balance · %'
+           ${hasTable(db, 'spending_activity_splits')
+             // Split lines are the person's own filing, and 3.12 refuses a category on such a row.
+             ? 'AND NOT EXISTS (SELECT 1 FROM spending_activity_splits s WHERE s.activity_id = a.id)'
+             : ''}
            AND NOT EXISTS (
              SELECT 1 FROM activity_taxonomy_assignments ata
              JOIN taxonomy_categories tc ON ata.category_id = tc.id
@@ -96,11 +101,7 @@ export async function fileCardOpeningDebts(deps: OpeningBalanceFilingDeps): Prom
     // The note names the SimpleFin account: `Starting balance · <sfinId>`.
     rows = rows.filter((r) => !(r.notes.startsWith(STARTING_BALANCE_COMMENT_PREFIX)
       && deps.noOpeningFile?.(r.notes.slice(STARTING_BALANCE_COMMENT_PREFIX.length))));
-    categoryId = (
-      db.prepare(`SELECT id FROM taxonomy_categories WHERE taxonomy_id = ? AND name = ?`).get(TAXONOMY, OPENING_BALANCES_CATEGORY) as
-        | { id: string }
-        | undefined
-    )?.id;
+    categoryId = findCategoryByNameOrKey(db, TAXONOMY, OPENING_BALANCES_CATEGORY);
     try {
       const raw = (
         db.prepare(`SELECT setting_value v FROM app_settings WHERE setting_key = 'spending.excluded_category_ids'`).get() as

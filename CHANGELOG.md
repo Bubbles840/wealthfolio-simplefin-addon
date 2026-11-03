@@ -12,6 +12,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   screenshot; a vision model on your own computer reads it, and on Confirm the
   card charge is split by category, or a gift card gets one row split by category.
 
+### Fixed
+- **Wealthfolio 3.11 and 3.12 work as they are.** Two 3.12 refusals are now
+  handled instead of retried:
+  - A deposit split across income categories leaves the needs-a-category
+    list, and a card opening debt you split is left alone. 3.12 refuses a
+    single category on a split transaction.
+  - "Opening balances" and "Sync bookkeeping" are found by their key after
+    you rename them. Before, they were created again; 3.12 refuses a second
+    category with the same key, which would have failed on every sync.
+
 ## [1.71.0] - 2026-10-30
 
 Update both halves. Everything new is in the companion. From 1.70.0, Update

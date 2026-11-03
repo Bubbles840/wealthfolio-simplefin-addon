@@ -103,6 +103,20 @@ describe('fileSyncBookkeeping', () => {
     expect(recorded.map((r) => r.summary)).toEqual(['Took 1 row that is no longer bookkeeping out of "Sync bookkeeping"']);
   });
 
+  // Renaming keeps the key, and Wealthfolio 3.12 refuses a second category with
+  // that key: with the remembered id lost, creating it again would fail every sync.
+  it('finds a renamed category by its key when no id is remembered', async () => {
+    const path = database(PLACEHOLDER, `
+      ALTER TABLE taxonomy_categories ADD COLUMN key TEXT;
+      INSERT INTO taxonomy_categories VALUES ('cat-sync', 'spending_categories', 'Internal', NULL, 'sync_bookkeeping');
+      INSERT INTO app_settings VALUES ('spending.excluded_category_ids', '["cat-sync"]');
+    `);
+    const { d } = deps(path);
+    expect(await fileSyncBookkeeping(d)).toEqual({ filed: 1, unfiled: 0 });
+    expect(d.createCategory).not.toHaveBeenCalled();
+    expect(d.assign).toHaveBeenCalledWith('ph', 'cat-sync');
+  });
+
   it.each([['3.8.0'], ['3.8.4'], [null]])('does nothing at all on Wealthfolio %s, which excludes no category', async (version) => {
     const { d, recorded } = deps(database(PLACEHOLDER), { appVersion: vi.fn(async () => version) });
     expect(await fileSyncBookkeeping(d)).toEqual({ filed: 0, unfiled: 0 });

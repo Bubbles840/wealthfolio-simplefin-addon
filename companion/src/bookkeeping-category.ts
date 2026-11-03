@@ -40,6 +40,7 @@ import { bookkeepingChange, type ChangeDraft } from '../../shared/change-entries
 import { IN_TRANSIT_COMMENT_PREFIX } from '../../shared/reconcile.js';
 import { BALANCE_ADJUSTMENT_COMMENT_PREFIX, STARTING_BALANCE_COMMENT_PREFIX } from '../../shared/sync-core.js';
 import { isNewerVersion } from '../../shared/version.js';
+import { findCategoryByNameOrKey } from './category-lookup.js';
 import { SPENDING_TAXONOMY } from '../../shared/wf-spending.js';
 import { databaseFileExists, openLiveDatabase, whyNoLiveOpen } from './live-db.js';
 import { supportsExclusion } from './opening-balance-category.js';
@@ -117,8 +118,7 @@ export function findSyncBookkeepingCategory(db: DatabaseSync, rememberedId: stri
     const byId = db.prepare(`SELECT id FROM taxonomy_categories WHERE taxonomy_id = ? AND id = ?`).get(SPENDING_TAXONOMY, rememberedId) as { id: string } | undefined;
     if (byId) return byId.id;
   }
-  return (db.prepare(`SELECT id FROM taxonomy_categories WHERE taxonomy_id = ? AND name = ? ORDER BY id`)
-    .get(SPENDING_TAXONOMY, SYNC_BOOKKEEPING_CATEGORY) as { id: string } | undefined)?.id ?? null;
+  return findCategoryByNameOrKey(db, SPENDING_TAXONOMY, SYNC_BOOKKEEPING_CATEGORY) ?? null;
 }
 
 /** The bookkeeping rows, the rows filed under the category, and which

@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { isUuid, PROFILE_ID_FORMAT } from './profile-id.js';
 import type { BudgetTarget } from '../../shared/budget-suggest.js';
 import type { CategoryRuleLike } from '../../shared/tx-story.js';
+import { categoryKey } from './category-lookup.js';
 
 /** A categorization rule as `GET /spending/rules` lists it (upstream
  *  `CategorizationRule`, camelCase): what Undo needs and what rule inference
@@ -604,7 +605,7 @@ export class WealthfolioClient {
         taxonomyId: 'spending_categories',
         parentId: null,
         name,
-        key: name.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, ''),
+        key: categoryKey(name),
         color: '#9ca3af',
         description,
         sortOrder: 999,
