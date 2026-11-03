@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.72.0] - 2026-11-03
+
+Update both halves. From 1.70.0, Update the add-on in the app as usual (no
+new permissions) and pull the companion image. The receipt reader needs both:
+its settings card only appears with a 1.72.0 companion. From an older version,
+use **Install from File** with this zip and pull the companion, as 1.70.0 says.
+
 ### Added
 - **Receipt reader (#55).** Send the Telegram bot a receipt photo or an order
   screenshot; a vision model on your own computer reads it, and on Confirm the
