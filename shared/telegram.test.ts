@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { shortDateTime, formatRefusedCreatesAlert } from './telegram.js';
-import { sendTelegramMessage, formatDailySpendingDigest, formatMonthlyRemainingSummary, formatMonthlyWrapUp, formatSyncHealthFooter, escapeMarkdown, weeklyEnvelope, moneyWhole, formatLargeTransactionAlert, formatBalanceDriftAlert, formatStuckTransferAlert, formatDuplicatePruneAlert, formatImportNotice } from './telegram.js';
+import { sendTelegramMessage, formatDailySpendingDigest, formatMonthlyRemainingSummary, formatMonthlyWrapUp, formatSyncHealthFooter, escapeMarkdown, weeklyEnvelope, moneyWhole, formatLargeTransactionAlert, formatBalanceDriftAlert, formatStuckTransferAlert, formatDuplicatePruneAlert, formatImportNotice, importNoticeRows } from './telegram.js';
 
 /**
  * Every expectation written before 1.7.0 was against the glyph style, which is no
@@ -2224,5 +2224,31 @@ describe('the attention view (1.57.0)', () => {
     // must still say what this week looks like.
     const text = attention([{ name: 'Shopping', budget: 100, monthSpent: 150, weekSpent: 140 }]);
     expect(text).toMatch(/\$50 over\* for the month · \$[\d.]+ over this wk/);
+  });
+});
+
+describe('importNoticeRows', () => {
+  const rows = [
+    { txId: 'a', activityType: 'BUY' },
+    { txId: 'b', activityType: 'SELL' },
+    { txId: 'c', activityType: 'DIVIDEND' },
+    { txId: 'd', activityType: 'WITHDRAWAL' },
+    { txId: 'e', activityType: 'buy' },
+  ];
+
+  it('keeps every row unless buys and sells are explicitly switched off', () => {
+    expect(importNoticeRows(rows, {})).toBe(rows);
+    expect(importNoticeRows(rows, { notifyOnImportTrades: true })).toBe(rows);
+    // Anything but an explicit false is the default, like the other opt-outs.
+    expect(importNoticeRows(rows, { notifyOnImportTrades: 'no' })).toBe(rows);
+  });
+
+  it('drops only buys and sells when switched off, whatever their case', () => {
+    expect(importNoticeRows(rows, { notifyOnImportTrades: false }).map((r) => r.txId)).toEqual(['c', 'd']);
+  });
+
+  it('keeps a row with no activity type', () => {
+    const untyped: Array<{ txId: string; activityType?: string }> = [{ txId: 'x' }];
+    expect(importNoticeRows(untyped, { notifyOnImportTrades: false })).toHaveLength(1);
   });
 });

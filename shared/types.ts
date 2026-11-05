@@ -145,6 +145,10 @@ export interface TelegramConfig {
   chatId: string;
   enabled: boolean;
   notifyOnImport?: boolean;
+  /** Whether the import notice lists investment buys and sells. Only an
+   *  explicit `false` leaves them out, so a config written before this setting
+   *  existed keeps announcing them. */
+  notifyOnImportTrades?: boolean;
   dailyReportEnabled?: boolean;
   weeklyReportEnabled?: boolean;
   /** Monthly wrap-up, sent on the 1st about the month that just ended. Like its

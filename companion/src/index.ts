@@ -28,7 +28,7 @@ import { RestSyncStore, syncHostFor } from './rest-host.js';
 import { WealthfolioClient, type ActivitySearchItem } from './wealthfolio.js';
 import type { DateRepairRow } from '../../shared/date-repair.js';
 import { resolveDigestRows, resolveReportDetail, shortDate, shortDateTime, formatDollars } from '../../shared/telegram.js';
-import { sendTelegramMessage, formatDailySpendingDigest, formatMonthlyRemainingSummary, formatMonthlyWrapUp, formatSyncHealthFooter, formatLargeTransactionAlert, formatBalanceDriftAlert, formatFeedLagNotice, formatStuckTransferAlert, formatDuplicatePruneAlert, formatImportNotice, formatRefusedCreatesAlert, formatPoolLine, formatPoolSection, buildDismissKeyboard, dailyReportCarriesProblems, IMPORT_NOTICE_UNCATEGORIZED_CAP, escapeMarkdown, formatComingUpBlock, formatNextWeekLine, formatSubscriptionNews, parseNewsSent, pruneNewsSent, SUBSCRIPTION_NEWS_SECRET_KEY, LARGE_TX_OUTBOX_SECRET_KEY, RECATEGORIZE_ENTRY_CALLBACK } from '../../shared/telegram.js';
+import { sendTelegramMessage, formatDailySpendingDigest, formatMonthlyRemainingSummary, formatMonthlyWrapUp, formatSyncHealthFooter, formatLargeTransactionAlert, formatBalanceDriftAlert, formatFeedLagNotice, formatStuckTransferAlert, formatDuplicatePruneAlert, formatImportNotice, importNoticeRows, formatRefusedCreatesAlert, formatPoolLine, formatPoolSection, buildDismissKeyboard, dailyReportCarriesProblems, IMPORT_NOTICE_UNCATEGORIZED_CAP, escapeMarkdown, formatComingUpBlock, formatNextWeekLine, formatSubscriptionNews, parseNewsSent, pruneNewsSent, SUBSCRIPTION_NEWS_SECRET_KEY, LARGE_TX_OUTBOX_SECRET_KEY, RECATEGORIZE_ENTRY_CALLBACK } from '../../shared/telegram.js';
 import { pruneDismissals, mergeDismissals } from './dismissals.js';
 import { UNDISMISS_PAYLOAD_PREFIX, UNDISMISS_BUTTON_TEXT_PREFIX } from './telegram-listener.js';
 import { DISMISSAL_MAX_AGE_DAYS } from '../../shared/uncategorized.js';
@@ -1431,9 +1431,21 @@ async function runCompanionSyncOnce(opts: { force?: boolean; manual?: boolean })
       if (tg && tg.botToken && tg.chatId && tg.enabled !== false) {
         log(`Telegram notifications active (chat: ${tg.chatId}).`);
         if (result.imported > 0) {
-          if (tg.notifyOnImport !== false) {
+          const announced = importNoticeRows(result.importedTransactions, tg);
+          // Only the filter can silence the notice: a run whose list was empty
+          // to begin with is sent exactly as before.
+          const onlyTrades = announced.length === 0 && result.importedTransactions.length > 0;
+          if (tg.notifyOnImport !== false && onlyTrades) {
+            log(`Import notice skipped: all ${result.importedTransactions.length} imported transaction(s) were buys or sells, which the notice leaves out.`);
+          } else if (tg.notifyOnImport !== false) {
             try {
-              await sendImportNotice(wfClient, tg, result, sharedTransferLearning ?? undefined, changeLog.run);
+              await sendImportNotice(
+                wfClient,
+                tg,
+                { ...result, imported: result.imported - (result.importedTransactions.length - announced.length), importedTransactions: announced },
+                sharedTransferLearning ?? undefined,
+                changeLog.run,
+              );
             } catch (err) {
               // `log`, not `debug`: the sync has already succeeded and these rows
               // are already sitting in Wealthfolio, so a thrown notice means the

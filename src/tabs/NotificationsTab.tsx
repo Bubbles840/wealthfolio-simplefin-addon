@@ -38,6 +38,8 @@ export interface TelegramCfgDraft {
   botToken: string;
   chatId: string;
   notifyOnImport: boolean;
+  /** Whether the import notice lists investment buys and sells. */
+  notifyOnImportTrades: boolean;
   dailyReportEnabled: boolean;
   weeklyReportEnabled: boolean;
   monthlyReportEnabled: boolean;
@@ -119,6 +121,7 @@ export function buildConfig(cfg: TelegramCfgDraft) {
     chatId: cfg.chatId.trim(),
     enabled: true,
     notifyOnImport: cfg.notifyOnImport,
+    notifyOnImportTrades: cfg.notifyOnImportTrades,
     dailyReportEnabled: cfg.dailyReportEnabled,
     weeklyReportEnabled: cfg.weeklyReportEnabled,
     monthlyReportEnabled: cfg.monthlyReportEnabled,
@@ -150,6 +153,8 @@ const EMPTY_DRAFT: TelegramCfgDraft = {
   botToken: '',
   chatId: '',
   notifyOnImport: true,
+  // Absent means ON: a config written before this setting kept listing them.
+  notifyOnImportTrades: true,
   // Absent means ON for all three, so a config written before the monthly
   // report existed opts into it.
   dailyReportEnabled: true,
@@ -212,6 +217,7 @@ function draftFromStored(
     botToken: tg.botToken ?? '',
     chatId: tg.chatId ?? '',
     notifyOnImport: tg.notifyOnImport ?? true,
+    notifyOnImportTrades: tg.notifyOnImportTrades ?? true,
     dailyReportEnabled: tg.dailyReportEnabled ?? true,
     weeklyReportEnabled: tg.weeklyReportEnabled ?? true,
     monthlyReportEnabled: tg.monthlyReportEnabled ?? true,

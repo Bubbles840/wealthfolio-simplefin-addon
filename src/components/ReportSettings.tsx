@@ -62,6 +62,15 @@ export function ReportSettings({ cfg, onChange, isOpen, toggleCard }: Props) {
             />
             <span>Transaction import alerts (instant when new transactions sync)</span>
           </label>
+          <label className="sfin-check sfin-check-sub">
+            <input
+              type="checkbox"
+              checked={cfg.notifyOnImportTrades}
+              disabled={!cfg.notifyOnImport}
+              onChange={(e) => onChange({ notifyOnImportTrades: e.target.checked })}
+            />
+            <span>Include investment buys and sells</span>
+          </label>
           <label className="sfin-check">
             <input
               type="checkbox"

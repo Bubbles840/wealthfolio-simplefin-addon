@@ -1457,6 +1457,37 @@ describe('deliverAddonAlerts', () => {
     expect(request).not.toHaveBeenCalled();
   });
 
+  it('leaves buys and sells out of the notice when they are switched off', async () => {
+    const request = okNet();
+    const store = tgStore({
+      getTelegramConfig: vi.fn(async () => ({
+        botToken: 'tok', chatId: '42', enabled: true, notifyOnImportTrades: false,
+      })),
+    });
+    const trade = importedTx({ txId: 'TRN-2', description: 'Bought shares', activityType: 'BUY' });
+
+    await deliverAddonAlerts(alertCtx(request), store as any, emptyResult({
+      imported: 2, importedTransactions: [importedTx(), trade],
+    }));
+
+    expect(sentTexts(request)[0]).toBe(formatImportNotice([importedTx()], []));
+  });
+
+  it('sends no notice when every import was a buy or sell and those are switched off', async () => {
+    const request = okNet();
+    const store = tgStore({
+      getTelegramConfig: vi.fn(async () => ({
+        botToken: 'tok', chatId: '42', enabled: true, notifyOnImportTrades: false,
+      })),
+    });
+
+    await deliverAddonAlerts(alertCtx(request), store as any, emptyResult({
+      imported: 1, importedTransactions: [importedTx({ activityType: 'SELL' })],
+    }));
+
+    expect(request).not.toHaveBeenCalled();
+  });
+
   it('treats a config with no notifyOnImport as opted IN', async () => {
     // Every config written before this side had an import notice omits the
     // field; reading that as "off" would keep exactly the users who hit the
