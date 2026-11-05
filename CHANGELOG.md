@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **No holdings snapshots on accounts Wealthfolio tracks by transactions.** A
+  cash account whose feed lists a money market fund got imported snapshots that
+  duplicated the ones Wealthfolio builds from its activities.
+
 ## [1.73.0] - 2026-11-05
 
 Update both halves. Update the add-on in the app as usual (no new

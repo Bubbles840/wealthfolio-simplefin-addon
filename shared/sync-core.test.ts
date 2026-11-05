@@ -3682,6 +3682,34 @@ describe('holdings snapshots for investment accounts', () => {
     expect(result.errors).toEqual([]);
   });
 
+  it('gives an account Wealthfolio tracks by transactions no snapshot', async () => {
+    // Wealthfolio builds that account's snapshots from its activities.
+    const seed = brokerageSeed();
+    seed.trackingModes = { 'wf-b': 'TRANSACTIONS' };
+    const { host, store, holdings } = createFakeHost(seed);
+    const result = await runSyncCore(host, store, { force: true });
+    expect(holdings).toEqual([]);
+    expect(result.holdingsSnapshots).toEqual({ imported: 0, skipped: 0, unresolvedSymbols: [] });
+    expect(result.errors).toEqual([]);
+  });
+
+  it.each(['HOLDINGS', 'NOT_SET'])('still gives an account tracked as %s its snapshot', async (mode) => {
+    const seed = brokerageSeed();
+    seed.trackingModes = { 'wf-b': mode };
+    const { host, store, holdings } = createFakeHost(seed);
+    await runSyncCore(host, store, { force: true });
+    expect(holdings.map((h) => h.wfAccountId)).toEqual(['wf-b']);
+  });
+
+  it('still gives the account its snapshot when the account list cannot be read', async () => {
+    const seed = brokerageSeed();
+    seed.trackingModes = { 'wf-b': 'TRANSACTIONS' };
+    const { host, store, holdings } = createFakeHost(seed);
+    host.listAccounts = async () => { throw new Error('unreachable'); };
+    await runSyncCore(host, store, { force: true });
+    expect(holdings.map((h) => h.wfAccountId)).toEqual(['wf-b']);
+  });
+
   it('skips the account when the host cannot import snapshots at all', async () => {
     // The companion's REST host has no snapshot endpoint to call, so the
     // capability is optional and its absence is not an error.

@@ -307,7 +307,7 @@ export class WealthfolioClient {
   /** Every account. `name` and `isActive` (false = hidden) feed the cash
    *  forecast (project 5); every field is optional because the server's DTO
    *  is not ours to pin. */
-  async getAccounts(): Promise<Array<{ id: string; name?: string; accountType?: string; currency?: string; isArchived?: boolean; isActive?: boolean }>> {
+  async getAccounts(): Promise<Array<{ id: string; name?: string; accountType?: string; currency?: string; isArchived?: boolean; isActive?: boolean; trackingMode?: string }>> {
     const res = await this.send(`${this.baseUrl}/api/v1/accounts`, {
       headers: this.authHeaders(),
     });

@@ -4892,11 +4892,20 @@ async function runSyncPass(
   // problem, the account's transactions are already saved by this point, and
   // taking the run down over positions would cost the thing that matters to save
   // the thing that does not.
+  //
+  // An account Wealthfolio tracks by transactions gets none: Wealthfolio builds
+  // that account's snapshots from its activities, and an imported one only
+  // duplicates them. NOT_SET, or a mode the host cannot read, still gets one.
   const holdingsSnapshots = noHoldings();
   if (host.syncHoldings) {
+    const byTransactions = new Set(
+      (await host.listAccounts().catch(() => []))
+        .filter((a) => a.trackingMode === 'TRANSACTIONS')
+        .map((a) => a.id),
+    );
     for (const sfAccount of accountSet.accounts) {
       const wfAccountId = mapping[sfAccount.id];
-      if (!wfAccountId) continue;
+      if (!wfAccountId || byTransactions.has(wfAccountId)) continue;
       const snapshot = toHoldingsSnapshot(sfAccount);
       if (!snapshot) continue;
       try {
