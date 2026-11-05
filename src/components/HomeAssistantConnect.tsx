@@ -2,7 +2,10 @@ import React, { useEffect, useState } from 'react';
 import { Button, CollapsibleCard, statusToneClass } from './ui';
 import type { StatusMessage } from './ui';
 import type { SecretsStore } from '../utils/secrets';
-import { haConfigComplete, haLinkBaseProblem, type HaMode, type HaStatus, type HomeAssistantConfig } from '../../shared/home-assistant';
+import {
+  haConfigComplete, haConfigKey, haLinkBaseProblem, haUrlProblem, HA_PENDING_MAX_AGE_MS,
+  type HaMode, type HaStatus, type HomeAssistantConfig,
+} from '../../shared/home-assistant';
 import { companionSendsToHomeAssistant, HOME_ASSISTANT_SINCE } from '../../shared/version';
 
 interface Props {
@@ -15,6 +18,7 @@ export const HOME_ASSISTANT_CARD = 'home-assistant';
 
 const EMPTY: HomeAssistantConfig = {
   enabled: true, mode: 'notify', url: '', token: '', service: '', titlePrefix: '', linkBase: '',
+  notifyOnImport: false, notifyOnImportTrades: true,
 };
 
 /** "3 min ago" for the last-delivery line. */
@@ -31,9 +35,9 @@ function ago(iso: string, now = Date.now()): string {
  * service or a webhook trigger.
  *
  * Its own card and its own Save, not part of the Telegram draft: it is a
- * separate secret and a separate channel. "Send a test" QUEUES a test alert; the
- * companion sends it within 5 minutes, because an add-on cannot reach a Home
- * Assistant address. The companion's last outcome shows under the fields, so a
+ * separate secret and a separate channel, with its own import-notice switches.
+ * "Send a test" QUEUES a test alert; the companion sends it within minutes,
+ * because an add-on cannot reach a Home Assistant address. The companion's last outcome shows under the fields, so a
  * wrong token or service is visible here rather than only in container logs.
  */
 export function HomeAssistantConnect({ store, isOpen, toggleCard }: Props) {
@@ -70,6 +74,8 @@ export function HomeAssistantConnect({ store, isOpen, toggleCard }: Props) {
 
   const supported = companion === undefined || companionSendsToHomeAssistant(companion);
   const linkProblem = haLinkBaseProblem(cfg.linkBase);
+  // Only once something is typed: an empty field just keeps Save disabled.
+  const urlProblem = cfg.url.trim() ? haUrlProblem(cfg.url) : null;
   const complete = haConfigComplete(cfg) && !linkProblem;
   const dirty = JSON.stringify(cfg) !== JSON.stringify(saved);
   const savedComplete = saved.enabled && haConfigComplete(saved);
@@ -77,9 +83,18 @@ export function HomeAssistantConnect({ store, isOpen, toggleCard }: Props) {
   const field = (key: 'url' | 'token' | 'service' | 'titlePrefix' | 'linkBase') =>
     (e: React.ChangeEvent<HTMLInputElement>) => setCfg((c) => ({ ...c, [key]: e.target.value }));
 
+  const failing = !!delivery?.lastError && (!delivery.lastOkAt || delivery.lastErrorAt! > delivery.lastOkAt);
+  // Parked for the SAVED config: a change saved since then is tried again.
+  const paused = failing && !!delivery?.parkedFor && delivery.parkedFor === haConfigKey(saved);
+  const droppedRecently = !!delivery?.dropped && !!delivery.droppedAt
+    && Date.now() - Date.parse(delivery.droppedAt) < HA_PENDING_MAX_AGE_MS;
   const summary = !savedComplete ? 'Not set up'
-    : delivery?.lastError && (!delivery.lastOkAt || delivery.lastErrorAt! > delivery.lastOkAt) ? 'Delivery failing'
-      : 'Connected';
+    : paused ? 'Delivery paused'
+      : failing ? 'Delivery failing'
+        : 'Connected';
+  const urlField = (id: string) => urlProblem
+    ? { 'aria-invalid': true as const, 'aria-describedby': id }
+    : {};
 
   return (
     <CollapsibleCard
@@ -90,8 +105,8 @@ export function HomeAssistantConnect({ store, isOpen, toggleCard }: Props) {
       onToggle={() => toggleCard(HOME_ASSISTANT_CARD)}
     >
       <div className="sfin-subtle sfin-notif-intro">
-        Alerts (sync failing, balance drift, unlinked transfers, large transactions, new imports, new accounts)
-        sent to Home Assistant by the companion container. Reports stay on Telegram.
+        Alerts (sync failing, balance drift, unlinked transfers, large transactions, new accounts, and new imports
+        if you want them) sent to Home Assistant by the companion container. Reports stay on Telegram.
       </div>
 
       {!supported ? (
@@ -113,7 +128,8 @@ export function HomeAssistantConnect({ store, isOpen, toggleCard }: Props) {
               <label htmlFor="sfin-ha-url" className="sfin-subtle">Webhook URL</label>
               <input id="sfin-ha-url" type="url" className="sfin-select"
                 placeholder="e.g. http://homeassistant.local:8123/api/webhook/your-id"
-                value={cfg.url} onChange={field('url')} />
+                {...urlField('sfin-ha-url-problem')} value={cfg.url} onChange={field('url')} />
+              {urlProblem && <div id="sfin-ha-url-problem" className="sfin-subtle">{urlProblem}</div>}
               <div className="sfin-subtle">
                 Posts JSON with title, message, source (&quot;simplefin-sync&quot;), kind and id. Home Assistant answers
                 every webhook the same way, so use Send a test to check your automation receives it.
@@ -125,7 +141,8 @@ export function HomeAssistantConnect({ store, isOpen, toggleCard }: Props) {
                 <div>
                   <label htmlFor="sfin-ha-url" className="sfin-subtle">Home Assistant URL</label>
                   <input id="sfin-ha-url" type="url" className="sfin-select" placeholder="e.g. http://homeassistant.local:8123"
-                    value={cfg.url} onChange={field('url')} />
+                    {...urlField('sfin-ha-url-problem')} value={cfg.url} onChange={field('url')} />
+                  {urlProblem && <div id="sfin-ha-url-problem" className="sfin-subtle">{urlProblem}</div>}
                 </div>
                 <div>
                   <label htmlFor="sfin-ha-service" className="sfin-subtle">Notify service</label>
@@ -161,16 +178,36 @@ export function HomeAssistantConnect({ store, isOpen, toggleCard }: Props) {
             it to the companion app.
           </div>
           <label className="sfin-subtle">
+            <input type="checkbox" checked={cfg.notifyOnImport}
+              onChange={(e) => setCfg((c) => ({ ...c, notifyOnImport: e.target.checked }))} />
+            {' '}Also send a notice for each sync that imports new transactions
+          </label>
+          {cfg.notifyOnImport && (
+            <label className="sfin-subtle">
+              <input type="checkbox" checked={cfg.notifyOnImportTrades}
+                onChange={(e) => setCfg((c) => ({ ...c, notifyOnImportTrades: e.target.checked }))} />
+              {' '}Include investment buys and sells
+            </label>
+          )}
+          <label className="sfin-subtle">
             <input type="checkbox" checked={cfg.enabled} onChange={(e) => setCfg((c) => ({ ...c, enabled: e.target.checked }))} />
             {' '}Send alerts to Home Assistant
           </label>
 
           {savedComplete && (
             <div className="sfin-subtle">
-              {delivery?.lastError && (!delivery.lastOkAt || delivery.lastErrorAt! > delivery.lastOkAt)
-                ? `Last delivery failed ${ago(delivery.lastErrorAt!)}: ${delivery.lastError}`
-                : delivery?.lastOkAt ? `Last alert delivered ${ago(delivery.lastOkAt)}.`
-                  : 'Nothing delivered yet.'}
+              {paused
+                ? `Delivery paused ${ago(delivery!.lastErrorAt!)}: ${delivery!.lastError}. Nothing is sent until you save a change or send a test.`
+                : failing
+                  ? `Last delivery failed ${ago(delivery!.lastErrorAt!)}: ${delivery!.lastError}${delivery!.retryAt ? '. Retrying later.' : ''}`
+                  : delivery?.lastOkAt ? `Last alert delivered ${ago(delivery.lastOkAt)}.`
+                    : 'Nothing delivered yet.'}
+            </div>
+          )}
+          {savedComplete && droppedRecently && (
+            <div className="sfin-subtle">
+              {delivery!.dropped === 1 ? '1 alert' : `${delivery!.dropped} alerts`} waited over a week without
+              reaching Home Assistant and {delivery!.dropped === 1 ? 'was' : 'were'} dropped ({ago(delivery!.droppedAt!)}).
             </div>
           )}
 
@@ -202,8 +239,10 @@ export function HomeAssistantConnect({ store, isOpen, toggleCard }: Props) {
               onClick={async () => {
                 setBusy(true);
                 try {
-                  await store.queueHomeAssistantTest();
-                  setStatus({ text: 'Test queued. The companion sends it within 5 minutes; the line above shows the result.', tone: 'ok' });
+                  const outcome = await store.queueHomeAssistantTest();
+                  setStatus(outcome === 'off'
+                    ? { text: 'Home Assistant is off in the saved settings, so no test was queued.', tone: 'error' }
+                    : { text: 'Test queued. The companion sends it within 5 minutes (up to 15 right after you first set this up); the line above shows the result.', tone: 'ok' });
                 } catch (err) {
                   setStatus({ text: `Couldn't queue the test: ${(err as Error).message}`, tone: 'error' });
                 } finally {

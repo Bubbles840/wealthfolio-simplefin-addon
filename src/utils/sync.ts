@@ -102,7 +102,7 @@ export function runSync(
       const haIo = store.homeAssistantIo?.();
       if (haIo) {
         const now = new Date();
-        await queueHaEntries(haIo, (known) => syncAlertEntries(result, now, known), now);
+        await queueHaEntries(haIo, 'addon', (known, config) => syncAlertEntries(result, now, known, config), now);
       }
       return result;
     } finally {

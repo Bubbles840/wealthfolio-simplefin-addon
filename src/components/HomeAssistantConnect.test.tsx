@@ -2,18 +2,19 @@ import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { describe, it, expect, vi } from 'vitest';
 import { HomeAssistantConnect } from './HomeAssistantConnect';
 import type { SecretsStore } from '../utils/secrets';
-import type { HaStatus, HomeAssistantConfig } from '../../shared/home-assistant';
+import { haConfigKey, type HaStatus, type HomeAssistantConfig } from '../../shared/home-assistant';
 import { HOME_ASSISTANT_SINCE } from '../../shared/version';
 
-const SAVED: HomeAssistantConfig = { enabled: true, mode: 'notify', url: 'http://ha.local:8123', token: 'tok', service: 'mobile_app_phone', titlePrefix: '', linkBase: '' };
-const EMPTY: HomeAssistantConfig = { enabled: true, mode: 'notify', url: '', token: '', service: '', titlePrefix: '', linkBase: '' };
+const IMPORTS_OFF = { notifyOnImport: false, notifyOnImportTrades: true };
+const SAVED: HomeAssistantConfig = { enabled: true, mode: 'notify', url: 'http://ha.local:8123', token: 'tok', service: 'mobile_app_phone', titlePrefix: '', linkBase: '', ...IMPORTS_OFF };
+const EMPTY: HomeAssistantConfig = { enabled: true, mode: 'notify', url: '', token: '', service: '', titlePrefix: '', linkBase: '', ...IMPORTS_OFF };
 
 function storeWith(config: HomeAssistantConfig, status: HaStatus | null = null, companion: string | null = HOME_ASSISTANT_SINCE) {
   return {
     getHomeAssistantConfig: vi.fn(async () => config),
     setHomeAssistantConfig: vi.fn(async () => {}),
     getHomeAssistantStatus: vi.fn(async () => status),
-    queueHomeAssistantTest: vi.fn(async () => {}),
+    queueHomeAssistantTest: vi.fn(async (): Promise<'off' | 'queued'> => 'queued'),
     getCompanionVersion: vi.fn(async () => companion),
   };
 }
@@ -75,9 +76,72 @@ describe('HomeAssistantConnect', () => {
     expect(screen.getByText('Delivery failing')).toBeInTheDocument();
   });
 
+  it('refuses a Home Assistant URL that is not http(s), or that carries a password', async () => {
+    const store = storeWith(EMPTY);
+    renderCard(store);
+    const url = await screen.findByLabelText('Home Assistant URL');
+    fireEvent.change(screen.getByLabelText('Notify service'), { target: { value: SAVED.service } });
+    fireEvent.change(screen.getByLabelText('Long-lived access token'), { target: { value: SAVED.token } });
+    fireEvent.change(url, { target: { value: 'homeassistant.local:8123' } });
+    expect(screen.getByText(/starting with http/)).toBeInTheDocument();
+    expect(url).toHaveAttribute('aria-invalid', 'true');
+    expect(screen.getByRole('button', { name: 'Save' })).toBeDisabled();
+    fireEvent.change(url, { target: { value: 'http://me:secret@ha.local:8123' } });
+    expect(screen.getByText(/user name and password/)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Save' })).toBeDisabled();
+    fireEvent.change(url, { target: { value: SAVED.url } });
+    expect(screen.getByRole('button', { name: 'Save' })).toBeEnabled();
+  });
+
+  it('saves the import-notice switches, off by default', async () => {
+    const store = storeWith(SAVED);
+    renderCard(store);
+    const imports = await screen.findByLabelText(/each sync that imports new transactions/);
+    expect(imports).not.toBeChecked();
+    expect(screen.queryByLabelText('Include investment buys and sells')).toBeNull();
+    fireEvent.click(imports);
+    fireEvent.click(screen.getByLabelText('Include investment buys and sells'));
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    await waitFor(() => expect(store.setHomeAssistantConfig).toHaveBeenCalledWith(
+      { ...SAVED, notifyOnImport: true, notifyOnImportTrades: false },
+    ));
+  });
+
+  it('says so when the test was not queued because Home Assistant is off', async () => {
+    const store = storeWith(SAVED);
+    store.queueHomeAssistantTest.mockResolvedValueOnce('off');
+    renderCard(store);
+    fireEvent.click(await screen.findByRole('button', { name: 'Send a test' }));
+    expect(await screen.findByRole('status')).toHaveTextContent(/off in the saved settings/);
+  });
+
+  it('says when a test could not be queued', async () => {
+    const store = storeWith(SAVED);
+    store.queueHomeAssistantTest.mockRejectedValueOnce(new Error('storage locked'));
+    renderCard(store);
+    fireEvent.click(await screen.findByRole('button', { name: 'Send a test' }));
+    expect(await screen.findByRole('status')).toHaveTextContent(/Couldn't queue the test: storage locked/);
+  });
+
+  it('shows delivery as paused after a failure retrying cannot fix', async () => {
+    renderCard(storeWith(SAVED, {
+      lastError: 'Home Assistant answered 401 (check the access token)', lastErrorAt: '2027-03-15T10:00:00.000Z',
+      parkedFor: haConfigKey(SAVED),
+    }));
+    expect(await screen.findByText('Delivery paused')).toBeInTheDocument();
+    expect(screen.getByText(/Nothing is sent until you save a change or send a test/)).toBeInTheDocument();
+  });
+
+  it('says when alerts were dropped unsent', async () => {
+    renderCard(storeWith(SAVED, {
+      lastOkAt: new Date().toISOString(), dropped: 3, droppedAt: new Date().toISOString(),
+    }));
+    expect(await screen.findByText(/3 alerts waited over a week/)).toBeInTheDocument();
+  });
+
   it('asks for a newer companion instead of fields it would never read', async () => {
-    renderCard(storeWith(EMPTY, null, '1.72.0'));
-    expect(await screen.findByText(/Needs the companion container 1.73.0 or newer/)).toBeInTheDocument();
+    renderCard(storeWith(EMPTY, null, '1.73.0'));
+    expect(await screen.findByText(new RegExp(`Needs the companion container ${HOME_ASSISTANT_SINCE} or newer`))).toBeInTheDocument();
     expect(screen.queryByLabelText('Home Assistant URL')).toBeNull();
   });
 });

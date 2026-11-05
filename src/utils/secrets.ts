@@ -38,7 +38,8 @@ import {
   type ReceiptHostStatus, type ReceiptReaderConfig,
 } from '../../shared/receipt-flow';
 import {
-  HA_CONFIG_SECRET_KEY, HA_STATUS_SECRET_KEY, haTestEntry, homeAssistantConfigForEditing, parseHaStatus, queueHaEntries,
+  HA_ADDON_QUEUE_SECRET_KEY, HA_CONFIG_SECRET_KEY, HA_OUTBOX_SECRET_KEY, HA_STATUS_SECRET_KEY, haTestEntry,
+  homeAssistantConfigForEditing, parseHaStatus, queueHaEntriesStrict,
   type HaSecretIo, type HaStatus, type HomeAssistantConfig,
 } from '../../shared/home-assistant';
 import { HIDDEN_SUBSCRIPTIONS_SECRET_KEY, CONFIRMED_SUBSCRIPTIONS_SECRET_KEY } from '../../shared/subscriptions';
@@ -171,6 +172,14 @@ const KEYS = {
   openCards: 'ui_open_cards',
   uiState: 'ui_state',
   pendingLargeTxAlerts: LARGE_TX_OUTBOX_SECRET_KEY,
+  // Home Assistant: the access token, both queues and the companion's delivery
+  // status. Read and written through their own constants, the shape that is easy
+  // to leave out of KEYS; left out, a Reset kept the token and the companion
+  // kept sending alerts for the reset install.
+  homeAssistantConfig: HA_CONFIG_SECRET_KEY,
+  homeAssistantOutbox: HA_OUTBOX_SECRET_KEY,
+  homeAssistantAddonQueue: HA_ADDON_QUEUE_SECRET_KEY,
+  homeAssistantStatus: HA_STATUS_SECRET_KEY,
   // Companion-published, addon-read-only (see `getUncategorizedStatus`) — but
   // still an addon secret, so a reset has to clear it too. Left out of KEYS,
   // clearAll skipped it and a reset account kept showing the stale "Needs a
@@ -444,16 +453,19 @@ export class SecretsStore {
       enabled: config.enabled, mode: config.mode, url: config.url.trim(),
       token: config.token.trim(), service: config.service.trim(),
       titlePrefix: config.titlePrefix.trim(), linkBase: config.linkBase.trim(),
+      notifyOnImport: config.notifyOnImport, notifyOnImportTrades: config.notifyOnImportTrades,
     }));
   }
   /** The companion's last delivery outcome; null before its first. */
   async getHomeAssistantStatus(): Promise<HaStatus | null> {
     return parseHaStatus(await this.ctx.api.secrets.get(HA_STATUS_SECRET_KEY));
   }
-  /** Queues a test alert for the companion's next drain (within 5 minutes). */
-  async queueHomeAssistantTest(): Promise<void> {
+  /** Queues a test alert for the companion's next drain. 'off' when the saved
+   *  config is switched off or incomplete (nothing queued). Rejects when the
+   *  secrets cannot be read or written, so the card can say so. */
+  async queueHomeAssistantTest(): Promise<'off' | 'queued'> {
     const now = new Date();
-    await queueHaEntries(this.homeAssistantIo(), () => [haTestEntry(now)], now);
+    return queueHaEntriesStrict(this.homeAssistantIo(), 'addon', () => [haTestEntry(now)], now);
   }
 
   /** Category names the companion has seen while building its last report —

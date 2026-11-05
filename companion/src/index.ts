@@ -252,7 +252,8 @@ import { buildReportCube, type CubeBuildDeps } from './report-cube-build.js';
 import { createReceiptHost } from './receipt-host.js';
 import { getNativeSpendRows, getNativeSpendingSettings } from './sqlite-native.js';
 import {
-  drainHomeAssistant, haSecretIo, queueSyncAlertsForHomeAssistant, queueSyncHealthForHomeAssistant,
+  drainHomeAssistant, haDrainDue, haKnownSetUp, haSecretIo, queueSyncAlertsForHomeAssistant,
+  queueSyncHealthForHomeAssistant,
 } from './home-assistant-host.js';
 
 const logLevel: 'info' | 'debug' =
@@ -1484,10 +1485,11 @@ async function runCompanionSyncOnce(opts: { force?: boolean; manual?: boolean })
 
     // Home Assistant: this run's alerts, queued independently of Telegram and
     // sent straight away (the 5-minute drain also sends what the add-on queues).
-    // Never throws: a notification problem is not a sync failure.
+    // Never throws: a notification problem is not a sync failure. Not awaited:
+    // a slow Home Assistant must not hold the sync (and its lock) open.
     await queueSyncAlertsForHomeAssistant(haSecretIo(wfClient), result);
-    await drainHomeAssistant(haSecretIo(wfClient))
-      .catch((err) => log(`Home Assistant delivery failed, will retry: ${formatError(err)}`));
+    void drainHomeAssistant(haSecretIo(wfClient))
+      .catch((err) => { if (haKnownSetUp()) log(`Home Assistant delivery failed, will retry: ${formatError(err)}`); });
 
     // 2c: the checks behind the app's Checks card, its account chips and the
     // Budget tab's "different from Wealthfolio" link — after the cube, whose
@@ -4646,11 +4648,14 @@ if (!process.env.VITEST) {
 
   // Home Assistant: alerts the add-on queued (it cannot reach Home Assistant
   // itself) go out within minutes instead of at the next sync. Signs in only
-  // when the session has lapsed, not every tick.
+  // when the session has lapsed, not every tick. Without Home Assistant set up
+  // it reads the config once per 15 minutes, and never signs in or logs.
   cron.schedule('*/5 * * * *', () => {
+    if (!haDrainDue()) return;
     const drain = () => drainHomeAssistant(haSecretIo(wfClient));
     drain()
-      .catch(async () => {
+      .catch(async (err) => {
+        if (!haKnownSetUp()) throw err;
         const apiKey = process.env.WEALTHFOLIO_API_KEY;
         if (apiKey) (wfClient as unknown as { token: string }).token = apiKey;
         else {
@@ -4660,7 +4665,7 @@ if (!process.env.VITEST) {
         return drain();
       })
       .then((n) => { if (n > 0) log(`Home Assistant: sent ${n} alert(s).`); })
-      .catch((err) => log(`Home Assistant delivery failed, will retry: ${formatError(err)}`));
+      .catch((err) => { if (haKnownSetUp()) log(`Home Assistant delivery failed, will retry: ${formatError(err)}`); });
   });
 
   cron.schedule(dailySchedule, () => {

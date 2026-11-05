@@ -217,7 +217,7 @@ export function addonUnderstandsDividends(installedAddonVersion: string | null):
  * the add-on offers the setting only once one this new is running. Raise to the
  * release that ships this.
  */
-export const HOME_ASSISTANT_SINCE = '1.73.0';
+export const HOME_ASSISTANT_SINCE = '1.74.0';
 
 /** True when `companionVersion` drains the outbox. No companion at all (null)
  *  is false: nothing would ever send what is queued. */

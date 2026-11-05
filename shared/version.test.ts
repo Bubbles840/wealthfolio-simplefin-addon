@@ -161,7 +161,7 @@ describe('the receipt reader gate', () => {
 describe('the Home Assistant gate', () => {
   it('opens only with a companion that drains the outbox', () => {
     expect(companionSendsToHomeAssistant(HOME_ASSISTANT_SINCE)).toBe(true);
-    expect(companionSendsToHomeAssistant('1.72.0')).toBe(false);
+    expect(companionSendsToHomeAssistant('1.73.0')).toBe(false);
     expect(companionSendsToHomeAssistant(null)).toBe(false);
   });
 });
