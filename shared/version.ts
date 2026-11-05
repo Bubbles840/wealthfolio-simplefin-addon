@@ -211,6 +211,20 @@ export function addonUnderstandsDividends(installedAddonVersion: string | null):
   return installedAddonVersion !== null && isAtLeastVersion(installedAddonVersion.trim(), DIVIDEND_SECURITIES_SINCE);
 }
 
+/**
+ * The first companion that drains the Home Assistant outbox
+ * (shared/home-assistant.ts). Only the companion can reach Home Assistant, so
+ * the add-on offers the setting only once one this new is running. Raise to the
+ * release that ships this.
+ */
+export const HOME_ASSISTANT_SINCE = '1.73.0';
+
+/** True when `companionVersion` drains the outbox. No companion at all (null)
+ *  is false: nothing would ever send what is queued. */
+export function companionSendsToHomeAssistant(companionVersion: string | null): boolean {
+  return companionVersion !== null && isAtLeastVersion(companionVersion.trim(), HOME_ASSISTANT_SINCE);
+}
+
 /** The companion's half: an installed add-on that reads `asReimbursement`.
  *  Unknown (null — the companion cannot see the addons directory) is false. */
 export function addonUnderstandsPaybacks(installedAddonVersion: string | null): boolean {

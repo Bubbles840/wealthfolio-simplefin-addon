@@ -251,6 +251,9 @@ import { handleReportsRequest } from './reports-server.js';
 import { buildReportCube, type CubeBuildDeps } from './report-cube-build.js';
 import { createReceiptHost } from './receipt-host.js';
 import { getNativeSpendRows, getNativeSpendingSettings } from './sqlite-native.js';
+import {
+  drainHomeAssistant, haSecretIo, queueSyncAlertsForHomeAssistant, queueSyncHealthForHomeAssistant,
+} from './home-assistant-host.js';
 
 const logLevel: 'info' | 'debug' =
   process.env.LOG_LEVEL === 'debug' ? 'debug' : 'info';
@@ -401,8 +404,12 @@ async function checkSyncHealthAlert(wfClient: WealthfolioClient): Promise<void> 
   const raw = await wfClient.getAddonSecret('simplefin-sync', 'sync_health').catch(() => null);
   const health = parseSecretJson<SyncHealth>(raw, 'sync_health');
   if (!health) return;
-  if (!health.firstFailedAt || health.alerted) return;
+  if (!health.firstFailedAt) return;
   if (Date.now() - new Date(health.firstFailedAt).getTime() < SYNC_HEALTH_ALERT_MS) return;
+  // Before the `alerted` guard, which records TELEGRAM delivery: Home Assistant
+  // keeps its own once-per-streak memory, keyed on the streak's start.
+  await queueSyncHealthForHomeAssistant(haSecretIo(wfClient), health.firstFailedAt, health.lastError ?? undefined);
+  if (health.alerted) return;
 
   const tgRaw = await wfClient.getAddonSecret('simplefin-sync', 'telegram_config').catch(() => null);
   const tg = parseSecretJson<any>(tgRaw, 'telegram_config');
@@ -1474,6 +1481,13 @@ async function runCompanionSyncOnce(opts: { force?: boolean; manual?: boolean })
     } catch (err) {
       debug(`Telegram check note: ${formatError(err)}`);
     }
+
+    // Home Assistant: this run's alerts, queued independently of Telegram and
+    // sent straight away (the 5-minute drain also sends what the add-on queues).
+    // Never throws: a notification problem is not a sync failure.
+    await queueSyncAlertsForHomeAssistant(haSecretIo(wfClient), result);
+    await drainHomeAssistant(haSecretIo(wfClient))
+      .catch((err) => log(`Home Assistant delivery failed, will retry: ${formatError(err)}`));
 
     // 2c: the checks behind the app's Checks card, its account chips and the
     // Budget tab's "different from Wealthfolio" link — after the cube, whose
@@ -4628,6 +4642,25 @@ if (!process.env.VITEST) {
   // asleep is read within 5 minutes of it waking. Never rejects.
   cron.schedule('*/5 * * * *', () => {
     void sharedReceiptHost?.tick();
+  });
+
+  // Home Assistant: alerts the add-on queued (it cannot reach Home Assistant
+  // itself) go out within minutes instead of at the next sync. Signs in only
+  // when the session has lapsed, not every tick.
+  cron.schedule('*/5 * * * *', () => {
+    const drain = () => drainHomeAssistant(haSecretIo(wfClient));
+    drain()
+      .catch(async () => {
+        const apiKey = process.env.WEALTHFOLIO_API_KEY;
+        if (apiKey) (wfClient as unknown as { token: string }).token = apiKey;
+        else {
+          const password = resolvePassword();
+          if (password) await wfClient.login(password);
+        }
+        return drain();
+      })
+      .then((n) => { if (n > 0) log(`Home Assistant: sent ${n} alert(s).`); })
+      .catch((err) => log(`Home Assistant delivery failed, will retry: ${formatError(err)}`));
   });
 
   cron.schedule(dailySchedule, () => {

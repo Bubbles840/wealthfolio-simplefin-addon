@@ -37,6 +37,10 @@ import {
   RECEIPT_CONFIG_SECRET_KEY, RECEIPT_STATUS_SECRET_KEY, parseReceiptHostStatus, receiptReaderConfigForEditing,
   type ReceiptHostStatus, type ReceiptReaderConfig,
 } from '../../shared/receipt-flow';
+import {
+  HA_CONFIG_SECRET_KEY, HA_STATUS_SECRET_KEY, haTestEntry, homeAssistantConfigForEditing, parseHaStatus, queueHaEntries,
+  type HaSecretIo, type HaStatus, type HomeAssistantConfig,
+} from '../../shared/home-assistant';
 import { HIDDEN_SUBSCRIPTIONS_SECRET_KEY, CONFIRMED_SUBSCRIPTIONS_SECRET_KEY } from '../../shared/subscriptions';
 import {
   SUBSCRIPTION_PREFS_SECRET_KEY, editSubscriptionPrefs as editPrefsDocument, loadSubscriptionPrefs,
@@ -423,6 +427,31 @@ export class SecretsStore {
   /** The companion's last look at the model host; null before its first. */
   async getReceiptHostStatus(): Promise<ReceiptHostStatus | null> {
     return parseReceiptHostStatus(await this.ctx.api.secrets.get(RECEIPT_STATUS_SECRET_KEY));
+  }
+  /** Home Assistant alerts (shared/home-assistant.ts): the add-on queues, the
+   *  companion sends. */
+  homeAssistantIo(): HaSecretIo {
+    return {
+      get: (k) => this.ctx.api.secrets.get(k),
+      set: (k, v) => this.ctx.api.secrets.set(k, v),
+    };
+  }
+  async getHomeAssistantConfig(): Promise<HomeAssistantConfig> {
+    return homeAssistantConfigForEditing(await this.ctx.api.secrets.get(HA_CONFIG_SECRET_KEY));
+  }
+  async setHomeAssistantConfig(config: HomeAssistantConfig): Promise<void> {
+    await this.ctx.api.secrets.set(HA_CONFIG_SECRET_KEY, JSON.stringify({
+      enabled: config.enabled, url: config.url.trim(), token: config.token.trim(), service: config.service.trim(),
+    }));
+  }
+  /** The companion's last delivery outcome; null before its first. */
+  async getHomeAssistantStatus(): Promise<HaStatus | null> {
+    return parseHaStatus(await this.ctx.api.secrets.get(HA_STATUS_SECRET_KEY));
+  }
+  /** Queues a test alert for the companion's next drain (within 5 minutes). */
+  async queueHomeAssistantTest(): Promise<void> {
+    const now = new Date();
+    await queueHaEntries(this.homeAssistantIo(), () => [haTestEntry(now)], now);
   }
 
   /** Category names the companion has seen while building its last report —

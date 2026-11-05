@@ -98,6 +98,10 @@ const makeProps = () => ({
     getReceiptReaderConfig: vi.fn(async () => ({ enabled: true, url: '', model: 'qwen2.5vl:32b' })),
     setReceiptReaderConfig: vi.fn(async () => {}),
     getReceiptHostStatus: vi.fn(async () => null),
+    getHomeAssistantConfig: vi.fn(async () => ({ enabled: true, url: '', token: '', service: '' })),
+    setHomeAssistantConfig: vi.fn(async () => {}),
+    getHomeAssistantStatus: vi.fn(async () => null),
+    queueHomeAssistantTest: vi.fn(async () => {}),
     getOpenCards: vi.fn(async () => ({}) as Record<string, boolean>),
     // async, like the real SecretsStore method — the page fires it and forgets,
     // so it has to be thenable
