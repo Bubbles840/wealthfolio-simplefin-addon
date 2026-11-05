@@ -2,7 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { Button, CollapsibleCard, statusToneClass } from './ui';
 import type { StatusMessage } from './ui';
 import type { SecretsStore } from '../utils/secrets';
-import type { HaStatus, HomeAssistantConfig } from '../../shared/home-assistant';
+import { haConfigComplete, type HaMode, type HaStatus, type HomeAssistantConfig } from '../../shared/home-assistant';
 import { companionSendsToHomeAssistant, HOME_ASSISTANT_SINCE } from '../../shared/version';
 
 interface Props {
@@ -13,7 +13,7 @@ interface Props {
 
 export const HOME_ASSISTANT_CARD = 'home-assistant';
 
-const EMPTY: HomeAssistantConfig = { enabled: true, url: '', token: '', service: '' };
+const EMPTY: HomeAssistantConfig = { enabled: true, mode: 'notify', url: '', token: '', service: '' };
 
 /** "3 min ago" for the last-delivery line. */
 function ago(iso: string, now = Date.now()): string {
@@ -25,7 +25,8 @@ function ago(iso: string, now = Date.now()): string {
 }
 
 /**
- * Alerts to Home Assistant's notify service (shared/home-assistant.ts).
+ * Alerts to Home Assistant (shared/home-assistant.ts), through its notify
+ * service or a webhook trigger.
  *
  * Its own card and its own Save, not part of the Telegram draft: it is a
  * separate secret and a separate channel. "Send a test" QUEUES a test alert; the
@@ -64,9 +65,10 @@ export function HomeAssistantConnect({ store, isOpen, toggleCard }: Props) {
   }, [store]);
 
   const supported = companion === undefined || companionSendsToHomeAssistant(companion);
-  const complete = !!cfg.url.trim() && !!cfg.token.trim() && !!cfg.service.trim();
+  const complete = haConfigComplete(cfg);
   const dirty = JSON.stringify(cfg) !== JSON.stringify(saved);
-  const savedComplete = !!saved.url && !!saved.token && !!saved.service && saved.enabled;
+  const savedComplete = saved.enabled && haConfigComplete(saved);
+  const webhook = cfg.mode === 'webhook';
   const field = (key: 'url' | 'token' | 'service') =>
     (e: React.ChangeEvent<HTMLInputElement>) => setCfg((c) => ({ ...c, [key]: e.target.value }));
 
@@ -84,7 +86,7 @@ export function HomeAssistantConnect({ store, isOpen, toggleCard }: Props) {
     >
       <div className="sfin-subtle sfin-notif-intro">
         Alerts (sync failing, balance drift, unlinked transfers, large transactions, new imports, new accounts)
-        sent to a Home Assistant notify service by the companion container. Reports stay on Telegram.
+        sent to Home Assistant by the companion container. Reports stay on Telegram.
       </div>
 
       {!supported ? (
@@ -93,24 +95,47 @@ export function HomeAssistantConnect({ store, isOpen, toggleCard }: Props) {
         </div>
       ) : (
         <div className="sfin-stack">
-          <div className="sfin-fields">
-            <div>
-              <label htmlFor="sfin-ha-url" className="sfin-subtle">Home Assistant URL</label>
-              <input id="sfin-ha-url" type="url" className="sfin-select" placeholder="e.g. http://homeassistant.local:8123"
-                value={cfg.url} onChange={field('url')} />
-            </div>
-            <div>
-              <label htmlFor="sfin-ha-service" className="sfin-subtle">Notify service</label>
-              <input id="sfin-ha-service" type="text" className="sfin-select" placeholder="e.g. notify.mobile_app_my_phone"
-                value={cfg.service} onChange={field('service')} />
-            </div>
-          </div>
           <div>
-            <label htmlFor="sfin-ha-token" className="sfin-subtle">Long-lived access token</label>
-            <input id="sfin-ha-token" type="password" className="sfin-select"
-              placeholder="Profile → Security → Long-lived access tokens"
-              value={cfg.token} onChange={field('token')} />
+            <label htmlFor="sfin-ha-mode" className="sfin-subtle">Send through</label>
+            <select id="sfin-ha-mode" className="sfin-select" value={cfg.mode}
+              onChange={(e) => setCfg((c) => ({ ...c, mode: e.target.value as HaMode }))}>
+              <option value="notify">Notify service (access token)</option>
+              <option value="webhook">Webhook (an automation routes it)</option>
+            </select>
           </div>
+          {webhook ? (
+            <div>
+              <label htmlFor="sfin-ha-url" className="sfin-subtle">Webhook URL</label>
+              <input id="sfin-ha-url" type="url" className="sfin-select"
+                placeholder="e.g. http://homeassistant.local:8123/api/webhook/your-id"
+                value={cfg.url} onChange={field('url')} />
+              <div className="sfin-subtle">
+                Posts JSON with title, message, source (&quot;simplefin-sync&quot;), kind and id. Home Assistant answers
+                every webhook the same way, so use Send a test to check your automation receives it.
+              </div>
+            </div>
+          ) : (
+            <>
+              <div className="sfin-fields">
+                <div>
+                  <label htmlFor="sfin-ha-url" className="sfin-subtle">Home Assistant URL</label>
+                  <input id="sfin-ha-url" type="url" className="sfin-select" placeholder="e.g. http://homeassistant.local:8123"
+                    value={cfg.url} onChange={field('url')} />
+                </div>
+                <div>
+                  <label htmlFor="sfin-ha-service" className="sfin-subtle">Notify service</label>
+                  <input id="sfin-ha-service" type="text" className="sfin-select" placeholder="e.g. notify.mobile_app_my_phone"
+                    value={cfg.service} onChange={field('service')} />
+                </div>
+              </div>
+              <div>
+                <label htmlFor="sfin-ha-token" className="sfin-subtle">Long-lived access token</label>
+                <input id="sfin-ha-token" type="password" className="sfin-select"
+                  placeholder="Profile → Security → Long-lived access tokens"
+                  value={cfg.token} onChange={field('token')} />
+              </div>
+            </>
+          )}
           <label className="sfin-subtle">
             <input type="checkbox" checked={cfg.enabled} onChange={(e) => setCfg((c) => ({ ...c, enabled: e.target.checked }))} />
             {' '}Send alerts to Home Assistant

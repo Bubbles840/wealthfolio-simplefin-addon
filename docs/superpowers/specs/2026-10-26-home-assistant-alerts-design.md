@@ -24,8 +24,16 @@ step, so the two channels never say different things.
 
 ## How it reaches Home Assistant
 
-The notify service, as Uptime Kuma does: `POST <url>/api/services/notify/<service>` with a long-lived access token and
-`{ title, message }`. The person enters the URL, the token and the service (for example `notify.mobile_app_my_phone`).
+Two ways, picked in Settings:
+
+- **Notify service**, as Uptime Kuma does: `POST <url>/api/services/notify/<service>` with a long-lived access token and
+  `{ title, message }`. The person enters the URL, the token and the service (for example `notify.mobile_app_my_phone`).
+- **Webhook**: `POST <webhook url>` (Home Assistant's `/api/webhook/<id>`), no token, with
+  `{ title, message, source: "simplefin-sync", kind, id }`. An automation on the Home Assistant side decides where it
+  goes, so a setup that routes every service's alerts through one automation can branch on `source` and `kind`.
+  Home Assistant answers an unknown webhook id the same as a known one, so only Send a test shows a wrong id.
+
+A config stored without a mode is the notify service. Later: a `url` field per alert, for an automation to open on tap.
 
 ## Who sends it: the companion, through an outbox
 
@@ -63,7 +71,7 @@ older companion, nothing would drain the outbox.
 | Ruling | If wrong |
 |---|---|
 | Alerts only, no reports | Reports can follow in a later PR; nothing here blocks them. |
-| Notify service, no webhook | A webhook option can be added beside it; the outbox is the same. |
+| Notify service and webhook | Two request shapes to keep working; the outbox is the same for both. |
 | 5-minute drain | An add-on-raised alert waits up to 5 minutes. Shorter costs one secret read per tick. |
 | 50 entries / 7 days | Older alerts are lost if Home Assistant is down for a week. |
 | Queue regardless of Telegram | Someone with both gets each alert twice, once per channel. That is the point of two channels. |

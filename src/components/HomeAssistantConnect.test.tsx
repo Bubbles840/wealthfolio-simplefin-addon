@@ -5,8 +5,8 @@ import type { SecretsStore } from '../utils/secrets';
 import type { HaStatus, HomeAssistantConfig } from '../../shared/home-assistant';
 import { HOME_ASSISTANT_SINCE } from '../../shared/version';
 
-const SAVED: HomeAssistantConfig = { enabled: true, url: 'http://ha.local:8123', token: 'tok', service: 'mobile_app_phone' };
-const EMPTY: HomeAssistantConfig = { enabled: true, url: '', token: '', service: '' };
+const SAVED: HomeAssistantConfig = { enabled: true, mode: 'notify', url: 'http://ha.local:8123', token: 'tok', service: 'mobile_app_phone' };
+const EMPTY: HomeAssistantConfig = { enabled: true, mode: 'notify', url: '', token: '', service: '' };
 
 function storeWith(config: HomeAssistantConfig, status: HaStatus | null = null, companion: string | null = HOME_ASSISTANT_SINCE) {
   return {
@@ -36,6 +36,19 @@ describe('HomeAssistantConnect', () => {
     fireEvent.click(await screen.findByRole('button', { name: 'Send a test' }));
     await waitFor(() => expect(store.queueHomeAssistantTest).toHaveBeenCalled());
     expect(await screen.findByRole('status')).toHaveTextContent(/within 5 minutes/);
+  });
+
+  it('takes only a webhook URL in webhook mode', async () => {
+    const store = storeWith(EMPTY);
+    renderCard(store);
+    fireEvent.change(await screen.findByLabelText('Send through'), { target: { value: 'webhook' } });
+    expect(screen.queryByLabelText('Long-lived access token')).toBeNull();
+    expect(screen.queryByLabelText('Notify service')).toBeNull();
+    const url = 'http://ha.local:8123/api/webhook/abc123';
+    fireEvent.change(screen.getByLabelText('Webhook URL'), { target: { value: url } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    await waitFor(() => expect(store.setHomeAssistantConfig).toHaveBeenCalledWith({ ...EMPTY, mode: 'webhook', url }));
+    expect(await screen.findByRole('button', { name: 'Send a test' })).toBeEnabled();
   });
 
   it('shows the companion\'s last failure until a later delivery', async () => {

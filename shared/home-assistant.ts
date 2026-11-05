@@ -39,14 +39,52 @@ export const HA_PENDING_LIMIT = 50;
 /** How long a delivered (or queued) alert's keys suppress a re-report. */
 export const HA_SEEN_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000;
 
+/**
+ * How alerts reach Home Assistant:
+ *  - `notify`: its notify service, with a long-lived access token. Works with no
+ *    setup in Home Assistant beyond the token.
+ *  - `webhook`: a webhook trigger (`/api/webhook/<id>`). No token; an automation
+ *    on the Home Assistant side decides where each alert goes, which suits a
+ *    setup that already routes every service's alerts through one automation.
+ */
+export type HaMode = 'notify' | 'webhook';
+
 export interface HomeAssistantConfig {
   enabled: boolean;
-  /** Base URL, e.g. `http://homeassistant.local:8123`. */
+  /** Absent in a stored config means `notify`, the only mode there was at first. */
+  mode: HaMode;
+  /** `notify`: the base URL, e.g. `http://homeassistant.local:8123`.
+   *  `webhook`: the whole webhook URL, e.g. `http://homeassistant.local:8123/api/webhook/<id>`. */
   url: string;
-  /** A long-lived access token. */
+  /** `notify` only: a long-lived access token. */
   token: string;
-  /** The notify service, `notify.mobile_app_x` or just `mobile_app_x`. */
+  /** `notify` only: the notify service, `notify.mobile_app_x` or just `mobile_app_x`. */
   service: string;
+}
+
+/** Whether a config has every field its mode needs. */
+export function haConfigComplete(c: Pick<HomeAssistantConfig, 'mode' | 'url' | 'token' | 'service'>): boolean {
+  if (!c.url.trim()) return false;
+  return c.mode === 'webhook' || (!!c.token.trim() && !!c.service.trim());
+}
+
+/** What an entry is about, for a webhook automation to branch on: the id's
+ *  prefix, spelled out. */
+const HA_KINDS: Record<string, string> = {
+  test: 'test',
+  stuck: 'stuck_transfer',
+  largetx: 'large_transaction',
+  drift: 'balance_drift',
+  pruned: 'duplicates_removed',
+  refused: 'not_imported',
+  unmapped: 'new_account',
+  import: 'new_transactions',
+  synchealth: 'sync_failing',
+};
+
+export function haKind(entry: Pick<HaEntry, 'id'>): string {
+  const prefix = entry.id.split(':')[0];
+  return HA_KINDS[prefix] ?? prefix;
 }
 
 export interface HaEntry {
@@ -83,20 +121,32 @@ export function parseHomeAssistantConfig(raw: string | null | undefined): HomeAs
   if (!v || typeof v !== 'object') return null;
   const c = v as Record<string, unknown>;
   const str = (x: unknown) => (typeof x === 'string' ? x.trim() : '');
-  const config = { enabled: c.enabled !== false, url: str(c.url), token: str(c.token), service: str(c.service) };
-  if (!config.enabled || !config.url || !config.token || !config.service) return null;
+  const config: HomeAssistantConfig = {
+    enabled: c.enabled !== false,
+    mode: c.mode === 'webhook' ? 'webhook' : 'notify',
+    url: str(c.url),
+    token: str(c.token),
+    service: str(c.service),
+  };
+  if (!config.enabled || !haConfigComplete(config)) return null;
   return config;
 }
 
 /** The stored config for editing: every field, switched off or not, with empty
  *  defaults. */
 export function homeAssistantConfigForEditing(raw: string | null | undefined): HomeAssistantConfig {
-  const empty: HomeAssistantConfig = { enabled: true, url: '', token: '', service: '' };
+  const empty: HomeAssistantConfig = { enabled: true, mode: 'notify', url: '', token: '', service: '' };
   if (!raw) return empty;
   try {
     const c = JSON.parse(raw) as Record<string, unknown>;
     const str = (x: unknown) => (typeof x === 'string' ? x : '');
-    return { enabled: c.enabled !== false, url: str(c.url), token: str(c.token), service: str(c.service) };
+    return {
+      enabled: c.enabled !== false,
+      mode: c.mode === 'webhook' ? 'webhook' : 'notify',
+      url: str(c.url),
+      token: str(c.token),
+      service: str(c.service),
+    };
   } catch {
     return empty;
   }
@@ -349,8 +399,25 @@ export function mergeDrained(current: HaOutbox, drained: HaOutbox, now: Date): H
   return pruned({ pending: current.pending.filter((e) => !seen[e.id]), seen }, now);
 }
 
-/** `POST <url>/api/services/notify/<service>` for one entry. */
+/**
+ * One entry's request. `notify`: `POST <url>/api/services/notify/<service>` with
+ * `{ title, message }`. `webhook`: `POST <webhook url>` with `{ title, message }`
+ * plus `source`, `kind` and `id`, so one automation can tell these alerts apart
+ * from other services' and from each other.
+ */
 export function homeAssistantRequest(config: HomeAssistantConfig, entry: HaEntry): { url: string; init: RequestInit } {
+  if (config.mode === 'webhook') {
+    return {
+      url: config.url.trim(),
+      init: {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          title: entry.title, message: entry.message, source: 'simplefin-sync', kind: haKind(entry), id: entry.id,
+        }),
+      },
+    };
+  }
   const base = config.url.replace(/\/+$/, '');
   const service = config.service.replace(/^notify\./, '');
   return {
@@ -372,8 +439,10 @@ export async function sendHomeAssistantNotification(
   try {
     const res = await fetchImpl(url, { ...init, signal: AbortSignal.timeout(15_000) });
     if (res.ok) return { ok: true };
-    const hint = res.status === 401 ? ' (check the access token)'
-      : res.status === 400 || res.status === 404 ? ' (check the notify service name)' : '';
+    const hint = config.mode === 'webhook'
+      ? (res.status === 404 || res.status === 405 ? ' (check the webhook URL)' : '')
+      : res.status === 401 ? ' (check the access token)'
+        : res.status === 400 || res.status === 404 ? ' (check the notify service name)' : '';
     return { ok: false, description: `Home Assistant answered ${res.status}${hint}` };
   } catch (err) {
     return { ok: false, description: `Could not reach Home Assistant: ${(err as Error).message}` };

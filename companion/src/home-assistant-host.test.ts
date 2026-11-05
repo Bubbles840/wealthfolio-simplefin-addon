@@ -6,7 +6,7 @@ import {
 } from '../../shared/home-assistant.js';
 
 const NOW = new Date('2027-03-15T15:00:00Z');
-const CONFIG = { enabled: true, url: 'http://ha.local:8123', token: 'tok', service: 'mobile_app_phone' };
+const CONFIG = { enabled: true, mode: 'notify', url: 'http://ha.local:8123', token: 'tok', service: 'mobile_app_phone' };
 
 function memoryIo(): HaSecretIo & { data: Map<string, string> } {
   const data = new Map<string, string>([[HA_CONFIG_SECRET_KEY, JSON.stringify(CONFIG)]]);

@@ -11,7 +11,8 @@ const NOW = new Date('2027-03-15T15:00:00Z');
 const DAY = 24 * 60 * 60 * 1000;
 const at = (offsetMs: number) => new Date(NOW.getTime() + offsetMs);
 
-const CONFIG = { enabled: true, url: 'http://ha.local:8123/', token: 'tok', service: 'notify.mobile_app_phone' };
+const CONFIG = { enabled: true, mode: 'notify' as const, url: 'http://ha.local:8123/', token: 'tok', service: 'notify.mobile_app_phone' };
+const WEBHOOK = { enabled: true, mode: 'webhook' as const, url: 'http://ha.local:8123/api/webhook/abc123', token: '', service: '' };
 
 const emptyResult = (over: Partial<SyncResult> = {}): SyncResult => ({
   imported: 0, skipped: 0, errors: [], stuckTransferAlerts: [], importedTransactions: [], largeTransactionAlerts: [],
@@ -44,9 +45,20 @@ describe('the config', () => {
     expect(parseHomeAssistantConfig(null)).toBeNull();
   });
 
+  it('reads a config stored before webhooks existed as the notify service', () => {
+    const { mode: _mode, ...old } = CONFIG;
+    expect(parseHomeAssistantConfig(JSON.stringify(old))?.mode).toBe('notify');
+    expect(homeAssistantConfigForEditing(JSON.stringify(old)).mode).toBe('notify');
+  });
+
+  it('needs only the URL for a webhook', () => {
+    expect(parseHomeAssistantConfig(JSON.stringify(WEBHOOK))).toMatchObject({ mode: 'webhook', url: WEBHOOK.url });
+    expect(parseHomeAssistantConfig(JSON.stringify({ ...WEBHOOK, url: ' ' }))).toBeNull();
+  });
+
   it('keeps a switched-off config for editing', () => {
     expect(homeAssistantConfigForEditing(JSON.stringify({ ...CONFIG, enabled: false }))).toMatchObject({ enabled: false, token: 'tok' });
-    expect(homeAssistantConfigForEditing(null)).toEqual({ enabled: true, url: '', token: '', service: '' });
+    expect(homeAssistantConfigForEditing(null)).toEqual({ enabled: true, mode: 'notify', url: '', token: '', service: '' });
   });
 });
 
@@ -158,6 +170,21 @@ describe('the request to Home Assistant', () => {
     expect(url).toBe('http://ha.local:8123/api/services/notify/mobile_app_phone');
     expect(init.headers).toMatchObject({ Authorization: 'Bearer tok' });
     expect(JSON.parse(String(init.body))).toEqual({ title: 'a', message: 'm' });
+  });
+
+  it('posts the title, message and what the alert is about to a webhook, with no token', () => {
+    const { url, init } = homeAssistantRequest(WEBHOOK, { ...entry('a'), id: 'largetx:TRN-1' });
+    expect(url).toBe(WEBHOOK.url);
+    expect(init.headers).not.toHaveProperty('Authorization');
+    expect(JSON.parse(String(init.body))).toEqual({
+      title: 'a', message: 'm', source: 'simplefin-sync', kind: 'large_transaction', id: 'largetx:TRN-1',
+    });
+  });
+
+  it('points a webhook miss at the URL', async () => {
+    const missing = (async () => new Response('', { status: 404 })) as unknown as typeof fetch;
+    expect(await sendHomeAssistantNotification(WEBHOOK, entry('a'), missing))
+      .toEqual({ ok: false, description: 'Home Assistant answered 404 (check the webhook URL)' });
   });
 
   it('explains a rejected token and an unreachable host', async () => {
