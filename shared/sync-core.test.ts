@@ -3710,6 +3710,28 @@ describe('holdings snapshots for investment accounts', () => {
     expect(holdings.map((h) => h.wfAccountId)).toEqual(['wf-b']);
   });
 
+  it('books no starting balance on an account Wealthfolio values from holdings', async () => {
+    // Its value comes from snapshots, so a cash credit for the whole balance
+    // would only count as income.
+    const seed = brokerageSeed();
+    seed.trackingModes = { 'wf-b': 'HOLDINGS' };
+    seed.valuations = new Map([['wf-b', 0]]);
+    const { host, store, imported } = createFakeHost(seed);
+    await runSyncCore(host, store, { force: true });
+    expect(imported.flat().filter((r) => r.comment?.startsWith('Starting balance'))).toEqual([]);
+    // Marked done, so later runs do not look for one either.
+    expect(await store.getBalanceInitialized()).toContain('sfin-b');
+  });
+
+  it.each(['TRANSACTIONS', 'NOT_SET', undefined])('still books one when the account is tracked as %s', async (mode) => {
+    const seed = brokerageSeed();
+    if (mode) seed.trackingModes = { 'wf-b': mode };
+    seed.valuations = new Map([['wf-b', 0]]);
+    const { host, store, imported } = createFakeHost(seed);
+    await runSyncCore(host, store, { force: true });
+    expect(imported.flat().filter((r) => r.comment === 'Starting balance · sfin-b')).toHaveLength(1);
+  });
+
   it('skips the account when the host cannot import snapshots at all', async () => {
     // The companion's REST host has no snapshot endpoint to call, so the
     // capability is optional and its absence is not an error.

@@ -11,6 +11,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **No holdings snapshots on accounts Wealthfolio tracks by transactions.** A
   cash account whose feed lists a money market fund got imported snapshots that
   duplicated the ones Wealthfolio builds from its activities.
+- **No starting balance on accounts Wealthfolio values from holdings.** After a
+  re-link, an investment account could get its whole value booked as a cash
+  credit, which then showed as that year's income.
 
 ## [1.73.0] - 2026-11-05
 

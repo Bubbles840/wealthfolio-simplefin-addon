@@ -2290,6 +2290,10 @@ async function runSyncPass(
   const wfTypes = new Map<string, string>(
     wfAccounts.map((a): [string, string] => [a.id, String(a.accountType ?? '')]),
   );
+  // Accounts Wealthfolio values from holdings snapshots. A cash starting
+  // balance on one only shows up as income: its value never comes from
+  // activities. NOT_SET, or a mode the host cannot read, is not in it.
+  const valuedByHoldings = new Set(wfAccounts.filter((a) => a.trackingMode === 'HOLDINGS').map((a) => a.id));
   // Names, for the alerts: `name` is optional on the SyncHost contract, so an
   // empty one falls back to the SimpleFin account name at the use site.
   const wfNames = new Map<string, string>(
@@ -4512,7 +4516,10 @@ async function runSyncPass(
     // the old id's: when the matcher misses an overlap row (the bank re-worded
     // it), the copy is imported, and only this baseline cancels it. With books
     // that already match the bank it nets to nothing, so none is booked.
-    const baselineSet = balanceInitialized.includes(sfAccount.id);
+    // An account valued from holdings never gets one: with no valuation row the
+    // balance read falls back to its cash activities, about zero, and the whole
+    // account value was booked as a cash credit (live, after a re-link).
+    const baselineSet = balanceInitialized.includes(sfAccount.id) || valuedByHoldings.has(wfAccountId);
     let alreadyCorrected = false;
     if (canReadBalance && !baselineSet) {
       try {
