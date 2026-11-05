@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.73.0] - 2026-11-05
+
+Update both halves. Update the add-on in the app as usual (no new
+permissions) and pull the companion image. The new import-notice setting is
+read by both; with an older companion, its notices keep listing buys and sells.
+The Windows fix is in the add-on alone. From before 1.70.0, use **Install from
+File** with this zip, as 1.70.0 says.
+
+### Added
+- **Leave investment buys and sells out of the import notice (#59).** Under
+  Reports → Transaction import alerts, untick **Include investment buys and
+  sells**. If a sync imported nothing else, no notice is sent. It's on by
+  default, so nothing changes until you untick it.
+
 ### Fixed
 - **Windows: syncs no longer stop with "longer than the platform limit of
   2560 chars" (#58).** The desktop app stores the add-on's data in Windows
