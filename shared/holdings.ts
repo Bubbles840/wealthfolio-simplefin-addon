@@ -157,6 +157,29 @@ function averageCost(
   return price && price.n > 0n ? String(purchasePrice).trim() : undefined;
 }
 
+/**
+ * The per-share cost to carry onto a position the feed sent without one, from
+ * what Wealthfolio already holds for it: its total cost over its shares.
+ *
+ * Carried only while the share count has not gone up: a sale keeps the average
+ * cost, but new shares were bought at a price nobody sent, and carrying the old
+ * average would understate the cost. `sharesRose` says which case it was, so
+ * the caller can ask for the cost instead. The held figures come from the
+ * host's holdings read, which gives numbers: they are read as decimal strings,
+ * and anything else (an exponent, zero, nothing) carries nothing.
+ */
+export function carriedCost(
+  shares: string,
+  held: { quantity?: number | string | null; cost?: number | string | null },
+): { avgCost?: string; sharesRose?: true } {
+  const now = parseScaled(shares);
+  const before = parseScaled(held.quantity ?? null);
+  if (now === null || before === null || before === 0n) return {};
+  if (now > before) return { sharesRose: true };
+  const avgCost = averageCost(held.cost === null || held.cost === undefined ? null : String(held.cost), null, String(held.quantity));
+  return avgCost ? { avgCost } : {};
+}
+
 function formatMicros(micros: bigint): string {
   const negative = micros < 0n;
   const abs = negative ? -micros : micros;

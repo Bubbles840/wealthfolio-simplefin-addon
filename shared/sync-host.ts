@@ -165,6 +165,10 @@ export interface HoldingsSyncOutcome {
    *  price of its own for them (src/utils/holdings-prices.ts). Absent on a host
    *  that does not price. */
   pricedFromFeed?: string[];
+  /** Holdings written without a cost because the feed sent none and the share
+   *  count went up since the last one Wealthfolio has: new shares at a price
+   *  nobody sent. Absent on a host that does not carry costs. */
+  costUnknown?: string[];
 }
 
 export interface SyncHost {

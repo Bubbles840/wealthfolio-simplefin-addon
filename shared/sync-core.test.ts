@@ -3682,6 +3682,17 @@ describe('holdings snapshots for investment accounts', () => {
     expect(result.errors).toEqual([]);
   });
 
+  it('asks for the cost of a holding whose shares went up with none sent', async () => {
+    const seed = brokerageSeed();
+    seed.accountSet!.accounts[0].name = 'Individual (ABCD)';
+    seed.holdingsOutcome = { imported: 1, skipped: 0, unresolvedSymbols: [], costUnknown: ['VOO'] };
+    const { host, store } = createFakeHost(seed);
+    const result = await runSyncCore(host, store, { force: true });
+    expect(result.errors).toEqual([
+      'No cost basis for VOO (Individual (ABCD)): its share count went up and SimpleFin sent no cost. Enter the cost on the holding in Wealthfolio, or gains for the account stay unknown.',
+    ]);
+  });
+
   it('skips the account when the host cannot import snapshots at all', async () => {
     // The companion's REST host has no snapshot endpoint to call, so the
     // capability is optional and its absence is not an error.

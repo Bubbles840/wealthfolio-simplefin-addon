@@ -39,11 +39,17 @@
  * price is written AFTER the import, and a manual quote is one per asset and
  * day (last write wins), so the market value is what stays.
  *
+ * A holding the feed sends without a cost keeps the cost Wealthfolio already has
+ * for it (shared/holdings.ts `carriedCost`), from the same holdings read: a
+ * snapshot without one is stored at cost 0, and Wealthfolio then shows no gain
+ * for the account at all. Never onto a shared asset the person prices by hand,
+ * where the import would write that cost as the day's price.
+ *
  * Nothing here fails the sync: a failed holdings read skips the account's
  * snapshot for this sync (writing it without knowing which holdings are on
  * per-account assets would move them back), and a failed price is logged.
  */
-import { scopedSymbol, type FeedPrice, type HoldingsSnapshot } from '../../shared/holdings';
+import { carriedCost, scopedSymbol, type FeedPrice, type HoldingsSnapshot } from '../../shared/holdings';
 import type { HoldingsSyncOutcome } from '../../shared/sync-host';
 
 /** How long a MARKET asset must have had no quote before it is priced from the feed. */
@@ -56,6 +62,8 @@ export const UNPRICED_FOR_MS = 3 * 24 * 60 * 60 * 1000;
 export interface HeldAsset {
   instrument?: { id: string; symbol: string; pricingMode?: string | null } | null;
   price?: number | null;
+  quantity?: number | string | null;
+  costBasis?: { local?: number | null } | null;
 }
 
 const modeOf = (h: HeldAsset | undefined) => h?.instrument?.pricingMode ?? undefined;
@@ -283,10 +291,23 @@ export async function syncHoldingsWithFeedPrices(
     }
   }
 
+  const costUnknown: string[] = [];
   const written: HoldingsSnapshot = {
     ...snapshot,
-    positions: snapshot.positions.map((p) =>
-      moving.has(symbolKey(p.symbol)) || kept.has(symbolKey(p.symbol)) ? { ...p, symbol: scoped(p.symbol), quoteMode: 'MANUAL' as const } : p),
+    positions: snapshot.positions.map((p) => {
+      const key = symbolKey(p.symbol);
+      const own = moving.has(key) || kept.has(key);
+      const out = own ? { ...p, symbol: scoped(p.symbol), quoteMode: 'MANUAL' as const } : p;
+      if (p.avgCost || !tag) return out;
+      // The holding as Wealthfolio has it now, under either symbol: one moving
+      // today is still held under the other.
+      const h = held.get(symbolKey(scoped(p.symbol))) ?? held.get(key);
+      if (!h) return out;
+      if (!own && modeOf(held.get(key))?.toUpperCase() === 'MANUAL') return out;
+      const carried = carriedCost(p.quantity, { quantity: h.quantity, cost: h.costBasis?.local });
+      if (carried.sharesRose) costUnknown.push(out.symbol);
+      return carried.avgCost ? { ...out, avgCost: carried.avgCost } : out;
+    }),
   };
   // A per-account symbol is priced here, never by a provider: not unresolved.
   const unresolvedKeys = new Set(
@@ -309,12 +330,14 @@ export async function syncHoldingsWithFeedPrices(
     }
     imported = result.snapshotsImported;
   }
+  // Asked for once, on the day the snapshot without a cost is written.
+  const unknown = imported > 0 && costUnknown.length > 0 ? { costUnknown } : {};
   // A kept holding's import wrote the day's price from its average cost (a
   // MANUAL asset): put back the last price it had, which is what it is worth.
   if (imported > 0) {
     for (const key of kept) {
-      const p = snapshot.positions.find((x) => symbolKey(x.symbol) === key);
-      const assetId = p?.avgCost ? ids.get(symbolKey(scoped(p.symbol))) : undefined;
+      const p = written.positions.find((x) => symbolKey(x.symbol) === symbolKey(scoped(key)));
+      const assetId = p?.avgCost ? ids.get(symbolKey(p.symbol)) : undefined;
       if (!p || !assetId) continue;
       try {
         const last = (await pricing.getHistory(assetId))
@@ -322,11 +345,11 @@ export async function syncHoldingsWithFeedPrices(
           .sort((a, b) => (dayOf(a.timestamp) < dayOf(b.timestamp) ? 1 : -1))[0];
         if (last) await pricing.updateQuote(assetId, manualQuote(assetId, snapshot.date, String(last.close), p.currency));
       } catch (e: any) {
-        log(`[simplefin-sync] could not keep the last price of ${scoped(p.symbol)}: ${e?.message ?? e}`);
+        log(`[simplefin-sync] could not keep the last price of ${p.symbol}: ${e?.message ?? e}`);
       }
     }
   }
-  if (moving.size === 0) return { imported, skipped, unresolvedSymbols };
+  if (moving.size === 0) return { imported, skipped, unresolvedSymbols, ...unknown };
 
   // 5. A per-account asset created just now has an id only after the import.
   // The snapshot is saved by now, so a failed read only skips today's prices.
@@ -339,7 +362,7 @@ export async function syncHoldingsWithFeedPrices(
       );
     } catch (e: any) {
       log(`[simplefin-sync] could not find the new per-account assets to price: ${e?.message ?? e}`);
-      return { imported, skipped, unresolvedSymbols };
+      return { imported, skipped, unresolvedSymbols, ...unknown };
     }
   }
   const pricedFromFeed: string[] = [];
@@ -362,5 +385,5 @@ export async function syncHoldingsWithFeedPrices(
       log(`[simplefin-sync] could not price ${symbol} from SimpleFin: ${e?.message ?? e}`);
     }
   }
-  return { imported, skipped, unresolvedSymbols, pricedFromFeed };
+  return { imported, skipped, unresolvedSymbols, pricedFromFeed, ...unknown };
 }

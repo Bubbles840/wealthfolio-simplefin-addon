@@ -1,5 +1,5 @@
 import { afterEach, describe, it, expect, vi } from 'vitest';
-import { accountTag, feedPrices, holdingSymbol, scopedSymbol, toHoldingsSnapshot } from './holdings.js';
+import { accountTag, carriedCost, feedPrices, holdingSymbol, scopedSymbol, toHoldingsSnapshot } from './holdings.js';
 import type { SimplefinAccount } from './types.js';
 
 const account = (over: Partial<SimplefinAccount> = {}): SimplefinAccount => ({
@@ -362,4 +362,26 @@ describe('a holding SimpleFin sends without a symbol', () => {
     ]);
   });
 
+});
+
+describe('carriedCost', () => {
+  it('is the held total cost over the held shares', () => {
+    expect(carriedCost('300.5', { quantity: 300.5, cost: 4000.25 })).toEqual({ avgCost: '13.31198003' });
+  });
+
+  it('stays the same after a sale', () => {
+    expect(carriedCost('5', { quantity: 10, cost: 500 })).toEqual({ avgCost: '50' });
+  });
+
+  it('carries nothing when the shares went up, and says so', () => {
+    expect(carriedCost('11', { quantity: 10, cost: 500 })).toEqual({ sharesRose: true });
+  });
+
+  it('carries nothing without a held cost or share count', () => {
+    expect(carriedCost('10', { quantity: 10, cost: 0 })).toEqual({});
+    expect(carriedCost('10', { quantity: 10 })).toEqual({});
+    expect(carriedCost('10', { quantity: 0, cost: 500 })).toEqual({});
+    expect(carriedCost('10', {})).toEqual({});
+    expect(carriedCost('10', { quantity: 1e-7, cost: 500 })).toEqual({});
+  });
 });
