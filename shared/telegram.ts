@@ -477,6 +477,24 @@ export interface ImportNoticeTx {
   txId?: string;
 }
 
+/** Activity types the "Include investment buys and sells" setting governs. */
+const TRADE_ACTIVITY_TYPES = new Set(['BUY', 'SELL']);
+
+/**
+ * The imported rows the notice announces: all of them, minus buys and sells when
+ * the user switched those off (`notifyOnImportTrades: false`). Both writers call
+ * this, so the add-on's notice and the companion's list the same rows. When the
+ * filter empties the list, the notice has nothing of its own to say and is not
+ * sent; the needs-a-category sweep it would have carried comes with the next one.
+ */
+export function importNoticeRows<T extends { activityType?: string }>(
+  txs: T[],
+  tg: { notifyOnImportTrades?: unknown },
+): T[] {
+  if (tg.notifyOnImportTrades !== false) return txs;
+  return txs.filter((t) => !TRADE_ACTIVITY_TYPES.has(String(t.activityType ?? '').toUpperCase()));
+}
+
 /** One row of the needs-a-category sweep: any spending transaction from the
  *  last 30 days with no taxonomy assignment, minus dismissed ones. */
 export interface UncategorizedTx {

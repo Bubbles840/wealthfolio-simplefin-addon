@@ -371,6 +371,9 @@ const css = `
   cursor: pointer; line-height: 1.45;
 }
 .sfin-check input { flex: none; margin: 2px 0 0; }
+/* A setting that only applies while the checkbox above it is on. */
+.sfin-check-sub { padding-left: 24px; }
+.sfin-check-sub:has(input:disabled) { opacity: 0.55; cursor: default; }
 .sfin-check-name { font-weight: 500; }
 .sfin-divider { border-top: 1px solid var(--border); margin: 14px 0 12px; }
 /* Name + Daily + Weekly + Monthly. */

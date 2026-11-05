@@ -813,6 +813,29 @@ describe('NotificationsTab', () => {
     expect(savedConfig(props).monthlyReportEnabled).toBe(true);
   });
 
+  it('lists buys and sells in the import notice unless switched off, and stores an explicit false', async () => {
+    const props = makeProps();
+    props.store.getTelegramConfig = vi.fn(async () => bareConfig());
+    props.store.setTelegramConfig = vi.fn(async () => {});
+    render(<SyncPage {...props} />);
+    await openReports();
+    const trades = screen.getByLabelText(/Include investment buys and sells/i) as HTMLInputElement;
+    // Absent means ON: a config written before the setting keeps listing them.
+    expect(trades.checked).toBe(true);
+    fireEvent.click(trades);
+    await save();
+    await waitFor(() => expect(props.store.setTelegramConfig).toHaveBeenCalled());
+    expect(savedConfig(props).notifyOnImportTrades).toBe(false);
+  });
+
+  it('greys out the buys-and-sells switch while import alerts are off', async () => {
+    const props = makeProps();
+    props.store.getTelegramConfig = vi.fn(async () => ({ ...bareConfig(), notifyOnImport: false }));
+    render(<SyncPage {...props} />);
+    await openReports();
+    expect((screen.getByLabelText(/Include investment buys and sells/i) as HTMLInputElement).disabled).toBe(true);
+  });
+
   it('adds a Monthly column to the category matrix without disturbing Daily or Weekly', async () => {
     const props = makeProps();
     props.store.getReportCategoryCatalog = vi.fn(async () => catalog('Dining', 'Groceries'));

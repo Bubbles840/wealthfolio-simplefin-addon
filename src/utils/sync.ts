@@ -13,6 +13,7 @@ import {
   formatLargeTransactionAlert,
   formatDuplicatePruneAlert,
   formatImportNotice,
+  importNoticeRows,
   formatRefusedCreatesAlert,
   dailyReportCarriesProblems,
 } from '../../shared/telegram';
@@ -114,6 +115,9 @@ interface TelegramTarget {
    *  Notifications tab's default — a config written before the import notice
    *  existed on this side must not read as "opted out". */
   notifyOnImport: boolean;
+  /** Stored as an opt-out like the companion reads it: only `false` leaves
+   *  buys and sells out of the notice (see `importNoticeRows`). */
+  notifyOnImportTrades: boolean;
   /** The daily report is on, so its 🧹 list carries stuck transfers and
    *  balance drift instead of messages of their own. */
   dailyReportCarries: boolean;
@@ -148,6 +152,7 @@ async function telegramTarget(store: SecretsStore): Promise<TelegramTarget | nul
     botToken: String(tg.botToken),
     chatId: String(tg.chatId),
     notifyOnImport: (tg as { notifyOnImport?: boolean }).notifyOnImport !== false,
+    notifyOnImportTrades: (tg as { notifyOnImportTrades?: boolean }).notifyOnImportTrades !== false,
     dailyReportCarries: dailyReportCarriesProblems(tg as { dailyReportEnabled?: unknown }),
   };
 }
@@ -320,7 +325,13 @@ export async function deliverAddonAlerts(
     //    remembered, i.e. the wrong rows. Text-only is honest.
     //  • No `filed under` read-back. That comes from the companion's direct
     //    database read, which the addon has no equivalent for.
-    if (result.imported > 0 && target.notifyOnImport) {
+    const announced = importNoticeRows(result.importedTransactions, {
+      notifyOnImportTrades: target.notifyOnImportTrades,
+    });
+    // Only the filter can silence the notice; an empty list to begin with is
+    // sent exactly as before.
+    const onlyTrades = announced.length === 0 && result.importedTransactions.length > 0;
+    if (result.imported > 0 && target.notifyOnImport && !onlyTrades) {
       // The same 30-day sweep the companion shows, from the status the
       // companion publishes — minus rows already dismissed, which is exactly
       // what the Overview's own list does. A missing status (no companion)
@@ -339,7 +350,7 @@ export async function deliverAddonAlerts(
       } catch {
         // Decoration, not the point of the message: send the imports anyway.
       }
-      const res = await send(formatImportNotice(result.importedTransactions, uncategorized));
+      const res = await send(formatImportNotice(announced, uncategorized));
       if (!res.ok) {
         // Logged, never retried: the rows are already in Wealthfolio and the
         // page shows them. Silence here was the whole bug — a visible reason
