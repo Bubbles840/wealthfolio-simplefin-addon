@@ -11,8 +11,8 @@ const NOW = new Date('2027-03-15T15:00:00Z');
 const DAY = 24 * 60 * 60 * 1000;
 const at = (offsetMs: number) => new Date(NOW.getTime() + offsetMs);
 
-const CONFIG = { enabled: true, mode: 'notify' as const, url: 'http://ha.local:8123/', token: 'tok', service: 'notify.mobile_app_phone' };
-const WEBHOOK = { enabled: true, mode: 'webhook' as const, url: 'http://ha.local:8123/api/webhook/abc123', token: '', service: '' };
+const CONFIG = { enabled: true, mode: 'notify' as const, url: 'http://ha.local:8123/', token: 'tok', service: 'notify.mobile_app_phone', titlePrefix: '', linkBase: '' };
+const WEBHOOK = { enabled: true, mode: 'webhook' as const, url: 'http://ha.local:8123/api/webhook/abc123', token: '', service: '', titlePrefix: '', linkBase: '' };
 
 const emptyResult = (over: Partial<SyncResult> = {}): SyncResult => ({
   imported: 0, skipped: 0, errors: [], stuckTransferAlerts: [], importedTransactions: [], largeTransactionAlerts: [],
@@ -58,7 +58,7 @@ describe('the config', () => {
 
   it('keeps a switched-off config for editing', () => {
     expect(homeAssistantConfigForEditing(JSON.stringify({ ...CONFIG, enabled: false }))).toMatchObject({ enabled: false, token: 'tok' });
-    expect(homeAssistantConfigForEditing(null)).toEqual({ enabled: true, mode: 'notify', url: '', token: '', service: '' });
+    expect(homeAssistantConfigForEditing(null)).toEqual({ enabled: true, mode: 'notify', url: '', token: '', service: '', titlePrefix: '', linkBase: '' });
   });
 });
 
@@ -86,6 +86,18 @@ describe('syncAlertEntries', () => {
     }), NOW, nothingKnown);
     expect(large).toMatchObject({ id: 'largetx:tx-9', title: 'Large transaction' });
     expect(large.message).toContain('SOME STORE');
+  });
+
+  it('links each alert to the page that shows it: a large transaction to its own story', () => {
+    const entries = syncAlertEntries(emptyResult({
+      largeTransactionAlerts: [{ txId: 'tx-9', description: 'S', amountCents: -98_765, currency: 'USD', accountName: 'Card', activityId: 'act-9' }],
+      stuckTransferAlerts: [{ outTxId: 'tx-1', description: 'T', amountCents: 100, currency: 'USD' }],
+      unmappedAccounts: [{ sfinAccountId: 'acct-new', accountName: 'New Card' }],
+    }), NOW, nothingKnown);
+    const byKind = Object.fromEntries(entries.map((e) => [e.id.split(':')[0], e.link]));
+    expect(byKind.largetx).toBe('/addons/simplefin-sync?tab=home&story=act-9');
+    expect(byKind.stuck).toBe('/addons/simplefin-sync?tab=home');
+    expect(byKind.unmapped).toBe('/addons/simplefin-sync?tab=settings');
   });
 
   it('queues a re-reported refusal or unmapped account only once', () => {
@@ -179,6 +191,25 @@ describe('the request to Home Assistant', () => {
     expect(JSON.parse(String(init.body))).toEqual({
       title: 'a', message: 'm', source: 'simplefin-sync', kind: 'large_transaction', id: 'largetx:TRN-1',
     });
+  });
+
+  it('puts the title prefix in front of every title', () => {
+    const { init } = homeAssistantRequest({ ...WEBHOOK, titlePrefix: ' [Wealth] ' }, entry('Large transaction'));
+    expect(JSON.parse(String(init.body)).title).toBe('[Wealth] Large transaction');
+  });
+
+  it('sends a tap link only with an address and a page', () => {
+    const linked = { ...entry('a'), link: '/addons/simplefin-sync?tab=home' };
+    const withBase = { ...WEBHOOK, linkBase: 'https://wf.example.com/' };
+    expect(JSON.parse(String(homeAssistantRequest(withBase, linked).init.body)).url)
+      .toBe('https://wf.example.com/addons/simplefin-sync?tab=home');
+    expect(JSON.parse(String(homeAssistantRequest(WEBHOOK, linked).init.body))).not.toHaveProperty('url');
+    expect(JSON.parse(String(homeAssistantRequest(withBase, entry('a')).init.body))).not.toHaveProperty('url');
+    expect(JSON.parse(String(homeAssistantRequest({ ...withBase, linkBase: 'wf.example.com' }, linked).init.body)))
+      .not.toHaveProperty('url');
+    // The notify service hands it to the companion app, for both phone platforms.
+    expect(JSON.parse(String(homeAssistantRequest({ ...CONFIG, linkBase: 'https://wf.example.com' }, linked).init.body)).data)
+      .toEqual({ url: 'https://wf.example.com/addons/simplefin-sync?tab=home', clickAction: 'https://wf.example.com/addons/simplefin-sync?tab=home' });
   });
 
   it('points a webhook miss at the URL', async () => {

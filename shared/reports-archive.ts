@@ -92,7 +92,29 @@ export function reportPeriod(kind: ReportKind, now: Date): string {
   return ymd(monday);
 }
 
-const ADDON_ROUTE = '/addons/simplefin-sync';
+export const ADDON_ROUTE = '/addons/simplefin-sync';
+
+/** The page tabs an alert can open (the Reports tab has its own link). */
+export type AlertLinkTab = 'home' | 'settings';
+
+/** Where an alert's tap lands: a tab, and on Home optionally one transaction's
+ *  story, by its Wealthfolio activity id. */
+export function alertLink(tab: AlertLinkTab, storyActivityId?: string): string {
+  const story = storyActivityId ? `&story=${encodeURIComponent(storyActivityId)}` : '';
+  return `${ADDON_ROUTE}?tab=${tab}${story}`;
+}
+
+/** Reads an alert link back. `null` for anything else, including the Reports
+ *  link, which `parseReportsLink` owns. A story only means something on Home. */
+export function parseAlertLink(search: string | undefined): { tab: AlertLinkTab; story?: string } | null {
+  if (!search) return null;
+  const params = new URLSearchParams(search.startsWith('?') ? search.slice(1) : search);
+  const tab = params.get('tab');
+  if (tab === 'settings') return { tab };
+  if (tab !== 'home') return null;
+  const story = params.get('story');
+  return story ? { tab, story } : { tab };
+}
 
 /** Where a notification tap lands: the Reports tab, on this report. */
 export function reportsLink(kind: ReportKind): string {

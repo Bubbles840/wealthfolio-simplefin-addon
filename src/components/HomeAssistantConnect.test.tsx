@@ -5,8 +5,8 @@ import type { SecretsStore } from '../utils/secrets';
 import type { HaStatus, HomeAssistantConfig } from '../../shared/home-assistant';
 import { HOME_ASSISTANT_SINCE } from '../../shared/version';
 
-const SAVED: HomeAssistantConfig = { enabled: true, mode: 'notify', url: 'http://ha.local:8123', token: 'tok', service: 'mobile_app_phone' };
-const EMPTY: HomeAssistantConfig = { enabled: true, mode: 'notify', url: '', token: '', service: '' };
+const SAVED: HomeAssistantConfig = { enabled: true, mode: 'notify', url: 'http://ha.local:8123', token: 'tok', service: 'mobile_app_phone', titlePrefix: '', linkBase: '' };
+const EMPTY: HomeAssistantConfig = { enabled: true, mode: 'notify', url: '', token: '', service: '', titlePrefix: '', linkBase: '' };
 
 function storeWith(config: HomeAssistantConfig, status: HaStatus | null = null, companion: string | null = HOME_ASSISTANT_SINCE) {
   return {
@@ -49,6 +49,21 @@ describe('HomeAssistantConnect', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Save' }));
     await waitFor(() => expect(store.setHomeAssistantConfig).toHaveBeenCalledWith({ ...EMPTY, mode: 'webhook', url }));
     expect(await screen.findByRole('button', { name: 'Send a test' })).toBeEnabled();
+  });
+
+  it('saves the title prefix and tap-link address, and refuses an address without a scheme', async () => {
+    const store = storeWith(SAVED);
+    renderCard(store);
+    fireEvent.change(await screen.findByLabelText('Title prefix'), { target: { value: '[Wealth]' } });
+    const address = screen.getByLabelText('Wealthfolio address for tap links');
+    fireEvent.change(address, { target: { value: 'wf.example.com' } });
+    expect(screen.getByText(/starting with http/)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Save' })).toBeDisabled();
+    fireEvent.change(address, { target: { value: 'https://wf.example.com' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    await waitFor(() => expect(store.setHomeAssistantConfig).toHaveBeenCalledWith(
+      { ...SAVED, titlePrefix: '[Wealth]', linkBase: 'https://wf.example.com' },
+    ));
   });
 
   it('shows the companion\'s last failure until a later delivery', async () => {

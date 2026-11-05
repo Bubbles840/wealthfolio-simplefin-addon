@@ -33,7 +33,13 @@ Two ways, picked in Settings:
   goes, so a setup that routes every service's alerts through one automation can branch on `source` and `kind`.
   Home Assistant answers an unknown webhook id the same as a known one, so only Send a test shows a wrong id.
 
-A config stored without a mode is the notify service. Later: a `url` field per alert, for an automation to open on tap.
+A config stored without a mode is the notify service.
+
+Two optional settings shape every alert: a **title prefix** (for example `[Wealth]`), and **Wealthfolio's address** as
+the phone reaches it. With an address, each alert carries a tap link into the add-on, sent as `url` to a webhook and as
+`data.url` / `data.clickAction` to the notify service (the iOS and Android companion apps): a large transaction opens
+Home on its story (`?tab=home&story=<activity id>`), a new account opens Settings, everything else opens Home. Links are
+stored relative and made absolute when sent, so changing the address needs nothing requeued.
 
 ## Who sends it: the companion, through an outbox
 

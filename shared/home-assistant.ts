@@ -25,6 +25,7 @@ import {
   formatBalanceDriftAlert, formatDuplicatePruneAlert, formatFeedLagNotice, formatImportNotice,
   formatLargeTransactionAlert, formatRefusedCreatesAlert, formatStuckTransferAlert,
 } from './telegram.js';
+import { alertLink } from './reports-archive.js';
 
 export const HA_CONFIG_SECRET_KEY = 'homeassistant_config';
 export const HA_OUTBOX_SECRET_KEY = 'ha_outbox';
@@ -60,12 +61,39 @@ export interface HomeAssistantConfig {
   token: string;
   /** `notify` only: the notify service, `notify.mobile_app_x` or just `mobile_app_x`. */
   service: string;
+  /** Put in front of every title, e.g. `[Wealth]`. Empty: titles as they are. */
+  titlePrefix: string;
+  /** Wealthfolio's address as the phone reaches it, e.g. `https://wealthfolio.example.com`.
+   *  Set, each alert carries a link into the add-on that a tap can open. */
+  linkBase: string;
+}
+
+const WEB_URL = /^https?:\/\/[^\s]+$/;
+
+/** Why a tap-link address cannot be used, or null when it is empty or fine. */
+export function haLinkBaseProblem(linkBase: string): string | null {
+  const v = linkBase.trim();
+  if (!v || WEB_URL.test(v)) return null;
+  return 'Use the full address, starting with http:// or https://';
 }
 
 /** Whether a config has every field its mode needs. */
 export function haConfigComplete(c: Pick<HomeAssistantConfig, 'mode' | 'url' | 'token' | 'service'>): boolean {
   if (!c.url.trim()) return false;
   return c.mode === 'webhook' || (!!c.token.trim() && !!c.service.trim());
+}
+
+/** An entry's absolute tap link, when the config has an address and the entry a page. */
+export function haEntryUrl(config: Pick<HomeAssistantConfig, 'linkBase'>, entry: Pick<HaEntry, 'link'>): string | undefined {
+  const base = config.linkBase.trim().replace(/\/+$/, '');
+  if (!base || !entry.link || haLinkBaseProblem(base)) return undefined;
+  return `${base}${entry.link}`;
+}
+
+/** The title as sent: the prefix, a space, the title. */
+export function haTitle(config: Pick<HomeAssistantConfig, 'titlePrefix'>, entry: Pick<HaEntry, 'title'>): string {
+  const prefix = config.titlePrefix.trim();
+  return prefix ? `${prefix} ${entry.title}` : entry.title;
 }
 
 /** What an entry is about, for a webhook automation to branch on: the id's
@@ -97,6 +125,9 @@ export interface HaEntry {
   /** Extra keys that suppress a later re-report, e.g. one per refused
    *  transaction in a combined message. */
   keys?: string[];
+  /** The add-on page a tap opens, relative (`alertLink`). Made absolute at send
+   *  time from the config's `linkBase`, so changing the address needs no requeue. */
+  link?: string;
 }
 
 export interface HaOutbox {
@@ -127,6 +158,8 @@ export function parseHomeAssistantConfig(raw: string | null | undefined): HomeAs
     url: str(c.url),
     token: str(c.token),
     service: str(c.service),
+    titlePrefix: str(c.titlePrefix),
+    linkBase: str(c.linkBase),
   };
   if (!config.enabled || !haConfigComplete(config)) return null;
   return config;
@@ -135,7 +168,9 @@ export function parseHomeAssistantConfig(raw: string | null | undefined): HomeAs
 /** The stored config for editing: every field, switched off or not, with empty
  *  defaults. */
 export function homeAssistantConfigForEditing(raw: string | null | undefined): HomeAssistantConfig {
-  const empty: HomeAssistantConfig = { enabled: true, mode: 'notify', url: '', token: '', service: '' };
+  const empty: HomeAssistantConfig = {
+    enabled: true, mode: 'notify', url: '', token: '', service: '', titlePrefix: '', linkBase: '',
+  };
   if (!raw) return empty;
   try {
     const c = JSON.parse(raw) as Record<string, unknown>;
@@ -146,6 +181,8 @@ export function homeAssistantConfigForEditing(raw: string | null | undefined): H
       url: str(c.url),
       token: str(c.token),
       service: str(c.service),
+      titlePrefix: str(c.titlePrefix),
+      linkBase: str(c.linkBase),
     };
   } catch {
     return empty;
@@ -156,9 +193,10 @@ export function homeAssistantConfigForEditing(raw: string | null | undefined): H
 export function haTestEntry(now: Date): HaEntry {
   return {
     id: `test:${now.toISOString()}`,
-    title: 'SimpleFin Sync test',
-    message: 'Home Assistant alerts are working.',
+    title: 'Test alert',
+    message: 'SimpleFin Sync alerts reach Home Assistant.',
     createdAt: now.toISOString(),
+    link: alertLink('settings'),
   };
 }
 
@@ -248,7 +286,10 @@ export function syncAlertEntries(
     out.push(entryFromTelegram(`stuck:${a.outTxId}`, formatStuckTransferAlert(a), 'Transfer not linked', now));
   }
   for (const a of result.largeTransactionAlerts) {
-    out.push(entryFromTelegram(`largetx:${a.txId}`, formatLargeTransactionAlert(a), 'Large transaction', now));
+    out.push({
+      ...entryFromTelegram(`largetx:${a.txId}`, formatLargeTransactionAlert(a), 'Large transaction', now),
+      link: alertLink('home', a.activityId),
+    });
   }
   for (const a of result.balanceDriftAlerts) {
     const text = a.phase === 'aged' ? formatBalanceDriftAlert(a) : formatFeedLagNotice(a);
@@ -282,6 +323,7 @@ export function syncAlertEntries(
       ].join('\n'),
       createdAt: now.toISOString(),
       keys,
+      link: alertLink('settings'),
     });
   }
   if (result.importedTransactions.length > 0) {
@@ -290,7 +332,8 @@ export function syncAlertEntries(
       `import:${digest(ids)}`, formatImportNotice(result.importedTransactions, []), 'New transactions', now,
     ));
   }
-  return out;
+  // Everything without a more specific page opens Home, where these show.
+  return out.map((e) => (e.link ? e : { ...e, link: alertLink('home') }));
 }
 
 /** The sync-failing alert, once per failure streak. */
@@ -300,6 +343,7 @@ export function syncHealthEntry(firstFailedAt: string, lastError: string | undef
     title: 'SimpleFin sync failing',
     message: `Failing since ${firstFailedAt.slice(0, 16).replace('T', ' ')} UTC.\nLast error: ${lastError ?? 'unknown error'}`,
     createdAt: now.toISOString(),
+    link: alertLink('home'),
   };
 }
 
@@ -406,6 +450,8 @@ export function mergeDrained(current: HaOutbox, drained: HaOutbox, now: Date): H
  * from other services' and from each other.
  */
 export function homeAssistantRequest(config: HomeAssistantConfig, entry: HaEntry): { url: string; init: RequestInit } {
+  const title = haTitle(config, entry);
+  const link = haEntryUrl(config, entry);
   if (config.mode === 'webhook') {
     return {
       url: config.url.trim(),
@@ -413,7 +459,8 @@ export function homeAssistantRequest(config: HomeAssistantConfig, entry: HaEntry
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          title: entry.title, message: entry.message, source: 'simplefin-sync', kind: haKind(entry), id: entry.id,
+          title, message: entry.message, source: 'simplefin-sync', kind: haKind(entry), id: entry.id,
+          ...(link ? { url: link } : {}),
         }),
       },
     };
@@ -425,7 +472,10 @@ export function homeAssistantRequest(config: HomeAssistantConfig, entry: HaEntry
     init: {
       method: 'POST',
       headers: { Authorization: `Bearer ${config.token}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ title: entry.title, message: entry.message }),
+      // `url` is what the iOS companion app opens on tap, `clickAction` the Android one.
+      body: JSON.stringify({
+        title, message: entry.message, ...(link ? { data: { url: link, clickAction: link } } : {}),
+      }),
     },
   };
 }

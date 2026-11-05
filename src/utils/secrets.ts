@@ -443,6 +443,7 @@ export class SecretsStore {
     await this.ctx.api.secrets.set(HA_CONFIG_SECRET_KEY, JSON.stringify({
       enabled: config.enabled, mode: config.mode, url: config.url.trim(),
       token: config.token.trim(), service: config.service.trim(),
+      titlePrefix: config.titlePrefix.trim(), linkBase: config.linkBase.trim(),
     }));
   }
   /** The companion's last delivery outcome; null before its first. */

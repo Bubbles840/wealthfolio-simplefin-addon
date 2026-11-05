@@ -2,7 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { Button, CollapsibleCard, statusToneClass } from './ui';
 import type { StatusMessage } from './ui';
 import type { SecretsStore } from '../utils/secrets';
-import { haConfigComplete, type HaMode, type HaStatus, type HomeAssistantConfig } from '../../shared/home-assistant';
+import { haConfigComplete, haLinkBaseProblem, type HaMode, type HaStatus, type HomeAssistantConfig } from '../../shared/home-assistant';
 import { companionSendsToHomeAssistant, HOME_ASSISTANT_SINCE } from '../../shared/version';
 
 interface Props {
@@ -13,7 +13,9 @@ interface Props {
 
 export const HOME_ASSISTANT_CARD = 'home-assistant';
 
-const EMPTY: HomeAssistantConfig = { enabled: true, mode: 'notify', url: '', token: '', service: '' };
+const EMPTY: HomeAssistantConfig = {
+  enabled: true, mode: 'notify', url: '', token: '', service: '', titlePrefix: '', linkBase: '',
+};
 
 /** "3 min ago" for the last-delivery line. */
 function ago(iso: string, now = Date.now()): string {
@@ -49,8 +51,10 @@ export function HomeAssistantConnect({ store, isOpen, toggleCard }: Props) {
       store.getHomeAssistantConfig(),
       store.getHomeAssistantStatus(),
       store.getCompanionVersion().catch(() => null),
-    ])).then(([c, s, v]) => {
+    ])).then(([stored, s, v]) => {
       if (!live) return;
+      // Every field present, whatever the store returned (an older mock, a partial secret).
+      const c = { ...EMPTY, ...stored };
       setCfg((cur) => (JSON.stringify(cur) === JSON.stringify(EMPTY) ? c : cur));
       setSaved(c);
       setDelivery(s);
@@ -65,11 +69,12 @@ export function HomeAssistantConnect({ store, isOpen, toggleCard }: Props) {
   }, [store]);
 
   const supported = companion === undefined || companionSendsToHomeAssistant(companion);
-  const complete = haConfigComplete(cfg);
+  const linkProblem = haLinkBaseProblem(cfg.linkBase);
+  const complete = haConfigComplete(cfg) && !linkProblem;
   const dirty = JSON.stringify(cfg) !== JSON.stringify(saved);
   const savedComplete = saved.enabled && haConfigComplete(saved);
   const webhook = cfg.mode === 'webhook';
-  const field = (key: 'url' | 'token' | 'service') =>
+  const field = (key: 'url' | 'token' | 'service' | 'titlePrefix' | 'linkBase') =>
     (e: React.ChangeEvent<HTMLInputElement>) => setCfg((c) => ({ ...c, [key]: e.target.value }));
 
   const summary = !savedComplete ? 'Not set up'
@@ -136,6 +141,25 @@ export function HomeAssistantConnect({ store, isOpen, toggleCard }: Props) {
               </div>
             </>
           )}
+          <div className="sfin-fields">
+            <div>
+              <label htmlFor="sfin-ha-prefix" className="sfin-subtle">Title prefix</label>
+              <input id="sfin-ha-prefix" type="text" className="sfin-select" placeholder="e.g. [Wealth]"
+                value={cfg.titlePrefix} onChange={field('titlePrefix')} />
+            </div>
+            <div>
+              <label htmlFor="sfin-ha-link" className="sfin-subtle">Wealthfolio address for tap links</label>
+              <input id="sfin-ha-link" type="url" className="sfin-select" placeholder="e.g. https://wealthfolio.example.com"
+                aria-invalid={linkProblem ? true : undefined} aria-describedby={linkProblem ? 'sfin-ha-link-problem' : undefined}
+                value={cfg.linkBase} onChange={field('linkBase')} />
+              {linkProblem && <div id="sfin-ha-link-problem" className="sfin-subtle">{linkProblem}</div>}
+            </div>
+          </div>
+          <div className="sfin-subtle">
+            Both can stay empty. With an address, tapping an alert opens it in the add-on: a large transaction opens its story. The address is
+            the one your phone uses to reach Wealthfolio. Webhooks receive it as <code>url</code>; the notify service passes
+            it to the companion app.
+          </div>
           <label className="sfin-subtle">
             <input type="checkbox" checked={cfg.enabled} onChange={(e) => setCfg((c) => ({ ...c, enabled: e.target.checked }))} />
             {' '}Send alerts to Home Assistant
