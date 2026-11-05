@@ -92,7 +92,7 @@ async function drainOnce(io: HaSecretIo, fetchImpl: typeof fetch, now: Date): Pr
   if (!config) return 0;
   const raw = await io.get(HA_OUTBOX_SECRET_KEY);
   const addonRaw = await io.get(HA_ADDON_QUEUE_SECRET_KEY);
-  const view = haPendingView(parseHaOutbox(raw), parseHaOutbox(addonRaw));
+  const view = haPendingView(parseHaOutbox(raw), parseHaOutbox(addonRaw), now);
   if (view.pending.length === 0) return 0;
 
   const previous = parseHaStatus(await io.get(HA_STATUS_SECRET_KEY).catch(() => null));

@@ -448,9 +448,10 @@ notice for each import is off until you switch it on. Alerts the add-on raises
 wait for the companion's next pass, within 5 minutes.
 
 A rejected token, a wrong service or webhook, or a redirect pauses delivery
-until you save a change or send a test, so a bad token is not retried (and
-counted as a failed login) every few minutes. While Home Assistant is down, the
-companion retries less and less often, up to every 4 hours. Alerts that wait
+until you change the address, token or service, or send a test, so a bad token
+is not retried (and counted as a failed login) every few minutes. While Home
+Assistant is down, the companion retries less and less often, up to every 4
+hours; changing the address, token or service ends that wait too. Alerts that wait
 more than a week are dropped, and the card says how many.
 
 #### Several Wealthfolio profiles

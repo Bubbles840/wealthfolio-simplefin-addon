@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   drainHaOutbox, enqueueHa, HA_ADDON_QUEUE_SECRET_KEY, HA_CONFIG_SECRET_KEY, HA_OUTBOX_SECRET_KEY, HA_PENDING_LIMIT,
-  HA_RETRY_BASE_MS, HA_RETRY_MAX_MS, haConfigComplete, haConfigKey, haDrainWaits, haPendingView, haReachProblem,
+  HA_RETRY_BASE_MS, HA_RETRY_MAX_MS, haChangedSinceFailure, haConfigComplete, haConfigKey, haDrainWaits, haPendingView, haReachProblem,
   haTestEntry, haUrlProblem, homeAssistantConfigForEditing, homeAssistantRequest, mergeDrained, nextHaStatus,
   parseHaOutbox, parseHomeAssistantConfig, plainText, queueHaEntries, queueHaEntriesStrict,
   sendHomeAssistantNotification, syncAlertEntries, syncHealthEntry,
@@ -272,7 +272,19 @@ describe('the add-on queue', () => {
   it('the drain sees both queues once each, oldest first, minus what was delivered', () => {
     const main: HaOutbox = { pending: [entry('c', at(-1_000)), entry('dup', at(-3_000))], seen: { done: NOW.toISOString() } };
     const addon: HaOutbox = { pending: [entry('a', at(-5_000)), entry('dup', at(-3_000)), entry('done')], seen: {} };
-    expect(haPendingView(main, addon).pending.map((e) => e.id)).toEqual(['a', 'dup', 'c']);
+    expect(haPendingView(main, addon, NOW).pending.map((e) => e.id)).toEqual(['a', 'dup', 'c']);
+  });
+
+  it('the drain leaves out an add-on entry older than its memory of what it sent', () => {
+    const addon: HaOutbox = { pending: [entry('ancient', at(-31 * DAY)), entry('old', at(-8 * DAY))], seen: {} };
+    expect(haPendingView({ pending: [], seen: {} }, addon, NOW).pending.map((e) => e.id)).toEqual(['old']);
+  });
+
+  it('the add-on drops its own entries the companion could no longer send', async () => {
+    const io = memoryIo();
+    io.data.set(HA_ADDON_QUEUE_SECRET_KEY, JSON.stringify({ pending: [entry('stale', at(-8 * DAY)), entry('fresh', at(-DAY))], seen: {} }));
+    await queueHaEntries(io, 'addon', () => [entry('new')], NOW);
+    expect(parseHaOutbox(io.data.get(HA_ADDON_QUEUE_SECRET_KEY)).pending.map((e) => e.id)).toEqual(['fresh', 'new']);
   });
 });
 
@@ -286,23 +298,40 @@ describe('mergeDrained', () => {
 
 describe('when delivery waits', () => {
   const failedAt = at(-10 * 60_000).toISOString();
+  const key = haConfigKey(CONFIG);
   it('a parked failure waits until the config changes', () => {
-    const status = { lastError: 'Home Assistant answered 401', lastErrorAt: failedAt, parkedFor: haConfigKey(CONFIG) };
+    const status = { lastError: 'Home Assistant answered 401', lastErrorAt: failedAt, failedFor: key, parked: true as const };
     expect(haDrainWaits(status, CONFIG, [entry('a')], NOW)).toBe(true);
     expect(haDrainWaits(status, { ...CONFIG, token: 'new-token' }, [entry('a')], NOW)).toBe(false);
   });
 
-  it('a test queued after the failure goes through anyway', () => {
-    const status = { lastError: 'x', lastErrorAt: failedAt, parkedFor: haConfigKey(CONFIG) };
-    expect(haDrainWaits(status, CONFIG, [entry('a'), haTestEntry(NOW)], NOW)).toBe(false);
-    expect(haDrainWaits(status, CONFIG, [haTestEntry(at(-60 * 60_000))], NOW)).toBe(true);
+  it('a back-off ends as soon as the config changes', () => {
+    const status = { lastError: 'Could not reach Home Assistant (host not found)', lastErrorAt: failedAt, failedFor: key, failures: 6, retryAt: at(4 * 60 * 60_000).toISOString() };
+    expect(haDrainWaits(status, CONFIG, [entry('a')], NOW)).toBe(true);
+    expect(haDrainWaits(status, { ...CONFIG, url: 'http://ha.fixed:8123' }, [entry('a')], NOW)).toBe(false);
+  });
+
+  it('a test not tried yet goes through, whatever either clock says', () => {
+    const tried = haTestEntry(at(-60 * 60_000));
+    const status = { lastError: 'x', lastErrorAt: failedAt, failedFor: key, parked: true as const, triedTests: [tried.id] };
+    // A browser clock an hour behind or a day ahead makes no difference: only the id counts.
+    expect(haDrainWaits(status, CONFIG, [entry('a'), haTestEntry(at(-2 * 60 * 60_000))], NOW)).toBe(false);
+    expect(haDrainWaits(status, CONFIG, [entry('a'), haTestEntry(at(DAY))], NOW)).toBe(false);
+    expect(haDrainWaits(status, CONFIG, [tried], NOW)).toBe(true);
   });
 
   it('a recoverable failure waits for its back-off', () => {
-    const status = { lastError: 'x', lastErrorAt: failedAt, failures: 1, retryAt: at(60_000).toISOString() };
+    const status = { lastError: 'x', lastErrorAt: failedAt, failedFor: key, failures: 1, retryAt: at(60_000).toISOString() };
     expect(haDrainWaits(status, CONFIG, [entry('a')], NOW)).toBe(true);
     expect(haDrainWaits(status, CONFIG, [entry('a')], at(2 * 60_000))).toBe(false);
     expect(haDrainWaits(null, CONFIG, [entry('a')], NOW)).toBe(false);
+  });
+
+  it('tells a failure with the saved config from one with an older config', () => {
+    const status = { lastError: 'x', lastErrorAt: failedAt, failedFor: key };
+    expect(haChangedSinceFailure(status, CONFIG)).toBe(false);
+    expect(haChangedSinceFailure(status, { ...CONFIG, service: 'other' })).toBe(true);
+    expect(haChangedSinceFailure({ lastOkAt: failedAt }, { ...CONFIG, service: 'other' })).toBe(false);
   });
 
   it('the config key changes with what delivery depends on, and not with the title prefix', () => {
@@ -315,23 +344,40 @@ describe('when delivery waits', () => {
 
 describe('nextHaStatus', () => {
   const sent = { delivered: 1, dropped: 0, attempted: true };
+  const key = haConfigKey(CONFIG);
   it('parks a permanent failure on the config it failed with', () => {
     expect(nextHaStatus(null, { ...sent, delivered: 0, error: 'Home Assistant answered 401', permanent: true }, CONFIG, NOW))
-      .toEqual({ lastError: 'Home Assistant answered 401', lastErrorAt: NOW.toISOString(), parkedFor: haConfigKey(CONFIG) });
+      .toEqual({ lastError: 'Home Assistant answered 401', lastErrorAt: NOW.toISOString(), failedFor: key, parked: true });
   });
 
-  it('backs off a recoverable failure, doubling up to 4 hours', () => {
+  it('backs off a recoverable failure, doubling up to 4 hours, and records the config it failed with', () => {
     const fail = { ...sent, delivered: 0, error: 'Home Assistant answered 503' };
     const first = nextHaStatus(null, fail, CONFIG, NOW)!;
-    expect(first).toMatchObject({ failures: 1, retryAt: at(HA_RETRY_BASE_MS).toISOString() });
+    expect(first).toMatchObject({ failures: 1, retryAt: at(HA_RETRY_BASE_MS).toISOString(), failedFor: key });
     const second = nextHaStatus(first, fail, CONFIG, NOW)!;
     expect(second).toMatchObject({ failures: 2, retryAt: at(2 * HA_RETRY_BASE_MS).toISOString() });
     const many = nextHaStatus({ ...first, failures: 20 }, fail, CONFIG, NOW)!;
     expect(many.retryAt).toBe(at(HA_RETRY_MAX_MS).toISOString());
   });
 
+  it('starts the back-off over for a failure with a new config', () => {
+    const fail = { ...sent, delivered: 0, error: 'Home Assistant answered 503' };
+    const prev = { lastError: 'x', lastErrorAt: failedAtIso(), failedFor: key, failures: 7, retryAt: NOW.toISOString() };
+    const other = { ...CONFIG, url: 'http://ha.fixed:8123' };
+    expect(nextHaStatus(prev, fail, other, NOW)).toMatchObject({ failures: 1, failedFor: haConfigKey(other) });
+  });
+
+  it('remembers which tests it tried, until a delivery or a config change', () => {
+    const fail = { ...sent, delivered: 0, error: 'Home Assistant answered 401', permanent: true };
+    const first = nextHaStatus(null, { ...fail, tried: ['test:1'] }, CONFIG, NOW)!;
+    expect(first.triedTests).toEqual(['test:1']);
+    expect(nextHaStatus(first, { ...fail, tried: ['test:2', 'stuck:x'] }, CONFIG, NOW)!.triedTests).toEqual(['test:1', 'test:2']);
+    expect(nextHaStatus(first, { ...fail, tried: ['test:2'] }, { ...CONFIG, token: 'new' }, NOW)!.triedTests).toEqual(['test:2']);
+    expect(nextHaStatus(first, { ...sent, tried: ['test:2'] }, CONFIG, NOW)).toEqual({ lastOkAt: NOW.toISOString() });
+  });
+
   it('a success clears the error, the park and the back-off', () => {
-    const prev = { lastError: 'x', lastErrorAt: failedAtIso(), failures: 3, retryAt: NOW.toISOString(), parkedFor: 'k' };
+    const prev = { lastError: 'x', lastErrorAt: failedAtIso(), failures: 3, retryAt: NOW.toISOString(), failedFor: 'k', parked: true as const };
     expect(nextHaStatus(prev, sent, CONFIG, NOW)).toEqual({ lastOkAt: NOW.toISOString() });
   });
 
@@ -341,10 +387,15 @@ describe('nextHaStatus', () => {
   });
 
   it('records alerts dropped unsent, and keeps the error that explains them', () => {
-    const prev = { lastError: 'Home Assistant answered 401', lastErrorAt: failedAtIso(), parkedFor: 'k', dropped: 2, droppedAt: failedAtIso() };
+    const prev = { lastError: 'Home Assistant answered 401', lastErrorAt: failedAtIso(), failedFor: 'k', parked: true as const, dropped: 2, droppedAt: failedAtIso() };
     expect(nextHaStatus(prev, { delivered: 0, dropped: 3, attempted: false }, CONFIG, NOW)).toEqual({
-      lastError: 'Home Assistant answered 401', lastErrorAt: failedAtIso(), parkedFor: 'k', dropped: 5, droppedAt: NOW.toISOString(),
+      lastError: 'Home Assistant answered 401', lastErrorAt: failedAtIso(), failedFor: 'k', parked: true, dropped: 5, droppedAt: NOW.toISOString(),
     });
+  });
+
+  it('starts the dropped count over once the last drop is more than a week old', () => {
+    const prev = { lastOkAt: failedAtIso(), dropped: 40, droppedAt: at(-8 * DAY).toISOString() };
+    expect(nextHaStatus(prev, { delivered: 0, dropped: 2, attempted: false }, CONFIG, NOW)).toMatchObject({ dropped: 2, droppedAt: NOW.toISOString() });
   });
 });
 

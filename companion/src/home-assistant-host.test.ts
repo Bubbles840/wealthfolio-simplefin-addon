@@ -56,7 +56,7 @@ describe('drainHomeAssistant', () => {
     const c = counting(401);
     expect(await drainHomeAssistant(io, c.fetch, NOW)).toBe(0);
     expect(statusOf(io)).toMatchObject({
-      lastError: 'Home Assistant answered 401 (check the access token)', parkedFor: haConfigKey(CONFIG),
+      lastError: 'Home Assistant answered 401 (check the access token)', failedFor: haConfigKey(CONFIG), parked: true,
     });
     // Every 5 minutes for half a day: not one more failed login.
     for (let i = 1; i <= 144; i++) await drainHomeAssistant(io, c.fetch, at(i * 5 * 60_000));
@@ -85,6 +85,33 @@ describe('drainHomeAssistant', () => {
     // 35, 75, 155, 315, 555, 795, 1035 and 1275. 11 in a day, not 288.
     expect(c.calls()).toBe(11);
     expect(statusOf(io)).toMatchObject({ lastError: 'Home Assistant answered 503', failures: 11 });
+  });
+
+  it('a fixed address is tried at once, not after the back-off', async () => {
+    const io = memoryIo();
+    await queueHaEntries(io, 'companion', () => [entry('a')], NOW);
+    const down = counting(503);
+    for (let i = 0; i < 100; i++) await drainHomeAssistant(io, down.fetch, at(i * 5 * 60_000));
+    expect(statusOf(io).retryAt > at(100 * 5 * 60_000).toISOString()).toBe(true);
+    io.data.set(HA_CONFIG_SECRET_KEY, JSON.stringify({ ...CONFIG, url: 'http://ha.fixed:8123' }));
+    expect(await drainHomeAssistant(io, answering(200), at(100 * 5 * 60_000))).toBe(1);
+  });
+
+  it('a delivered add-on alert stays delivered after the companion forgets it, with nothing counted dropped', async () => {
+    const io = memoryIo();
+    await queueHaEntries(io, 'addon', () => [entry('from-addon')], NOW);
+    expect(await drainHomeAssistant(io, answering(200), NOW)).toBe(1);
+    // 31 days with only the companion queueing: its memory of the add-on alert expires.
+    const later = at(31 * DAY);
+    await queueHaEntries(io, 'companion', () => [entry('companion-alert', later)], later);
+    await drainHomeAssistant(io, answering(200), later);
+    const before = statusOf(io);
+    const sent = counting(200);
+    await drainHomeAssistant(io, sent.fetch, at(31 * DAY + 5 * 60_000));
+    await drainHomeAssistant(io, sent.fetch, at(31 * DAY + 10 * 60_000));
+    expect(statusOf(io)).toEqual(before);
+    expect(before.dropped).toBeUndefined();
+    expect(sent.calls()).toBe(0);
   });
 
   it('keeps an alert the companion\'s own sync queued while the sends ran', async () => {

@@ -126,10 +126,20 @@ describe('HomeAssistantConnect', () => {
   it('shows delivery as paused after a failure retrying cannot fix', async () => {
     renderCard(storeWith(SAVED, {
       lastError: 'Home Assistant answered 401 (check the access token)', lastErrorAt: '2027-03-15T10:00:00.000Z',
-      parkedFor: haConfigKey(SAVED),
+      failedFor: haConfigKey(SAVED), parked: true,
     }));
     expect(await screen.findByText('Delivery paused')).toBeInTheDocument();
-    expect(screen.getByText(/Nothing is sent until you save a change or send a test/)).toBeInTheDocument();
+    expect(screen.getByText(/Nothing is sent until you change the address, access token or notify service, or send a test/)).toBeInTheDocument();
+  });
+
+  it('says a config saved since the last failure is not checked yet', async () => {
+    renderCard(storeWith(SAVED, {
+      lastError: 'Could not reach Home Assistant (host not found)', lastErrorAt: '2027-03-15T10:00:00.000Z',
+      failedFor: haConfigKey({ ...SAVED, url: 'http://typo.local:8123' }), failures: 6, retryAt: '2027-03-15T14:00:00.000Z',
+    }));
+    expect(await screen.findByText('Changed, not checked yet')).toBeInTheDocument();
+    expect(screen.getByText('Changed since the last failure. Send a test to check it.')).toBeInTheDocument();
+    expect(screen.queryByText(/host not found/)).toBeNull();
   });
 
   it('says when alerts were dropped unsent', async () => {

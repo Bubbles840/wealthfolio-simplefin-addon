@@ -180,14 +180,22 @@ export interface HaStatus {
   /** The last delivery error, cleared by the next success. */
   lastError?: string;
   lastErrorAt?: string;
-  /** Set after a failure retrying cannot fix (a rejected token, a wrong service,
-   *  a redirect): the `haConfigKey` it failed with. Nothing is sent until the
-   *  config changes or a new test is queued. */
-  parkedFor?: string;
+  /** The `haConfigKey` of the config the last failure happened with. Once the
+   *  saved config differs, neither a park nor a back-off holds delivery back,
+   *  and the card says the change is not checked yet. */
+  failedFor?: string;
+  /** The last failure is one retrying cannot fix (a rejected token, a wrong
+   *  service, a redirect): nothing is sent until the config changes or a test
+   *  is queued. */
+  parked?: true;
   /** After a failure Home Assistant may recover from: consecutive failures, and
    *  when the next try is due. */
   failures?: number;
   retryAt?: string;
+  /** Test entries already tried since the last delivery. A test not in it goes
+   *  through a park or a back-off once. Ids, not times: the test's time is the
+   *  browser's clock and the failure's the companion's. */
+  triedTests?: string[];
   /** Alerts dropped unsent after a week in the queue: how many, and when. */
   dropped?: number;
   droppedAt?: string;
@@ -489,8 +497,11 @@ export async function queueHaEntriesStrict(
   }
   const raw = await io.get(HA_ADDON_QUEUE_SECRET_KEY);
   const own = parseHaOutbox(raw);
-  // Delivered (or dropped) by the companion: no longer the add-on's to keep.
-  const undelivered = own.pending.filter((e) => !(e.id in main.seen));
+  // Delivered (or dropped) by the companion: no longer the add-on's to keep. Past
+  // a week, the companion would drop it anyway; keeping it longer than the
+  // companion remembers it as seen would bring it back as pending.
+  const t = now.getTime();
+  const undelivered = own.pending.filter((e) => !(e.id in main.seen) && ageMs(e.createdAt, t) <= HA_PENDING_MAX_AGE_MS);
   const known = haKnown({ pending: [...main.pending, ...undelivered], seen: main.seen });
   const entries = build(known, config).filter((e) => !known(e.id));
   const next = JSON.stringify(trimmedQueue({ pending: [...undelivered, ...entries], seen: {} }, now));
@@ -511,13 +522,17 @@ export async function queueHaEntries(
 
 /**
  * Everything waiting to go out: the companion's outbox plus the add-on's queue,
- * minus what was already delivered or queued twice, oldest first.
+ * minus what was already delivered or queued twice, oldest first. An add-on
+ * entry older than the companion's memory of what it sent is left out: its key
+ * may already be forgotten, and counting it again would report it dropped on
+ * every pass until the add-on next writes its queue.
  */
-export function haPendingView(main: HaOutbox, addon: HaOutbox): HaOutbox {
+export function haPendingView(main: HaOutbox, addon: HaOutbox, now: Date): HaOutbox {
+  const t = now.getTime();
   const ids = new Set(main.pending.map((e) => e.id));
   const pending = [...main.pending];
   for (const e of addon.pending) {
-    if (e.id in main.seen || ids.has(e.id)) continue;
+    if (e.id in main.seen || ids.has(e.id) || ageMs(e.createdAt, t) > HA_SEEN_MAX_AGE_MS) continue;
     ids.add(e.id);
     pending.push(e);
   }
@@ -547,18 +562,20 @@ export async function drainHaOutbox(
   outbox: HaOutbox,
   send: HaSend | null,
   now: Date,
-): Promise<{ outbox: HaOutbox; delivered: number; dropped: number; attempted: boolean; error?: string; permanent?: boolean }> {
+): Promise<HaDrainResult> {
   const { outbox: current, dropped } = prune(outbox, now);
   const seen = { ...current.seen };
   for (const e of dropped) for (const k of [e.id, ...(e.keys ?? [])]) seen[k] ??= e.createdAt;
   const remaining = [...current.pending];
+  const tried: string[] = [];
   let delivered = 0;
   while (send && remaining.length > 0) {
     const entry = remaining[0];
+    tried.push(entry.id);
     const res = await send(entry);
     if (!res.ok) {
       return {
-        outbox: { pending: remaining, seen }, delivered, dropped: dropped.length, attempted: true,
+        outbox: { pending: remaining, seen }, delivered, dropped: dropped.length, attempted: true, tried,
         error: res.description ?? 'delivery failed', ...(res.permanent ? { permanent: true } : {}),
       };
     }
@@ -566,7 +583,18 @@ export async function drainHaOutbox(
     delivered++;
     for (const k of [entry.id, ...(entry.keys ?? [])]) seen[k] ??= entry.createdAt;
   }
-  return { outbox: { pending: remaining, seen }, delivered, dropped: dropped.length, attempted: delivered > 0 };
+  return { outbox: { pending: remaining, seen }, delivered, dropped: dropped.length, attempted: delivered > 0, tried };
+}
+
+export interface HaDrainResult {
+  outbox: HaOutbox;
+  delivered: number;
+  dropped: number;
+  attempted: boolean;
+  /** Ids of the entries a send was attempted for, in order. */
+  tried: string[];
+  error?: string;
+  permanent?: boolean;
 }
 
 /**
@@ -581,33 +609,47 @@ export function mergeDrained(current: HaOutbox, drained: HaOutbox, now: Date): H
   return pruned({ pending: current.pending.filter((e) => !seen[e.id]), seen }, now);
 }
 
+/** Whether the last failure happened with a config other than `config`. */
+export function haChangedSinceFailure(status: HaStatus | null, config: Pick<HomeAssistantConfig, 'mode' | 'url' | 'token' | 'service'>): boolean {
+  return !!status?.lastError && !!status.failedFor && status.failedFor !== haConfigKey(config);
+}
+
 /**
  * Whether the drain should wait instead of sending. A parked failure waits for a
- * config change; a recoverable one for its back-off. A test queued after the last
- * failure goes straight through either way, so "Send a test" always tries.
+ * config change; a recoverable one for its back-off, unless the config changed
+ * since. A test not yet tried goes straight through either way, so "Send a test"
+ * always tries.
  */
 export function haDrainWaits(status: HaStatus | null, config: HomeAssistantConfig, pending: HaEntry[], now: Date): boolean {
-  if (!status) return false;
-  const since = status.lastErrorAt ? Date.parse(status.lastErrorAt) : 0;
-  if (pending.some((e) => e.id.startsWith('test:') && Date.parse(e.createdAt) > since)) return false;
-  if (status.parkedFor) return status.parkedFor === haConfigKey(config);
+  if (!status?.lastError || haChangedSinceFailure(status, config)) return false;
+  const tried = new Set(status.triedTests ?? []);
+  if (pending.some((e) => e.id.startsWith('test:') && !tried.has(e.id))) return false;
+  if (status.parked) return true;
   return !!status.retryAt && now.getTime() < Date.parse(status.retryAt);
 }
+
+/** How many tried test ids the status keeps. */
+const TRIED_TESTS_KEPT = 20;
 
 /** The status after a drain. Unchanged (null) when the drain neither sent nor
  *  dropped anything, so an idle pass never overwrites an error with "Connected". */
 export function nextHaStatus(
   previous: HaStatus | null,
-  result: { delivered: number; dropped: number; attempted: boolean; error?: string; permanent?: boolean },
+  result: Pick<HaDrainResult, 'delivered' | 'dropped' | 'attempted' | 'error' | 'permanent'> & { tried?: string[] },
   config: HomeAssistantConfig,
   now: Date,
 ): HaStatus | null {
   if (!result.attempted && result.dropped === 0) return null;
   const prev = previous ?? {};
+  const t = now.getTime();
   const at = now.toISOString();
   const lastOkAt = result.delivered > 0 ? at : prev.lastOkAt;
+  // A running count of the last week's drops: an older count starts over, so
+  // the card's "were dropped" stays recent.
+  const recentDrops = prev.dropped && prev.droppedAt && t - Date.parse(prev.droppedAt) <= HA_PENDING_MAX_AGE_MS
+    ? prev.dropped : 0;
   const dropped = result.dropped > 0
-    ? { dropped: (prev.dropped ?? 0) + result.dropped, droppedAt: at }
+    ? { dropped: recentDrops + result.dropped, droppedAt: at }
     : prev.dropped ? { dropped: prev.dropped, droppedAt: prev.droppedAt } : {};
   const base: HaStatus = { ...(lastOkAt ? { lastOkAt } : {}), ...dropped };
   if (!result.attempted) {
@@ -616,11 +658,21 @@ export function nextHaStatus(
     return { ...failure, ...base };
   }
   if (!result.error) return base;
-  const failed: HaStatus = { ...base, lastError: result.error, lastErrorAt: at };
-  if (result.permanent) return { ...failed, parkedFor: haConfigKey(config) };
-  const failures = (prev.failures ?? 0) + 1;
+  const key = haConfigKey(config);
+  // A failure with a new config starts its own back-off and its own tried tests.
+  const sameConfig = prev.failedFor === key;
+  const triedTests = [...new Set([
+    ...(sameConfig ? prev.triedTests ?? [] : []),
+    ...(result.tried ?? []).filter((id) => id.startsWith('test:')),
+  ])].slice(-TRIED_TESTS_KEPT);
+  const failed: HaStatus = {
+    ...base, lastError: result.error, lastErrorAt: at, failedFor: key,
+    ...(triedTests.length ? { triedTests } : {}),
+  };
+  if (result.permanent) return { ...failed, parked: true };
+  const failures = (sameConfig ? prev.failures ?? 0 : 0) + 1;
   const wait = Math.min(HA_RETRY_BASE_MS * 2 ** (failures - 1), HA_RETRY_MAX_MS);
-  return { ...failed, failures, retryAt: new Date(now.getTime() + wait).toISOString() };
+  return { ...failed, failures, retryAt: new Date(t + wait).toISOString() };
 }
 
 /**

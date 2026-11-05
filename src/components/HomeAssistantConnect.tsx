@@ -3,7 +3,7 @@ import { Button, CollapsibleCard, statusToneClass } from './ui';
 import type { StatusMessage } from './ui';
 import type { SecretsStore } from '../utils/secrets';
 import {
-  haConfigComplete, haConfigKey, haLinkBaseProblem, haUrlProblem, HA_PENDING_MAX_AGE_MS,
+  haChangedSinceFailure, haConfigComplete, haLinkBaseProblem, haUrlProblem, HA_PENDING_MAX_AGE_MS,
   type HaMode, type HaStatus, type HomeAssistantConfig,
 } from '../../shared/home-assistant';
 import { companionSendsToHomeAssistant, HOME_ASSISTANT_SINCE } from '../../shared/version';
@@ -84,14 +84,18 @@ export function HomeAssistantConnect({ store, isOpen, toggleCard }: Props) {
     (e: React.ChangeEvent<HTMLInputElement>) => setCfg((c) => ({ ...c, [key]: e.target.value }));
 
   const failing = !!delivery?.lastError && (!delivery.lastOkAt || delivery.lastErrorAt! > delivery.lastOkAt);
-  // Parked for the SAVED config: a change saved since then is tried again.
-  const paused = failing && !!delivery?.parkedFor && delivery.parkedFor === haConfigKey(saved);
+  // The saved config is not the one that failed: the old error no longer says
+  // anything about it, and the next alert (or a test) is sent with it at once.
+  const changed = failing && haChangedSinceFailure(delivery, saved);
+  const paused = failing && !changed && !!delivery?.parked;
   const droppedRecently = !!delivery?.dropped && !!delivery.droppedAt
     && Date.now() - Date.parse(delivery.droppedAt) < HA_PENDING_MAX_AGE_MS;
   const summary = !savedComplete ? 'Not set up'
-    : paused ? 'Delivery paused'
-      : failing ? 'Delivery failing'
-        : 'Connected';
+    : changed ? 'Changed, not checked yet'
+      : paused ? 'Delivery paused'
+        : failing ? 'Delivery failing'
+          : 'Connected';
+  const resumesWith = saved.mode === 'webhook' ? 'the webhook URL' : 'the address, access token or notify service';
   const urlField = (id: string) => urlProblem
     ? { 'aria-invalid': true as const, 'aria-describedby': id }
     : {};
@@ -196,8 +200,10 @@ export function HomeAssistantConnect({ store, isOpen, toggleCard }: Props) {
 
           {savedComplete && (
             <div className="sfin-subtle">
-              {paused
-                ? `Delivery paused ${ago(delivery!.lastErrorAt!)}: ${delivery!.lastError}. Nothing is sent until you save a change or send a test.`
+              {changed
+                ? 'Changed since the last failure. Send a test to check it.'
+                : paused
+                ? `Delivery paused ${ago(delivery!.lastErrorAt!)}: ${delivery!.lastError}. Nothing is sent until you change ${resumesWith}, or send a test.`
                 : failing
                   ? `Last delivery failed ${ago(delivery!.lastErrorAt!)}: ${delivery!.lastError}${delivery!.retryAt ? '. Retrying later.' : ''}`
                   : delivery?.lastOkAt ? `Last alert delivered ${ago(delivery.lastOkAt)}.`

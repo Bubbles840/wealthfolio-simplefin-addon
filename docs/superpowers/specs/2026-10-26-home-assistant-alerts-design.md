@@ -63,8 +63,11 @@ only the companion talks to Home Assistant.
 - **Bounded (my call)**: the drain sends the 50 newest, and drops (and counts, in `ha_status`) an entry older than 7 days.
   An entry dated in the future (a fast clock) counts as queued now.
 - **Failures**: a 401/403, a notify 400/404, a webhook 404/405 or any redirect parks delivery until the access fields
-  (mode, URL, token, service) change, or a test is queued after the failure. Redirects are never followed. A 5xx or a
-  network error backs off from 5 minutes, doubling, up to 4 hours. Stored errors name the kind of failure (timed out,
+  (mode, URL, token, service) change, or a test the drain has not tried yet is queued (tracked by id, never by comparing
+  the browser's clock with the companion's). Redirects are never followed. A 5xx or a network error backs off from 5
+  minutes, doubling, up to 4 hours; a change to those fields ends the wait, and the card says the change is unchecked.
+- **Two memories, one horizon**: the add-on drops its own entries after 7 days, and the drain ignores add-on entries
+  older than its 30-day memory of what it sent, so a long-delivered alert can't come back as pending. Stored errors name the kind of failure (timed out,
   connection refused, host not found, certificate problem), never fetch's message, which can carry the URL.
 - **Quiet when unused**: without Home Assistant set up, the 5-minute drain reads the config once per 15 minutes, and never
   signs in again or logs.
