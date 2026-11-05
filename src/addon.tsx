@@ -4,6 +4,7 @@ import type { AddonContext, AddonEnableFunction } from '@wealthfolio/addon-sdk';
 import { SetupPage } from './pages/SetupPage';
 import { SyncPage } from './pages/SyncPage';
 import { SecretsStore } from './utils/secrets';
+import { withChunkedSecrets } from './utils/chunked-secrets';
 import { Scheduler } from './utils/scheduler';
 import { runSync } from './utils/sync';
 import { ThemeStyles } from './components/ui';
@@ -86,7 +87,10 @@ export function SimplefinSyncView({ ctx, store, scheduler, search }: SimplefinSy
 
 // ── Addon entry point ─────────────────────────────────────────────────────────
 
-const enable: AddonEnableFunction = (ctx) => {
+const enable: AddonEnableFunction = (hostCtx) => {
+  // Everything below, and every page, reads and writes secrets through this:
+  // Windows refuses a secret over 1,280 characters, so large ones go in parts (#58).
+  const ctx = withChunkedSecrets(hostCtx);
   addonCtx = ctx;
   addonStore = new SecretsStore(ctx);
   addonScheduler = new Scheduler();

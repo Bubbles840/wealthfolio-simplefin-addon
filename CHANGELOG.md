@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **Windows: syncs no longer stop with "longer than the platform limit of
+  2560 chars" (#58).** The desktop app stores the add-on's data in Windows
+  Credential Manager, which refuses anything over 1,280 characters, and some
+  records (linked transfers, account balances) grow past that once a few
+  accounts are linked. Such a record is now stored in parts and read back
+  whole. Nothing changes on the server or on macOS, which have no such limit.
+
 ## [1.72.0] - 2026-11-03
 
 Update both halves. From 1.70.0, Update the add-on in the app as usual (no

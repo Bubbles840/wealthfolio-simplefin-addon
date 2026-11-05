@@ -8,7 +8,7 @@
  */
 
 import React from 'react';
-import { render, screen, waitFor } from '@testing-library/react';
+import { act, render, screen, waitFor } from '@testing-library/react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 // ── Module mocks ──────────────────────────────────────────────────────────────
@@ -165,6 +165,26 @@ describe('addon enable()', () => {
     enable(ctx);
     await new Promise((r) => setTimeout(r, 20));
     expect(ctx.api.secrets.set).not.toHaveBeenCalledWith('addon_version', SIMPLEFIN_SYNC_VERSION);
+  });
+
+  it('hands the page a ctx whose secrets fit Windows Credential Manager (#58)', async () => {
+    const { SetupPage } = await import('./pages/SetupPage');
+    const ctx = makeCtx();
+    const raw = new Map<string, string>();
+    ctx.api.secrets.get = vi.fn(async (k: string) => raw.get(k) ?? null);
+    ctx.api.secrets.set = vi.fn(async (k: string, v: string) => {
+      if (v.length > 1280) throw new Error("Value of 'password encoded as UTF-16' is longer than the platform limit of 2560 chars");
+      raw.set(k, v);
+    });
+    enable(ctx);
+    const { render: renderRoute } = ctx.router.add.mock.calls[0][0];
+    await act(async () => { renderRoute({ root: document.createElement('div') }); });
+    await waitFor(() => expect(SetupPage).toHaveBeenCalled());
+    const pageCtx = (SetupPage as ReturnType<typeof vi.fn>).mock.calls.at(-1)![0].ctx;
+    const big = JSON.stringify({ groups: 'g'.repeat(4000) });
+    await pageCtx.api.secrets.set('linked_groups', big);
+    expect(await pageCtx.api.secrets.get('linked_groups')).toBe(big);
+    for (const v of raw.values()) expect(v.length).toBeLessThanOrEqual(1280);
   });
 
   it('registers an onDisable callback', () => {
