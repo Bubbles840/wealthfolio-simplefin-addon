@@ -441,6 +441,15 @@ describe('nextHaStatus', () => {
     });
   });
 
+  it('counts alerts treated as sent without knowing they arrived, and keeps the error', () => {
+    const prev = { lastError: 'x', lastErrorAt: failedAtIso(), failedFor: 'k', parked: true as const };
+    expect(nextHaStatus(prev, { delivered: 0, dropped: 0, unsure: 2, attempted: false }, CONFIG, NOW)).toEqual({
+      ...prev, unsure: 2, unsureAt: NOW.toISOString(),
+    });
+    const old = { unsure: 9, unsureAt: at(-8 * DAY).toISOString() };
+    expect(nextHaStatus(old, { delivered: 0, dropped: 0, unsure: 1, attempted: false }, CONFIG, NOW)).toMatchObject({ unsure: 1 });
+  });
+
   it('starts the dropped count over once the last drop is more than a week old', () => {
     const prev = { lastOkAt: failedAtIso(), dropped: 40, droppedAt: at(-8 * DAY).toISOString() };
     expect(nextHaStatus(prev, { delivered: 0, dropped: 2, attempted: false }, CONFIG, NOW)).toMatchObject({ dropped: 2, droppedAt: NOW.toISOString() });

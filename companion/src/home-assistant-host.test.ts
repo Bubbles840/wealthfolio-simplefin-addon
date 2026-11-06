@@ -176,7 +176,8 @@ describe('drainHomeAssistant', () => {
     expect(await drainHomeAssistant(io, c.fetch, at(5 * 60_000))).toBe(1);
     expect(c.calls()).toBe(2);
     expect(parseHaOutbox(io.data.get(HA_OUTBOX_SECRET_KEY)).pending).toEqual([]);
-    expect(statusOf(io)).toEqual({ lastOkAt: at(5 * 60_000).toISOString() });
+    // 'a' is not silently gone: the card says it may not have arrived.
+    expect(statusOf(io)).toEqual({ lastOkAt: at(5 * 60_000).toISOString(), unsure: 1, unsureAt: at(5 * 60_000).toISOString() });
   });
 
   it('a failed write changes nothing: neither what went out nor the status is half-saved', async () => {
@@ -235,6 +236,8 @@ describe('drainHomeAssistant', () => {
     expect(after.pending).toEqual([]);
     expect(after.seen).toHaveProperty('a');
     expect(after.status?.dropped).toBeUndefined();
+    // Not silent: the card is told they may not have arrived.
+    expect(after.status).toMatchObject({ unsure: 2, unsureAt: NOW.toISOString() });
   });
 
   it('the extra pass for a caller who joined uses the client that started the drain', async () => {

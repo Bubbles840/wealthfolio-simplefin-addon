@@ -84,8 +84,10 @@ written). Only an http(s) URL with a host and no credentials is accepted, by bot
 after a drain that sent or dropped something; the section shows it, so a wrong token or service is visible without
 reading container logs. One write means the two never fall out of step. Each alert's id is saved just before it is
 sent (nothing is sent if that fails); if the save after sending fails, the next pass treats those alerts as sent. So an
-alert never repeats, at the cost of losing one if Home Assistant refused it in the same moment a save failed (my call:
-never resend). Reset clears all three secrets.
+alert never repeats (my call: never resend). The cost: an alert that did not arrive (Home Assistant refused it, or the
+companion stopped right before sending it) when a save failed at that moment is not retried; the card counts these as
+"may not have reached Home Assistant", the same way it counts dropped alerts. Each alert costs one extra outbox read and
+write. Reset clears all three secrets.
 
 The section only appears when the companion understands it (`HOME_ASSISTANT_SINCE` in shared/version.ts): with an
 older companion, nothing would drain the outbox.

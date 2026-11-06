@@ -152,6 +152,11 @@ describe('HomeAssistantConnect', () => {
     expect(screen.queryByText(/host not found/)).toBeNull();
   });
 
+  it('says when alerts may not have reached Home Assistant', async () => {
+    renderCard(storeWith(SAVED, { lastOkAt: new Date().toISOString(), unsure: 1, unsureAt: new Date().toISOString() }));
+    expect(await screen.findByText(/1 alert may not have reached Home Assistant/)).toBeInTheDocument();
+  });
+
   it('says when alerts were dropped unsent', async () => {
     renderCard(storeWith(SAVED, {
       lastOkAt: new Date().toISOString(), dropped: 3, droppedAt: new Date().toISOString(),

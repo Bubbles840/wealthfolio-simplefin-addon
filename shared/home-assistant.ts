@@ -13,8 +13,10 @@
  * A drain saves what it sent and the status in ONE write, so the two never
  * disagree. Each alert's id is saved just before it is sent, and nothing is
  * sent if that save fails. If the save after sending fails, the next pass finds
- * those ids and treats the alerts as sent: never a repeat, at the cost of one
- * alert if Home Assistant refused it in the same moment a save failed.
+ * those ids and treats the alerts as sent, and the status counts them as
+ * "may not have arrived": never a repeat, at the cost of an alert that did not
+ * arrive (Home Assistant refused it, or the companion stopped right before
+ * sending it) when a save failed at that moment.
  *
  * WHY A SEEN MEMORY. Some alerts are re-reported on every sync until resolved
  * (a refused create is never stored, so it is refused again; an unmapped account
@@ -212,6 +214,10 @@ export interface HaStatus {
   /** Alerts dropped unsent after a week in the queue: how many, and when. */
   dropped?: number;
   droppedAt?: string;
+  /** Alerts treated as sent without knowing they arrived (a save failed while
+   *  they were being sent): how many, and when. */
+  unsure?: number;
+  unsureAt?: string;
 }
 
 /** A config with nothing filled in: what editing starts from. */
@@ -577,10 +583,10 @@ export async function drainHaOutbox(
     unconfirmed?: (id: string) => boolean;
   } = {},
 ): Promise<HaDrainResult> {
-  const doubtful = outbox.pending.filter((e) => options.unconfirmed?.(e.id));
-  const { outbox: current, dropped } = prune(
-    { pending: outbox.pending.filter((e) => !options.unconfirmed?.(e.id)), seen: outbox.seen }, now,
-  );
+  const doubtful: HaEntry[] = [];
+  const rest: HaEntry[] = [];
+  for (const e of outbox.pending) (options.unconfirmed?.(e.id) ? doubtful : rest).push(e);
+  const { outbox: current, dropped } = prune({ pending: rest, seen: outbox.seen }, now);
   const seen = { ...current.seen };
   const remember = (e: HaEntry) => { for (const k of [e.id, ...(e.keys ?? [])]) seen[k] ??= e.createdAt; };
   doubtful.forEach(remember);
@@ -600,20 +606,25 @@ export async function drainHaOutbox(
     if (!res.ok) {
       remaining.push(...queue.slice(i));
       return {
-        outbox: { pending: remaining, seen }, delivered, dropped: dropped.length, attempted: true, tried,
+        outbox: { pending: remaining, seen }, delivered, dropped: dropped.length, unsure: doubtful.length, attempted: true, tried,
         error: res.description ?? 'delivery failed', ...(res.permanent ? { permanent: true } : {}),
       };
     }
     delivered++;
     remember(entry);
   }
-  return { outbox: { pending: remaining, seen }, delivered, dropped: dropped.length, attempted: delivered > 0, tried };
+  return {
+    outbox: { pending: remaining, seen }, delivered, dropped: dropped.length, unsure: doubtful.length,
+    attempted: delivered > 0, tried,
+  };
 }
 
 export interface HaDrainResult {
   outbox: HaOutbox;
   delivered: number;
   dropped: number;
+  /** Treated as sent because an earlier pass could not record them. */
+  unsure: number;
   attempted: boolean;
   /** Ids of the entries a send was attempted for, in order. */
   tried: string[];
@@ -670,11 +681,12 @@ export function haUntriedTest(status: HaStatus | null, entry: Pick<HaEntry, 'id'
 export function nextHaStatus(
   previous: HaStatus | null,
   result: Pick<HaDrainResult, 'delivered' | 'dropped' | 'attempted' | 'error' | 'permanent'>
-    & { tried?: string[]; outbox?: HaOutbox },
+    & { tried?: string[]; outbox?: HaOutbox; unsure?: number },
   config: HomeAssistantConfig,
   now: Date,
 ): HaStatus | null {
-  if (!result.attempted && result.dropped === 0) return null;
+  const unsureNow = result.unsure ?? 0;
+  if (!result.attempted && result.dropped === 0 && unsureNow === 0) return null;
   const prev = previous ?? {};
   const t = now.getTime();
   const at = now.toISOString();
@@ -686,10 +698,16 @@ export function nextHaStatus(
   const dropped = result.dropped > 0
     ? { dropped: recentDrops + result.dropped, droppedAt: at }
     : prev.dropped ? { dropped: prev.dropped, droppedAt: prev.droppedAt } : {};
-  const base: HaStatus = { ...(lastOkAt ? { lastOkAt } : {}), ...dropped };
+  // The same for alerts treated as sent without knowing they arrived.
+  const recentUnsure = prev.unsure && prev.unsureAt && t - Date.parse(prev.unsureAt) <= HA_PENDING_MAX_AGE_MS
+    ? prev.unsure : 0;
+  const unsure = unsureNow > 0
+    ? { unsure: recentUnsure + unsureNow, unsureAt: at }
+    : prev.unsure ? { unsure: prev.unsure, unsureAt: prev.unsureAt } : {};
+  const base: HaStatus = { ...(lastOkAt ? { lastOkAt } : {}), ...dropped, ...unsure };
   if (!result.attempted) {
-    // Only dropped: keep whatever error explains why they never went out.
-    const { lastOkAt: _ok, dropped: _n, droppedAt: _at, ...failure } = prev;
+    // Only dropped or unsure: keep whatever error explains why.
+    const { lastOkAt: _ok, dropped: _n, droppedAt: _at, unsure: _u, unsureAt: _ua, ...failure } = prev;
     return { ...failure, ...base };
   }
   if (!result.error) return base;

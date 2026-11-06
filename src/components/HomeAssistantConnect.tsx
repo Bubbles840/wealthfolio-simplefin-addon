@@ -87,6 +87,8 @@ export function HomeAssistantConnect({ store, isOpen, toggleCard }: Props) {
   const paused = failing && !changed && !!delivery?.parked;
   const droppedRecently = !!delivery?.dropped && !!delivery.droppedAt
     && Date.now() - Date.parse(delivery.droppedAt) < HA_PENDING_MAX_AGE_MS;
+  const unsureRecently = !!delivery?.unsure && !!delivery.unsureAt
+    && Date.now() - Date.parse(delivery.unsureAt) < HA_PENDING_MAX_AGE_MS;
   const summary = !savedComplete ? 'Not set up'
     : changed ? 'Changed, not checked yet'
       : paused ? 'Delivery paused'
@@ -205,6 +207,13 @@ export function HomeAssistantConnect({ store, isOpen, toggleCard }: Props) {
                   ? `Last delivery failed ${ago(delivery!.lastErrorAt!)}: ${delivery!.lastError}${delivery!.retryAt ? '. Retrying later.' : ''}`
                   : delivery?.lastOkAt ? `Last alert delivered ${ago(delivery.lastOkAt)}.`
                     : 'Nothing delivered yet.'}
+            </div>
+          )}
+          {savedComplete && unsureRecently && (
+            <div className="sfin-subtle">
+              {delivery!.unsure === 1 ? '1 alert' : `${delivery!.unsure} alerts`} may not have reached Home Assistant: saving
+              failed while {delivery!.unsure === 1 ? 'it was' : 'they were'} being sent ({ago(delivery!.unsureAt!)}), and
+              {delivery!.unsure === 1 ? ' it is' : ' they are'} not sent again, so you never get one twice.
             </div>
           )}
           {savedComplete && droppedRecently && (
