@@ -409,10 +409,11 @@ async function checkSyncHealthAlert(wfClient: WealthfolioClient): Promise<void> 
   if (Date.now() - new Date(health.firstFailedAt).getTime() < SYNC_HEALTH_ALERT_MS) return;
   // Before the `alerted` guard, which records TELEGRAM delivery: Home Assistant
   // keeps its own once-per-streak memory, keyed on the streak's start.
-  await queueSyncHealthForHomeAssistant(haSecretIo(wfClient), health.firstFailedAt, health.lastError ?? undefined);
-  // Sent now, with this (signed-in) client: a failed sync never reaches the
-  // after-sync drain. Not awaited, like that one.
-  void drainHomeAssistant(haSecretIo(wfClient))
+  // Queued and sent now, with this (signed-in) client: a failed sync never
+  // reaches the after-sync drain. Not awaited, like that one, so a slow
+  // Wealthfolio or Home Assistant never holds the sync open.
+  void queueSyncHealthForHomeAssistant(haSecretIo(wfClient), health.firstFailedAt, health.lastError ?? undefined)
+    .then(() => drainHomeAssistant(haSecretIo(wfClient)))
     .catch((err) => { if (haKnownSetUp()) log(`Home Assistant delivery failed, will retry: ${formatError(err)}`); });
   if (health.alerted) return;
 
@@ -1491,8 +1492,8 @@ async function runCompanionSyncOnce(opts: { force?: boolean; manual?: boolean })
     // sent straight away (the 5-minute drain also sends what the add-on queues).
     // Never throws: a notification problem is not a sync failure. Not awaited:
     // a slow Home Assistant must not hold the sync (and its lock) open.
-    await queueSyncAlertsForHomeAssistant(haSecretIo(wfClient), result);
-    void drainHomeAssistant(haSecretIo(wfClient))
+    void queueSyncAlertsForHomeAssistant(haSecretIo(wfClient), result)
+      .then(() => drainHomeAssistant(haSecretIo(wfClient)))
       .catch((err) => { if (haKnownSetUp()) log(`Home Assistant delivery failed, will retry: ${formatError(err)}`); });
 
     // 2c: the checks behind the app's Checks card, its account chips and the

@@ -7,10 +7,12 @@
  * Assistant address is different for every install, so only the companion talks
  * to Home Assistant. Each writer queues into a secret only it writes: the
  * companion into `ha_outbox` (which also holds what was delivered and the
- * delivery status), the add-on into `ha_outbox_addon`. A drain saves what it
- * sent and the status in ONE write, so the two can never disagree; if that write
- * fails, the next pass repeats this one (at worst one repeated notification). The companion drains both on a short schedule and never
- * writes the add-on's key, so neither can overwrite what the other queued.
+ * delivery status), the add-on into `ha_outbox_addon`. The companion drains
+ * both on a short schedule and never writes the add-on's key.
+ *
+ * A drain saves what it sent and the status in ONE write, so the two never
+ * disagree, and sends nothing unless a save just before succeeded. If the save
+ * after sending fails, the next pass sends those alerts again, once.
  *
  * WHY A SEEN MEMORY. Some alerts are re-reported on every sync until resolved
  * (a refused create is never stored, so it is refused again; an unmapped account

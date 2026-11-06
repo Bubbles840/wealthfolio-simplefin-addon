@@ -85,13 +85,16 @@ export function haKnownNotSetUp(): boolean {
 /** Tests only. */
 export function resetHaDrainMemory(): void {
   lastSeen = null;
-  rerun = null;
+  rerun = false;
+  inFlight = null;
+  outboxChain = Promise.resolve();
 }
 
 let inFlight: Promise<number> | null = null;
-/** A drain asked for while one ran: its reads may predate what was just
- *  queued, so one more pass follows, with that caller's client and time. */
-let rerun: { io: HaSecretIo; fetchImpl: typeof fetch; now?: Date } | null = null;
+/** A drain was asked for while one ran: its reads may predate what was just
+ *  queued, so one more pass follows, with the client that started the drain
+ *  (known to work) and the time then. */
+let rerun = false;
 
 /**
  * Sends what is queued, and records it and the outcome in `ha_outbox` (the
@@ -102,23 +105,27 @@ let rerun: { io: HaSecretIo; fetchImpl: typeof fetch; now?: Date } | null = null
  */
 export function drainHomeAssistant(io: HaSecretIo, fetchImpl: typeof fetch = fetch, now?: Date): Promise<number> {
   if (inFlight) {
-    rerun = { io, fetchImpl, now };
+    rerun = true;
     return inFlight;
   }
-  inFlight = (async () => {
-    let sent = 0;
-    let next: typeof rerun = { io, fetchImpl, now };
-    while (next) {
-      rerun = null;
-      sent += await drainOnce(next.io, next.fetchImpl, next.now ?? new Date());
-      next = rerun;
+  const run = (async () => {
+    // `inFlight` is cleared in the same step as the last `rerun` check (no await
+    // between), so a request either joins a pass that will still look at it or
+    // starts a drain of its own; none falls in between.
+    try {
+      let sent = 0;
+      do {
+        rerun = false;
+        sent += await drainOnce(io, fetchImpl, now ?? new Date());
+      } while (rerun);
+      return sent;
+    } finally {
+      inFlight = null;
+      rerun = false;
     }
-    return sent;
-  })().finally(() => {
-    inFlight = null;
-    rerun = null;
-  });
-  return inFlight;
+  })();
+  inFlight = run;
+  return run;
 }
 
 async function drainOnce(io: HaSecretIo, fetchImpl: typeof fetch, now: Date): Promise<number> {
@@ -132,6 +139,16 @@ async function drainOnce(io: HaSecretIo, fetchImpl: typeof fetch, now: Date): Pr
 
   const previous = main.status ?? null;
   const mode = haDrainMode(previous, config, view.pending, now);
+  // Nothing is sent unless saving works right now: a save just before sending.
+  // If saves are failing, this rejects and nothing goes out, so a failed save
+  // after sending can repeat a pass's sends at most once, never every tick, and
+  // a rejected token is not retried while its park cannot be saved.
+  if (mode !== 'wait') {
+    await withOutboxLock(async () => {
+      const latest = parseHaOutbox(await io.get(HA_OUTBOX_SECRET_KEY));
+      await io.set(HA_OUTBOX_SECRET_KEY, JSON.stringify({ ...latest, attemptAt: now.toISOString() }));
+    });
+  }
   // Waiting: only age out, and count, what is too old. Tests only: the untried
   // tests, never the alert that failed.
   const result = await drainHaOutbox(
@@ -143,8 +160,8 @@ async function drainOnce(io: HaSecretIo, fetchImpl: typeof fetch, now: Date): Pr
   // ONE write for what went out and the status. Re-read first: this companion's
   // own sync may have queued more while the sends ran. A failed re-read or write
   // rejects and writes nothing, so nothing queued meanwhile is lost; the next
-  // pass repeats this one (at worst one repeated notification). The add-on's
-  // key is never written here.
+  // pass sends this pass's alerts again, once (the save before sending stops it
+  // from happening more). The add-on's key is never written here.
   const status = nextHaStatus(previous, result, config, now);
   await withOutboxLock(async () => {
     const latest = await io.get(HA_OUTBOX_SECRET_KEY);
