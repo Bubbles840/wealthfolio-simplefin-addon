@@ -3,7 +3,8 @@ import { readFileSync } from 'fs';
 import { join } from 'path';
 import {
   addonUnderstandsDividends, companionReadsReceipts, companionUnderstandsDividends, RECEIPTS_SINCE,
-  companionUnderstandsIgnoreRules, companionUnderstandsLoanBalances, companionUnderstandsRelinks, DIVIDEND_SECURITIES_SINCE,
+  companionSendsToHomeAssistant, companionUnderstandsIgnoreRules, companionUnderstandsLoanBalances, companionUnderstandsRelinks,
+  DIVIDEND_SECURITIES_SINCE, HOME_ASSISTANT_SINCE,
   IGNORE_RULES_SINCE, LOAN_BALANCES_SINCE, RELINKS_SINCE, SIMPLEFIN_SYNC_VERSION,
 } from './version.js';
 
@@ -154,5 +155,13 @@ describe('the receipt reader gate', () => {
     expect(companionReadsReceipts(RECEIPTS_SINCE)).toBe(true);
     expect(companionReadsReceipts('1.71.0')).toBe(false);
     expect(companionReadsReceipts(null)).toBe(false);
+  });
+});
+
+describe('the Home Assistant gate', () => {
+  it('opens only with a companion that drains the outbox', () => {
+    expect(companionSendsToHomeAssistant(HOME_ASSISTANT_SINCE)).toBe(true);
+    expect(companionSendsToHomeAssistant('1.73.0')).toBe(false);
+    expect(companionSendsToHomeAssistant(null)).toBe(false);
   });
 });
