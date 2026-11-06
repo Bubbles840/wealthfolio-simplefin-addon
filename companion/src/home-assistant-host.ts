@@ -76,10 +76,14 @@ export function haKnownSetUp(): boolean {
   return lastSeen?.setUp === true;
 }
 
-/** Whether the last config read found Home Assistant NOT set up (unknown is
- *  neither). */
-export function haKnownNotSetUp(): boolean {
-  return lastSeen?.setUp === false;
+/**
+ * For the 5-minute drain, after a read failed: whether to sign in again now. At
+ * once while Home Assistant is known to be set up; otherwise (known not set up,
+ * or never read, e.g. a wrong password) at most once per `HA_IDLE_RECHECK_MS`.
+ * `lastSignInAt` 0 lets the first one through.
+ */
+export function haMaySignIn(lastSignInAt: number, now = Date.now()): boolean {
+  return haKnownSetUp() || now - lastSignInAt >= HA_IDLE_RECHECK_MS;
 }
 
 /** Tests only. */
@@ -169,5 +173,8 @@ async function drainOnce(io: HaSecretIo, fetchImpl: typeof fetch, now: Date): Pr
     const json = JSON.stringify(mergeDrained(parseHaOutbox(latest), result.outbox, now, status));
     if (json !== latest) await io.set(HA_OUTBOX_SECRET_KEY, json);
   });
+  // Stopped early (a save before a send failed): what it did is recorded above,
+  // so nothing delivered is later reported as "may not have arrived".
+  if (result.aborted) throw result.aborted;
   return result.delivered;
 }

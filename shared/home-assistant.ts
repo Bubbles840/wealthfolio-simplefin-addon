@@ -602,9 +602,29 @@ export async function drainHaOutbox(
       continue;
     }
     tried.push(entry.id);
-    const res = await send(entry);
-    if (!res.ok) {
+    let res: HaSendResult;
+    try {
+      res = await send(entry);
+    } catch (err) {
+      // `send` rejects only when the entry was NOT sent (the save before it
+      // failed): stop here, but return what this pass did, so the caller still
+      // records the deliveries before it and then reports the error.
+      tried.pop();
       remaining.push(...queue.slice(i));
+      return {
+        outbox: { pending: remaining, seen }, delivered, dropped: dropped.length, unsure: doubtful.length,
+        attempted: delivered > 0, tried, aborted: err,
+      };
+    }
+    if (!res.ok) {
+      // A test is a one-off check: tried and failed, it is handled (the status
+      // shows the result), never kept to go out later with the real alerts.
+      if (entry.id.startsWith('test:')) {
+        remember(entry);
+        remaining.push(...queue.slice(i + 1));
+      } else {
+        remaining.push(...queue.slice(i));
+      }
       return {
         outbox: { pending: remaining, seen }, delivered, dropped: dropped.length, unsure: doubtful.length, attempted: true, tried,
         error: res.description ?? 'delivery failed', ...(res.permanent ? { permanent: true } : {}),
@@ -626,6 +646,9 @@ export interface HaDrainResult {
   /** Treated as sent because an earlier pass could not record them. */
   unsure: number;
   attempted: boolean;
+  /** Set when the pass stopped because `send` rejected before sending: the
+   *  caller records what was done, then reports this. */
+  aborted?: unknown;
   /** Ids of the entries a send was attempted for, in order. */
   tried: string[];
   error?: string;

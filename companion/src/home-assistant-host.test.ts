@@ -1,6 +1,6 @@
 import { beforeEach, describe, it, expect } from 'vitest';
 import {
-  drainHomeAssistant, haDrainDue, haKnownSetUp, HA_IDLE_RECHECK_MS, queueSyncHealthForHomeAssistant, resetHaDrainMemory,
+  drainHomeAssistant, haDrainDue, haKnownSetUp, haMaySignIn, HA_IDLE_RECHECK_MS, queueSyncHealthForHomeAssistant, resetHaDrainMemory,
 } from './home-assistant-host.js';
 import {
   HA_ADDON_QUEUE_SECRET_KEY, HA_CONFIG_SECRET_KEY, HA_OUTBOX_SECRET_KEY, haConfigKey, haTestEntry,
@@ -256,6 +256,51 @@ describe('drainHomeAssistant', () => {
     expect(await joined).toBe(2);
   });
 
+  it('a test that fails is handled, not kept to go out later with the real alerts', async () => {
+    const io = memoryIo();
+    await queueHaEntries(io, 'companion', () => [entry('a')], NOW);
+    await drainHomeAssistant(io, answering(401), NOW);
+    for (let i = 1; i <= 3; i++) {
+      await queueHaEntries(io, 'addon', () => [haTestEntry(at(i * 60_000))], at(i * 60_000));
+      await drainHomeAssistant(io, answering(401), at(i * 60_000 + 1_000));
+    }
+    // The token is fixed: only the real alert goes out, no stale "Test alert"s.
+    io.data.set(HA_CONFIG_SECRET_KEY, JSON.stringify({ ...CONFIG, token: 'fixed' }));
+    const sent: string[] = [];
+    const ok = (async (_u: string, init: RequestInit) => {
+      sent.push(JSON.parse(String(init.body)).title);
+      return new Response('', { status: 200 });
+    }) as unknown as typeof fetch;
+    await drainHomeAssistant(io, ok, at(10 * 60_000));
+    expect(sent).toEqual(['a']);
+    expect(statusOf(io)?.dropped).toBeUndefined();
+  });
+
+  it('a pass stopped by a failed save still records what it delivered first', async () => {
+    const io = memoryIo();
+    await queueHaEntries(io, 'companion', () => [entry('a'), entry('b', at(1_000))], at(1_000));
+    let sendingSaves = 0;
+    const secondSaveFails: HaSecretIo = {
+      get: io.get,
+      // The save before sending 'b' (the 2nd such save) fails; every other save works.
+      set: async (k, v) => {
+        if (parseHaOutbox(v).sending && ++sendingSaves === 2) throw new Error('503');
+        return io.set(k, v);
+      },
+    };
+    const c = counting(200);
+    await expect(drainHomeAssistant(secondSaveFails, c.fetch, at(2_000))).rejects.toThrow('503');
+    expect(c.calls()).toBe(1);
+    const box = parseHaOutbox(io.data.get(HA_OUTBOX_SECRET_KEY));
+    expect(box.seen).toHaveProperty('a');
+    expect(box.pending.map((e) => e.id)).toEqual(['b']);
+    expect(box.sending).toBeUndefined();
+    expect(box.status).toEqual({ lastOkAt: at(2_000).toISOString() });
+    // Next pass: 'b' goes out, and 'a' is never reported as "may not have arrived".
+    expect(await drainHomeAssistant(io, c.fetch, at(5 * 60_000))).toBe(1);
+    expect(statusOf(io)?.unsure).toBeUndefined();
+  });
+
   it('a Reset (the outbox deleted) clears the park', async () => {
     const io = memoryIo();
     await queueHaEntries(io, 'companion', () => [entry('a')], NOW);
@@ -374,6 +419,16 @@ describe('drainHomeAssistant', () => {
 });
 
 describe('the 5-minute drain without Home Assistant set up', () => {
+  it('signs in again at most once per 15 minutes while the config has never been read', async () => {
+    // Never read (a wrong password, say): the first sign-in goes through, then the pace is limited.
+    expect(haMaySignIn(0, NOW.getTime())).toBe(true);
+    expect(haMaySignIn(NOW.getTime(), at(5 * 60_000).getTime())).toBe(false);
+    expect(haMaySignIn(NOW.getTime(), at(HA_IDLE_RECHECK_MS).getTime())).toBe(true);
+    // Known to be set up: at once, every time.
+    await drainHomeAssistant(memoryIo(), answering(200), NOW);
+    expect(haMaySignIn(NOW.getTime(), at(5 * 60_000).getTime())).toBe(true);
+  });
+
   it('reads the config once per 15 minutes, not every tick', async () => {
     expect(haDrainDue(NOW.getTime())).toBe(true);
     await drainHomeAssistant(memoryIo(false), answering(200), NOW);

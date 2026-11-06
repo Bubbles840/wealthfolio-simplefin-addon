@@ -252,7 +252,7 @@ import { buildReportCube, type CubeBuildDeps } from './report-cube-build.js';
 import { createReceiptHost } from './receipt-host.js';
 import { getNativeSpendRows, getNativeSpendingSettings } from './sqlite-native.js';
 import {
-  drainHomeAssistant, HA_IDLE_RECHECK_MS, haDrainDue, haKnownNotSetUp, haKnownSetUp, haSecretIo, queueSyncAlertsForHomeAssistant,
+  drainHomeAssistant, haDrainDue, haKnownSetUp, haMaySignIn, haSecretIo, queueSyncAlertsForHomeAssistant,
   queueSyncHealthForHomeAssistant,
 } from './home-assistant-host.js';
 
@@ -4679,16 +4679,17 @@ if (!process.env.VITEST) {
   // Home Assistant: alerts the add-on queued (it cannot reach Home Assistant
   // itself) go out within minutes instead of at the next sync. This client is
   // not the sync's: it signs in only after a read fails (an expired or never
-  // started session), at once while Home Assistant is or may be set up, at most
-  // once per 15 minutes while it is known not to be (the pace it reads the config
-  // at then). It never logs for an install without Home Assistant.
+  // started session), at once while Home Assistant is known to be set up, and
+  // otherwise at most once per 15 minutes (`haMaySignIn`), so a wrong password
+  // can't make it sign in every tick. It never logs for an install without Home
+  // Assistant.
   let haSignedInAt = 0;
   cron.schedule('*/5 * * * *', () => {
     if (!haDrainDue()) return;
     const drain = () => drainHomeAssistant(haSecretIo(wfClient));
     drain()
       .catch(async (err) => {
-        if (haKnownNotSetUp() && Date.now() - haSignedInAt < HA_IDLE_RECHECK_MS) throw err;
+        if (!haMaySignIn(haSignedInAt)) throw err;
         haSignedInAt = Date.now();
         await signInWealthfolio(wfClient);
         return drain();
