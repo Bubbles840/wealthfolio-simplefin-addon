@@ -201,15 +201,26 @@ export interface HaStatus {
   droppedAt?: string;
 }
 
-/** The stored config, or null when Home Assistant is not set up or switched off. */
-export function parseHomeAssistantConfig(raw: string | null | undefined): HomeAssistantConfig | null {
-  if (!raw) return null;
-  let v: unknown;
-  try { v = JSON.parse(raw); } catch { return null; }
-  if (!v || typeof v !== 'object') return null;
-  const c = v as Record<string, unknown>;
-  const str = (x: unknown) => (typeof x === 'string' ? x.trim() : '');
-  const config: HomeAssistantConfig = {
+/** A config with nothing filled in: what editing starts from. */
+export const EMPTY_HA_CONFIG: HomeAssistantConfig = {
+  enabled: true, mode: 'notify', url: '', token: '', service: '', titlePrefix: '', linkBase: '',
+  notifyOnImport: false, notifyOnImportTrades: true,
+};
+
+/** The stored config for editing: every field, switched off or not, as typed,
+ *  with `EMPTY_HA_CONFIG`'s defaults for what is missing or unreadable. */
+export function homeAssistantConfigForEditing(raw: string | null | undefined): HomeAssistantConfig {
+  if (!raw) return { ...EMPTY_HA_CONFIG };
+  let c: Record<string, unknown>;
+  try {
+    const v: unknown = JSON.parse(raw);
+    if (!v || typeof v !== 'object') return { ...EMPTY_HA_CONFIG };
+    c = v as Record<string, unknown>;
+  } catch {
+    return { ...EMPTY_HA_CONFIG };
+  }
+  const str = (x: unknown) => (typeof x === 'string' ? x : '');
+  return {
     enabled: c.enabled !== false,
     mode: c.mode === 'webhook' ? 'webhook' : 'notify',
     url: str(c.url),
@@ -220,35 +231,21 @@ export function parseHomeAssistantConfig(raw: string | null | undefined): HomeAs
     notifyOnImport: c.notifyOnImport === true,
     notifyOnImportTrades: c.notifyOnImportTrades !== false,
   };
-  if (!config.enabled || !haConfigComplete(config)) return null;
-  return config;
 }
 
-/** The stored config for editing: every field, switched off or not, with empty
- *  defaults. */
-export function homeAssistantConfigForEditing(raw: string | null | undefined): HomeAssistantConfig {
-  const empty: HomeAssistantConfig = {
-    enabled: true, mode: 'notify', url: '', token: '', service: '', titlePrefix: '', linkBase: '',
-    notifyOnImport: false, notifyOnImportTrades: true,
+/** The stored config as sent with (fields trimmed), or null when Home Assistant
+ *  is not set up or switched off. */
+export function parseHomeAssistantConfig(raw: string | null | undefined): HomeAssistantConfig | null {
+  const c = homeAssistantConfigForEditing(raw);
+  const config: HomeAssistantConfig = {
+    ...c,
+    url: c.url.trim(),
+    token: c.token.trim(),
+    service: c.service.trim(),
+    titlePrefix: c.titlePrefix.trim(),
+    linkBase: c.linkBase.trim(),
   };
-  if (!raw) return empty;
-  try {
-    const c = JSON.parse(raw) as Record<string, unknown>;
-    const str = (x: unknown) => (typeof x === 'string' ? x : '');
-    return {
-      enabled: c.enabled !== false,
-      mode: c.mode === 'webhook' ? 'webhook' : 'notify',
-      url: str(c.url),
-      token: str(c.token),
-      service: str(c.service),
-      titlePrefix: str(c.titlePrefix),
-      linkBase: str(c.linkBase),
-      notifyOnImport: c.notifyOnImport === true,
-      notifyOnImportTrades: c.notifyOnImportTrades !== false,
-    };
-  } catch {
-    return empty;
-  }
+  return config.enabled && haConfigComplete(config) ? config : null;
 }
 
 /** The "Send a test" entry. Its id is the moment, so each press sends one. */
@@ -484,18 +481,17 @@ export async function queueHaEntriesStrict(
 ): Promise<'off' | 'queued'> {
   const config = parseHomeAssistantConfig(await io.get(HA_CONFIG_SECRET_KEY));
   if (!config) return 'off';
-  const main = parseHaOutbox(await io.get(HA_OUTBOX_SECRET_KEY));
+  const [mainRaw, raw] = await Promise.all([io.get(HA_OUTBOX_SECRET_KEY), io.get(HA_ADDON_QUEUE_SECRET_KEY)]);
+  const main = parseHaOutbox(mainRaw);
   if (writer === 'companion') {
-    const addon = parseHaOutbox(await io.get(HA_ADDON_QUEUE_SECRET_KEY));
+    const addon = parseHaOutbox(raw);
     const known = haKnown({ pending: [...main.pending, ...addon.pending], seen: main.seen });
-    const entries = build(known, config);
+    const entries = build(known, config).filter((e) => !known(e.id));
     if (entries.length === 0) return 'queued';
-    const latest = await io.get(HA_OUTBOX_SECRET_KEY);
-    const next = JSON.stringify(enqueueHa(parseHaOutbox(latest), entries.filter((e) => !known(e.id)), now));
-    if (next !== latest) await io.set(HA_OUTBOX_SECRET_KEY, next);
+    const next = JSON.stringify(enqueueHa(main, entries, now));
+    if (next !== mainRaw) await io.set(HA_OUTBOX_SECRET_KEY, next);
     return 'queued';
   }
-  const raw = await io.get(HA_ADDON_QUEUE_SECRET_KEY);
   const own = parseHaOutbox(raw);
   // Delivered (or dropped) by the companion: no longer the add-on's to keep. Past
   // a week, the companion would drop it anyway; keeping it longer than the
@@ -562,28 +558,45 @@ export async function drainHaOutbox(
   outbox: HaOutbox,
   send: HaSend | null,
   now: Date,
+  options: {
+    /** Only these are sent; the rest stay pending, untried. */
+    only?: (entry: HaEntry) => boolean;
+    /** Already delivered, though `seen` does not say so yet (its write failed):
+     *  recorded as seen without sending again. */
+    alreadySent?: (id: string) => boolean;
+  } = {},
 ): Promise<HaDrainResult> {
   const { outbox: current, dropped } = prune(outbox, now);
   const seen = { ...current.seen };
-  for (const e of dropped) for (const k of [e.id, ...(e.keys ?? [])]) seen[k] ??= e.createdAt;
-  const remaining = [...current.pending];
+  const remember = (e: HaEntry) => { for (const k of [e.id, ...(e.keys ?? [])]) seen[k] ??= e.createdAt; };
+  dropped.forEach(remember);
+  const remaining: HaEntry[] = [];
   const tried: string[] = [];
   let delivered = 0;
-  while (send && remaining.length > 0) {
-    const entry = remaining[0];
+  const queue = current.pending;
+  for (let i = 0; i < queue.length; i++) {
+    const entry = queue[i];
+    if (options.alreadySent?.(entry.id)) {
+      remember(entry);
+      continue;
+    }
+    if (!send || (options.only && !options.only(entry))) {
+      remaining.push(entry);
+      continue;
+    }
     tried.push(entry.id);
     const res = await send(entry);
     if (!res.ok) {
+      remaining.push(...queue.slice(i));
       return {
         outbox: { pending: remaining, seen }, delivered, dropped: dropped.length, attempted: true, tried,
         error: res.description ?? 'delivery failed', ...(res.permanent ? { permanent: true } : {}),
       };
     }
-    remaining.shift();
     delivered++;
-    for (const k of [entry.id, ...(entry.keys ?? [])]) seen[k] ??= entry.createdAt;
+    remember(entry);
   }
-  return { outbox: { pending: remaining, seen }, delivered, dropped: dropped.length, attempted: delivered > 0, tried };
+  return { outbox: { pending: remaining, seen }, delivered, dropped: dropped.length, attempted: tried.length > 0, tried };
 }
 
 export interface HaDrainResult {
@@ -615,17 +628,28 @@ export function haChangedSinceFailure(status: HaStatus | null, config: Pick<Home
 }
 
 /**
- * Whether the drain should wait instead of sending. A parked failure waits for a
- * config change; a recoverable one for its back-off, unless the config changed
- * since. A test not yet tried goes straight through either way, so "Send a test"
- * always tries.
+ * What the drain may send now:
+ *  - `all`: nothing holds delivery back, or the config changed since the failure.
+ *  - `wait`: a parked failure (until the config changes) or a back-off.
+ *  - `tests`: waiting, but a test not tried yet is queued. Only untried tests
+ *    are sent, never the alert that failed: sending it first is the retry loop
+ *    the park is there to stop, and the test would never be reached.
  */
-export function haDrainWaits(status: HaStatus | null, config: HomeAssistantConfig, pending: HaEntry[], now: Date): boolean {
-  if (!status?.lastError || haChangedSinceFailure(status, config)) return false;
-  const tried = new Set(status.triedTests ?? []);
-  if (pending.some((e) => e.id.startsWith('test:') && !tried.has(e.id))) return false;
-  if (status.parked) return true;
-  return !!status.retryAt && now.getTime() < Date.parse(status.retryAt);
+export function haDrainMode(
+  status: HaStatus | null,
+  config: HomeAssistantConfig,
+  pending: HaEntry[],
+  now: Date,
+): 'all' | 'wait' | 'tests' {
+  if (!status?.lastError || haChangedSinceFailure(status, config)) return 'all';
+  const waits = !!status.parked || (!!status.retryAt && now.getTime() < Date.parse(status.retryAt));
+  if (!waits) return 'all';
+  return pending.some((e) => haUntriedTest(status, e)) ? 'tests' : 'wait';
+}
+
+/** A test entry the drain has not tried since the last failure. */
+export function haUntriedTest(status: HaStatus | null, entry: Pick<HaEntry, 'id'>): boolean {
+  return entry.id.startsWith('test:') && !(status?.triedTests ?? []).includes(entry.id);
 }
 
 /** How many tried test ids the status keeps. */

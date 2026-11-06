@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach, onTestFinished } from 'vitest';
-import { maskUrl, publishLiveReports, validateStartupEnv, startupWarnings, runCompanionSync, resolvePassword, sendDailyTelegramReport, sendWeeklyTelegramReport, sendMonthlyTelegramReport, previousYearMonth, sendImportNotice, readBudgetSnapshot, composeDailyDigestMessage, composeDailyDigest, composeWeeklyReportMessage, composeMonthlyWrapUpMessage, runCompanionSyncExclusive, markNotTransferExclusive, FIX_SYNC_RUNNING, syncStatus, wealthfolioDbPath, verifyProfileDatabase, createWealthfolioClient, resetProfileDbPinForTest, profileDbFile, buildTelegramCommandHandler, applyTelegramDismissal, undoTelegramDismissal, formatDismissedReply, buildTelegramListenerDeps, buildCategorizeController, buildCategorizeDeps, rememberImportScope, sendUnmappedAccountsNotice, updateCheckDeps, buildAskSessions, cubeBuildDeps } from './index.js';
+import { maskUrl, publishLiveReports, validateStartupEnv, startupWarnings, runCompanionSync, resolvePassword, sendDailyTelegramReport, sendWeeklyTelegramReport, sendMonthlyTelegramReport, previousYearMonth, sendImportNotice, readBudgetSnapshot, composeDailyDigestMessage, composeDailyDigest, composeWeeklyReportMessage, composeMonthlyWrapUpMessage, runCompanionSyncExclusive, markNotTransferExclusive, FIX_SYNC_RUNNING, syncStatus, wealthfolioDbPath, verifyProfileDatabase, createWealthfolioClient, resetProfileDbPinForTest, profileDbFile, buildTelegramCommandHandler, applyTelegramDismissal, undoTelegramDismissal, formatDismissedReply, buildTelegramListenerDeps, buildCategorizeController, buildCategorizeDeps, rememberImportScope, sendUnmappedAccountsNotice, updateCheckDeps, buildAskSessions, cubeBuildDeps, wealthfolioSession } from './index.js';
 import { findingHandle } from '../../shared/findings.js';
 import { whyRunHandle } from './why-menu.js';
 import { formatHelpReply, parseCommand } from '../../shared/telegram-commands.js';
@@ -7002,5 +7002,34 @@ describe('M-2: the report cube reads the spending series strictly', () => {
     expect(getNativeUncategorizedByMonthAccount).toHaveBeenLastCalledWith('/db/wealthfolio.db', '2026-09-01', '2026-10-01', true);
     deps.spendDaily('2026-09-01', '2026-10-01');
     expect(getNativeSpendDailyTotals).toHaveBeenLastCalledWith('/db/wealthfolio.db', '2026-09-01', '2026-10-01', true);
+  });
+});
+
+describe('wealthfolioSession', () => {
+  afterEach(() => { vi.unstubAllEnvs(); });
+
+  it('signs in once per max age, and again at once after expire', async () => {
+    vi.stubEnv('WEALTHFOLIO_API_KEY', '');
+    vi.stubEnv('WEALTHFOLIO_PASSWORD', 'pw');
+    const login = vi.fn(async () => {});
+    const session = wealthfolioSession({ login } as never, 60_000, 'no password');
+    await session.ensure();
+    await session.ensure();
+    expect(login).toHaveBeenCalledTimes(1);
+    session.expire();
+    await session.ensure();
+    expect(login).toHaveBeenCalledTimes(2);
+  });
+
+  it('uses the API key without signing in, and says when there is no credential', async () => {
+    vi.stubEnv('WEALTHFOLIO_API_KEY', 'key-1');
+    const client = { login: vi.fn(), token: '' };
+    await wealthfolioSession(client as never, 60_000, 'no password').ensure();
+    expect(client.token).toBe('key-1');
+    expect(client.login).not.toHaveBeenCalled();
+    vi.stubEnv('WEALTHFOLIO_API_KEY', '');
+    vi.stubEnv('WEALTHFOLIO_PASSWORD', '');
+    vi.stubEnv('WEALTHFOLIO_PASSWORD_FILE', '');
+    await expect(wealthfolioSession(client as never, 60_000, 'no password').ensure()).rejects.toThrow('no password');
   });
 });

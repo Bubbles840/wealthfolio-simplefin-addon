@@ -7,7 +7,7 @@
  */
 import {
   drainHaOutbox, HA_ADDON_QUEUE_SECRET_KEY, HA_CONFIG_SECRET_KEY, HA_OUTBOX_SECRET_KEY, HA_STATUS_SECRET_KEY,
-  haDrainWaits, haPendingView, mergeDrained, nextHaStatus, parseHaOutbox, parseHaStatus, parseHomeAssistantConfig,
+  haDrainMode, haPendingView, haUntriedTest, mergeDrained, nextHaStatus, parseHaOutbox, parseHaStatus, parseHomeAssistantConfig,
   queueHaEntries, sendHomeAssistantNotification, syncAlertEntries, syncHealthEntry, type HaSecretIo,
 } from '../../shared/home-assistant.js';
 import type { SyncResult } from '../../shared/sync-core.js';
@@ -63,9 +63,17 @@ export function haKnownSetUp(): boolean {
   return lastSeen?.setUp === true;
 }
 
+/** Ids this process delivered, and when: if writing `seen` fails after a send,
+ *  the next drain records them instead of sending them again. A day covers any
+ *  write that fails for a while; the companion restarting forgets them, which
+ *  costs at most a repeat. */
+const deliveredHere = new Map<string, number>();
+const DELIVERED_MEMORY_MS = 24 * 60 * 60 * 1000;
+
 /** Tests only. */
 export function resetHaDrainMemory(): void {
   lastSeen = null;
+  deliveredHere.clear();
 }
 
 let inFlight: Promise<number> | null = null;
@@ -90,25 +98,42 @@ async function drainOnce(io: HaSecretIo, fetchImpl: typeof fetch, now: Date): Pr
   const config = parseHomeAssistantConfig(await io.get(HA_CONFIG_SECRET_KEY));
   lastSeen = { setUp: !!config, at: now.getTime() };
   if (!config) return 0;
-  const raw = await io.get(HA_OUTBOX_SECRET_KEY);
-  const addonRaw = await io.get(HA_ADDON_QUEUE_SECRET_KEY);
+  // Every read must succeed: an unreadable status would read as "nothing holds
+  // delivery back" and send through a park.
+  const [raw, addonRaw, statusRaw] = await Promise.all([
+    io.get(HA_OUTBOX_SECRET_KEY), io.get(HA_ADDON_QUEUE_SECRET_KEY), io.get(HA_STATUS_SECRET_KEY),
+  ]);
   const view = haPendingView(parseHaOutbox(raw), parseHaOutbox(addonRaw), now);
   if (view.pending.length === 0) return 0;
 
-  const previous = parseHaStatus(await io.get(HA_STATUS_SECRET_KEY).catch(() => null));
-  // Waiting (parked, or backing off): only age out, and count, what is too old.
-  const send = haDrainWaits(previous, config, view.pending, now)
-    ? null
-    : (entry: Parameters<typeof sendHomeAssistantNotification>[1]) => sendHomeAssistantNotification(config, entry, fetchImpl);
-  const result = await drainHaOutbox(view, send, now);
+  const t = now.getTime();
+  for (const [id, at] of deliveredHere) if (t - at > DELIVERED_MEMORY_MS) deliveredHere.delete(id);
+  const previous = parseHaStatus(statusRaw);
+  const mode = haDrainMode(previous, config, view.pending, now);
+  // Waiting: only age out, and count, what is too old. Tests only: the untried
+  // tests, never the alert that failed.
+  const result = await drainHaOutbox(
+    view,
+    mode === 'wait' ? null : async (entry) => {
+      const res = await sendHomeAssistantNotification(config, entry, fetchImpl);
+      if (res.ok) deliveredHere.set(entry.id, t);
+      return res;
+    },
+    now,
+    {
+      alreadySent: (id) => deliveredHere.has(id),
+      ...(mode === 'tests' ? { only: (entry) => haUntriedTest(previous, entry) } : {}),
+    },
+  );
   // Re-read: this companion's own sync may have queued more while the sends ran.
-  // The add-on's key is never written here; what it queued and is still unsent
-  // stays there, and what was sent is now in `seen`.
-  const latest = await io.get(HA_OUTBOX_SECRET_KEY).catch(() => raw);
+  // A failed re-read or write throws instead of writing an older copy, which
+  // would lose what was queued meanwhile; `deliveredHere` keeps the next drain
+  // from sending again what went out. The add-on's key is never written here.
+  const latest = await io.get(HA_OUTBOX_SECRET_KEY);
   const json = JSON.stringify(mergeDrained(parseHaOutbox(latest), result.outbox, now));
-  if (json !== latest) await io.set(HA_OUTBOX_SECRET_KEY, json).catch(() => {});
+  if (json !== latest) await io.set(HA_OUTBOX_SECRET_KEY, json);
 
   const status = nextHaStatus(previous, result, config, now);
-  if (status) await io.set(HA_STATUS_SECRET_KEY, JSON.stringify(status)).catch(() => {});
+  if (status) await io.set(HA_STATUS_SECRET_KEY, JSON.stringify(status));
   return result.delivered;
 }

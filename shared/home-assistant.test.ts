@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   drainHaOutbox, enqueueHa, HA_ADDON_QUEUE_SECRET_KEY, HA_CONFIG_SECRET_KEY, HA_OUTBOX_SECRET_KEY, HA_PENDING_LIMIT,
-  HA_RETRY_BASE_MS, HA_RETRY_MAX_MS, haChangedSinceFailure, haConfigComplete, haConfigKey, haDrainWaits, haPendingView, haReachProblem,
+  HA_RETRY_BASE_MS, HA_RETRY_MAX_MS, haChangedSinceFailure, haConfigComplete, haConfigKey, haDrainMode, haPendingView, haReachProblem,
   haTestEntry, haUrlProblem, homeAssistantConfigForEditing, homeAssistantRequest, mergeDrained, nextHaStatus,
   parseHaOutbox, parseHomeAssistantConfig, plainText, queueHaEntries, queueHaEntriesStrict,
   sendHomeAssistantNotification, syncAlertEntries, syncHealthEntry,
@@ -301,30 +301,30 @@ describe('when delivery waits', () => {
   const key = haConfigKey(CONFIG);
   it('a parked failure waits until the config changes', () => {
     const status = { lastError: 'Home Assistant answered 401', lastErrorAt: failedAt, failedFor: key, parked: true as const };
-    expect(haDrainWaits(status, CONFIG, [entry('a')], NOW)).toBe(true);
-    expect(haDrainWaits(status, { ...CONFIG, token: 'new-token' }, [entry('a')], NOW)).toBe(false);
+    expect(haDrainMode(status, CONFIG, [entry('a')], NOW)).toBe('wait');
+    expect(haDrainMode(status, { ...CONFIG, token: 'new-token' }, [entry('a')], NOW)).not.toBe('wait');
   });
 
   it('a back-off ends as soon as the config changes', () => {
     const status = { lastError: 'Could not reach Home Assistant (host not found)', lastErrorAt: failedAt, failedFor: key, failures: 6, retryAt: at(4 * 60 * 60_000).toISOString() };
-    expect(haDrainWaits(status, CONFIG, [entry('a')], NOW)).toBe(true);
-    expect(haDrainWaits(status, { ...CONFIG, url: 'http://ha.fixed:8123' }, [entry('a')], NOW)).toBe(false);
+    expect(haDrainMode(status, CONFIG, [entry('a')], NOW)).toBe('wait');
+    expect(haDrainMode(status, { ...CONFIG, url: 'http://ha.fixed:8123' }, [entry('a')], NOW)).not.toBe('wait');
   });
 
   it('a test not tried yet goes through, whatever either clock says', () => {
     const tried = haTestEntry(at(-60 * 60_000));
     const status = { lastError: 'x', lastErrorAt: failedAt, failedFor: key, parked: true as const, triedTests: [tried.id] };
     // A browser clock an hour behind or a day ahead makes no difference: only the id counts.
-    expect(haDrainWaits(status, CONFIG, [entry('a'), haTestEntry(at(-2 * 60 * 60_000))], NOW)).toBe(false);
-    expect(haDrainWaits(status, CONFIG, [entry('a'), haTestEntry(at(DAY))], NOW)).toBe(false);
-    expect(haDrainWaits(status, CONFIG, [tried], NOW)).toBe(true);
+    expect(haDrainMode(status, CONFIG, [entry('a'), haTestEntry(at(-2 * 60 * 60_000))], NOW)).toBe('tests');
+    expect(haDrainMode(status, CONFIG, [entry('a'), haTestEntry(at(DAY))], NOW)).toBe('tests');
+    expect(haDrainMode(status, CONFIG, [tried], NOW)).toBe('wait');
   });
 
   it('a recoverable failure waits for its back-off', () => {
     const status = { lastError: 'x', lastErrorAt: failedAt, failedFor: key, failures: 1, retryAt: at(60_000).toISOString() };
-    expect(haDrainWaits(status, CONFIG, [entry('a')], NOW)).toBe(true);
-    expect(haDrainWaits(status, CONFIG, [entry('a')], at(2 * 60_000))).toBe(false);
-    expect(haDrainWaits(null, CONFIG, [entry('a')], NOW)).toBe(false);
+    expect(haDrainMode(status, CONFIG, [entry('a')], NOW)).toBe('wait');
+    expect(haDrainMode(status, CONFIG, [entry('a')], at(2 * 60_000))).not.toBe('wait');
+    expect(haDrainMode(null, CONFIG, [entry('a')], NOW)).not.toBe('wait');
   });
 
   it('tells a failure with the saved config from one with an older config', () => {
@@ -339,6 +339,26 @@ describe('when delivery waits', () => {
     expect(haConfigKey({ ...CONFIG, url: 'http://other:8123' })).not.toBe(haConfigKey(CONFIG));
     expect(haConfigKey({ ...CONFIG, service: 'other' })).not.toBe(haConfigKey(CONFIG));
     expect(haConfigKey(CONFIG)).not.toContain('tok');
+  });
+});
+
+describe('drainHaOutbox options', () => {
+  it('sends only what `only` allows, and leaves the rest pending, untried', async () => {
+    const sent: string[] = [];
+    const box: HaOutbox = { pending: [entry('failed-before', at(-60_000)), entry('test:x')], seen: {} };
+    const res = await drainHaOutbox(box, async (e) => { sent.push(e.id); return { ok: true }; }, NOW, { only: (e) => e.id.startsWith('test:') });
+    expect(sent).toEqual(['test:x']);
+    expect(res.tried).toEqual(['test:x']);
+    expect(res.outbox.pending.map((e) => e.id)).toEqual(['failed-before']);
+  });
+
+  it('records what was already delivered without sending it again', async () => {
+    const sent: string[] = [];
+    const box: HaOutbox = { pending: [entry('a', NOW, ['k1']), entry('b')], seen: {} };
+    const res = await drainHaOutbox(box, async (e) => { sent.push(e.id); return { ok: true }; }, NOW, { alreadySent: (id) => id === 'a' });
+    expect(sent).toEqual(['b']);
+    expect(res.delivered).toBe(1);
+    expect(Object.keys(res.outbox.seen).sort()).toEqual(['a', 'b', 'k1']);
   });
 });
 

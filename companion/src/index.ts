@@ -410,6 +410,10 @@ async function checkSyncHealthAlert(wfClient: WealthfolioClient): Promise<void> 
   // Before the `alerted` guard, which records TELEGRAM delivery: Home Assistant
   // keeps its own once-per-streak memory, keyed on the streak's start.
   await queueSyncHealthForHomeAssistant(haSecretIo(wfClient), health.firstFailedAt, health.lastError ?? undefined);
+  // Sent now, with this (signed-in) client: a failed sync never reaches the
+  // after-sync drain. Not awaited, like that one.
+  void drainHomeAssistant(haSecretIo(wfClient))
+    .catch((err) => { if (haKnownSetUp()) log(`Home Assistant delivery failed, will retry: ${formatError(err)}`); });
   if (health.alerted) return;
 
   const tgRaw = await wfClient.getAddonSecret('simplefin-sync', 'telegram_config').catch(() => null);
@@ -4069,6 +4073,33 @@ export function buildTelegramCommandHandler(
  *  outlive a process that runs for weeks. Half an hour sits between the two. */
 const LISTENER_SESSION_MAX_AGE_MS = 30 * 60 * 1000;
 
+/**
+ * A Wealthfolio session for a long-lived caller of `client`: `ensure` signs in
+ * (API key, else password) when the last sign-in is older than `maxAgeMs`, and
+ * `expire` makes the next `ensure` sign in again (after a read that failed).
+ * Rejects with `noPassword` when there is neither credential.
+ */
+export function wealthfolioSession(client: WealthfolioClient, maxAgeMs: number, noPassword: string) {
+  let establishedAt = 0;
+  return {
+    async ensure(): Promise<void> {
+      if (Date.now() - establishedAt < maxAgeMs) return;
+      const key = process.env.WEALTHFOLIO_API_KEY;
+      if (key) {
+        (client as unknown as { token: string }).token = key;
+      } else {
+        const password = resolvePassword();
+        if (!password) throw new Error(noPassword);
+        await client.login(password);
+      }
+      establishedAt = Date.now();
+    },
+    expire(): void {
+      establishedAt = 0;
+    },
+  };
+}
+
 /** The receipt reader, shared by the listener (photos, taps) and the schedule (drain, after-sync filing). */
 let sharedReceiptHost: ReturnType<typeof createReceiptHost> | null = null;
 
@@ -4170,7 +4201,12 @@ export function buildReceiptHost(wfClient: WealthfolioClient): ReturnType<typeof
  *    re-reads that file on every call, so it can become readable later.
  */
 export function buildTelegramListenerDeps(wfClient: WealthfolioClient): TelegramListenerDeps {
-  let sessionEstablishedAt = 0;
+  const session = wealthfolioSession(
+    wfClient,
+    LISTENER_SESSION_MAX_AGE_MS,
+    'no Wealthfolio password available (WEALTHFOLIO_PASSWORD / WEALTHFOLIO_PASSWORD_FILE unreadable) '
+      + '— the Telegram bot cannot read its own configuration until it can authenticate',
+  );
 
   /** ONE controller for both entry points below: it holds the chat's menu
    *  session in memory, so a `/categorize` answered through `onCommand` and the
@@ -4293,24 +4329,7 @@ export function buildTelegramListenerDeps(wfClient: WealthfolioClient): Telegram
     log,
   });
 
-  const ensureSession = async (): Promise<void> => {
-    if (Date.now() - sessionEstablishedAt < LISTENER_SESSION_MAX_AGE_MS) return;
-    const key = process.env.WEALTHFOLIO_API_KEY;
-    if (key) {
-      (wfClient as unknown as { token: string }).token = key;
-      sessionEstablishedAt = Date.now();
-      return;
-    }
-    const password = resolvePassword();
-    if (!password) {
-      throw new Error(
-        'no Wealthfolio password available (WEALTHFOLIO_PASSWORD / WEALTHFOLIO_PASSWORD_FILE unreadable) '
-        + '— the Telegram bot cannot read its own configuration until it can authenticate',
-      );
-    }
-    await wfClient.login(password);
-    sessionEstablishedAt = Date.now();
-  };
+  const ensureSession = () => session.ensure();
 
   return {
     fetchImpl: fetch,
@@ -4329,7 +4348,7 @@ export function buildTelegramListenerDeps(wfClient: WealthfolioClient): Telegram
       } catch (err) {
         // Discarded, not kept: an expired token is the likeliest cause, and the
         // next cycle must be allowed to re-authenticate immediately.
-        sessionEstablishedAt = 0;
+        session.expire();
         throw new Error(
           `could not read telegram_config from Wealthfolio — a session or connectivity problem, `
           + `not a missing configuration: ${formatError(err)}`,
@@ -4647,21 +4666,17 @@ if (!process.env.VITEST) {
   });
 
   // Home Assistant: alerts the add-on queued (it cannot reach Home Assistant
-  // itself) go out within minutes instead of at the next sync. Signs in only
-  // when the session has lapsed, not every tick. Without Home Assistant set up
-  // it reads the config once per 15 minutes, and never signs in or logs.
+  // itself) go out within minutes instead of at the next sync. This client is
+  // not the sync's, so it keeps its own session: signed in when it is older than
+  // half an hour, and again at once after a read fails. Without Home Assistant
+  // set up it reads the config once per 15 minutes, and never logs.
+  const haSession = wealthfolioSession(wfClient, LISTENER_SESSION_MAX_AGE_MS, 'no Wealthfolio password available');
   cron.schedule('*/5 * * * *', () => {
     if (!haDrainDue()) return;
-    const drain = () => drainHomeAssistant(haSecretIo(wfClient));
+    const drain = () => haSession.ensure().then(() => drainHomeAssistant(haSecretIo(wfClient)));
     drain()
-      .catch(async (err) => {
-        if (!haKnownSetUp()) throw err;
-        const apiKey = process.env.WEALTHFOLIO_API_KEY;
-        if (apiKey) (wfClient as unknown as { token: string }).token = apiKey;
-        else {
-          const password = resolvePassword();
-          if (password) await wfClient.login(password);
-        }
+      .catch(() => {
+        haSession.expire();
         return drain();
       })
       .then((n) => { if (n > 0) log(`Home Assistant: sent ${n} alert(s).`); })

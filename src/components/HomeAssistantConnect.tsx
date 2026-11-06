@@ -3,7 +3,7 @@ import { Button, CollapsibleCard, statusToneClass } from './ui';
 import type { StatusMessage } from './ui';
 import type { SecretsStore } from '../utils/secrets';
 import {
-  haChangedSinceFailure, haConfigComplete, haLinkBaseProblem, haUrlProblem, HA_PENDING_MAX_AGE_MS,
+  EMPTY_HA_CONFIG, haChangedSinceFailure, haConfigComplete, haLinkBaseProblem, haUrlProblem, HA_PENDING_MAX_AGE_MS,
   type HaMode, type HaStatus, type HomeAssistantConfig,
 } from '../../shared/home-assistant';
 import { companionSendsToHomeAssistant, HOME_ASSISTANT_SINCE } from '../../shared/version';
@@ -16,10 +16,7 @@ interface Props {
 
 export const HOME_ASSISTANT_CARD = 'home-assistant';
 
-const EMPTY: HomeAssistantConfig = {
-  enabled: true, mode: 'notify', url: '', token: '', service: '', titlePrefix: '', linkBase: '',
-  notifyOnImport: false, notifyOnImportTrades: true,
-};
+const EMPTY: HomeAssistantConfig = EMPTY_HA_CONFIG;
 
 /** "3 min ago" for the last-delivery line. */
 function ago(iso: string, now = Date.now()): string {
@@ -83,7 +80,9 @@ export function HomeAssistantConnect({ store, isOpen, toggleCard }: Props) {
   const field = (key: 'url' | 'token' | 'service' | 'titlePrefix' | 'linkBase') =>
     (e: React.ChangeEvent<HTMLInputElement>) => setCfg((c) => ({ ...c, [key]: e.target.value }));
 
-  const failing = !!delivery?.lastError && (!delivery.lastOkAt || delivery.lastErrorAt! > delivery.lastOkAt);
+  // A success clears the error, so an error means the last pass ended failing,
+  // even when it delivered something first (both times are then the same).
+  const failing = !!delivery?.lastError;
   // The saved config is not the one that failed: the old error no longer says
   // anything about it, and the next alert (or a test) is sent with it at once.
   const changed = failing && haChangedSinceFailure(delivery, saved);

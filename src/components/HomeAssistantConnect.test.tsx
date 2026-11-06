@@ -132,6 +132,16 @@ describe('HomeAssistantConnect', () => {
     expect(screen.getByText(/Nothing is sent until you change the address, access token or notify service, or send a test/)).toBeInTheDocument();
   });
 
+  it('shows a pass that delivered some alerts and then failed as failing, not Connected', async () => {
+    const at = '2027-03-15T10:00:00.000Z';
+    renderCard(storeWith(SAVED, {
+      lastOkAt: at, lastError: 'Home Assistant answered 401 (check the access token)', lastErrorAt: at,
+      failedFor: haConfigKey(SAVED), parked: true,
+    }));
+    expect(await screen.findByText('Delivery paused')).toBeInTheDocument();
+    expect(screen.queryByText('Connected')).toBeNull();
+  });
+
   it('says a config saved since the last failure is not checked yet', async () => {
     renderCard(storeWith(SAVED, {
       lastError: 'Could not reach Home Assistant (host not found)', lastErrorAt: '2027-03-15T10:00:00.000Z',
