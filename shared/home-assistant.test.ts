@@ -298,9 +298,11 @@ describe('mergeDrained', () => {
     expect(mergeDrained(current, drained, NOW, null).status).toEqual({ lastOkAt: 'old' });
   });
 
-  it('queueing keeps the status', () => {
-    const box = enqueueHa({ pending: [], seen: {}, status: { lastOkAt: 'x' } }, [entry('b')], NOW);
+  it('queueing keeps the status and the ids being sent; a recorded pass clears the ids', () => {
+    const box = enqueueHa({ pending: [], seen: {}, status: { lastOkAt: 'x' }, sending: ['a'] }, [entry('b')], NOW);
     expect(box.status).toEqual({ lastOkAt: 'x' });
+    expect(box.sending).toEqual(['a']);
+    expect(mergeDrained(box, { pending: [], seen: {} }, NOW, null).sending).toBeUndefined();
   });
 
   it('drops what was delivered and keeps what was queued meanwhile', () => {

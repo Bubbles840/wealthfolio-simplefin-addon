@@ -11,8 +11,10 @@
  * both on a short schedule and never writes the add-on's key.
  *
  * A drain saves what it sent and the status in ONE write, so the two never
- * disagree, and sends nothing unless a save just before succeeded. If the save
- * after sending fails, the next pass sends those alerts again, once.
+ * disagree. Each alert's id is saved just before it is sent, and nothing is
+ * sent if that save fails. If the save after sending fails, the next pass finds
+ * those ids and treats the alerts as sent: never a repeat, at the cost of one
+ * alert if Home Assistant refused it in the same moment a save failed.
  *
  * WHY A SEEN MEMORY. Some alerts are re-reported on every sync until resolved
  * (a refused create is never stored, so it is refused again; an unmapped account
@@ -178,6 +180,11 @@ export interface HaOutbox {
   /** The companion's outbox only: the last delivery outcome, for the drain's
    *  park and back-off and for the settings card. */
   status?: HaStatus;
+  /** The companion's outbox only: ids a drain is sending, each saved just before
+   *  it goes out and cleared by the save after. Still here at the next pass, that
+   *  save failed: those alerts may have arrived, so they are treated as sent and
+   *  never sent again. */
+  sending?: string[];
 }
 
 export interface HaStatus {
@@ -271,7 +278,7 @@ export function parseHaOutbox(raw: string | null | undefined): HaOutbox {
   let v: unknown;
   try { v = JSON.parse(raw); } catch { return empty; }
   if (!v || typeof v !== 'object') return empty;
-  const o = v as { pending?: unknown; seen?: unknown; status?: unknown };
+  const o = v as { pending?: unknown; seen?: unknown; status?: unknown; sending?: unknown };
   const pending = Array.isArray(o.pending)
     ? o.pending.filter((e): e is HaEntry =>
       !!e && typeof e === 'object'
@@ -285,7 +292,8 @@ export function parseHaOutbox(raw: string | null | undefined): HaOutbox {
     }
   }
   const status = o.status && typeof o.status === 'object' && !Array.isArray(o.status) ? o.status as HaStatus : undefined;
-  return { pending, seen, ...(status ? { status } : {}) };
+  const sending = Array.isArray(o.sending) ? o.sending.filter((x): x is string => typeof x === 'string') : [];
+  return { pending, seen, ...(status ? { status } : {}), ...(sending.length ? { sending } : {}) };
 }
 
 /** Telegram's Markdown as plain text: emphasis markers and backslash escapes
@@ -443,11 +451,12 @@ function trimmedQueue(outbox: HaOutbox, now: Date): HaOutbox {
   return {
     pending: outbox.pending.slice(-HA_QUEUE_HARD_LIMIT), seen: prune(outbox, now).outbox.seen,
     ...(outbox.status ? { status: outbox.status } : {}),
+    ...(outbox.sending?.length ? { sending: outbox.sending } : {}),
   };
 }
 
 /** The outbox with `entries` queued, skipping any whose id is already known.
- *  The status rides along untouched. */
+ *  The status and the ids being sent ride along untouched. */
 export function enqueueHa(outbox: HaOutbox, entries: HaEntry[], now: Date): HaOutbox {
   const known = haKnown(outbox);
   const fresh = entries.filter((e) => !known(e.id));
@@ -563,11 +572,18 @@ export async function drainHaOutbox(
   options: {
     /** Only these are sent; the rest stay pending, untried. */
     only?: (entry: HaEntry) => boolean;
+    /** May already have arrived (an earlier pass could not record them): marked
+     *  as sent, never sent again, counted as neither delivered nor dropped. */
+    unconfirmed?: (id: string) => boolean;
   } = {},
 ): Promise<HaDrainResult> {
-  const { outbox: current, dropped } = prune(outbox, now);
+  const doubtful = outbox.pending.filter((e) => options.unconfirmed?.(e.id));
+  const { outbox: current, dropped } = prune(
+    { pending: outbox.pending.filter((e) => !options.unconfirmed?.(e.id)), seen: outbox.seen }, now,
+  );
   const seen = { ...current.seen };
   const remember = (e: HaEntry) => { for (const k of [e.id, ...(e.keys ?? [])]) seen[k] ??= e.createdAt; };
+  doubtful.forEach(remember);
   dropped.forEach(remember);
   const remaining: HaEntry[] = [];
   const tried: string[] = [];
@@ -615,6 +631,7 @@ export interface HaDrainResult {
 export function mergeDrained(current: HaOutbox, drained: HaOutbox, now: Date, status?: HaStatus | null): HaOutbox {
   const seen = { ...current.seen, ...drained.seen };
   const next = status ?? current.status;
+  // The pass is recorded, so the ids it was sending are no longer in doubt.
   return { ...pruned({ pending: current.pending.filter((e) => !seen[e.id]), seen }, now), ...(next ? { status: next } : {}) };
 }
 

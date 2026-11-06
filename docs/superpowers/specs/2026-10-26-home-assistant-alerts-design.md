@@ -82,9 +82,10 @@ switches, on/off, and "Send a test", which queues a test alert (and says when Ho
 written). Only an http(s) URL with a host and no credentials is accepted, by both halves. The companion records a status
 (last delivery, last error, parked or backing off, alerts dropped) inside `ha_outbox`, in the same write as what it sent,
 after a drain that sent or dropped something; the section shows it, so a wrong token or service is visible without
-reading container logs. One write means the two never fall out of step. A pass sends nothing unless a save just before
-it succeeds, so while saves fail nothing goes out; if the save after sending fails, the next pass sends that pass's
-alerts again, once. Reset clears all three secrets.
+reading container logs. One write means the two never fall out of step. Each alert's id is saved just before it is
+sent (nothing is sent if that fails); if the save after sending fails, the next pass treats those alerts as sent. So an
+alert never repeats, at the cost of losing one if Home Assistant refused it in the same moment a save failed (my call:
+never resend). Reset clears all three secrets.
 
 The section only appears when the companion understands it (`HOME_ASSISTANT_SINCE` in shared/version.ts): with an
 older companion, nothing would drain the outbox.

@@ -152,7 +152,7 @@ describe('drainHomeAssistant', () => {
     expect(bad.calls()).toBe(26);
   });
 
-  it('a failed re-read writes nothing: what the sync queued meanwhile is kept, and the next pass repeats', async () => {
+  it('a failed re-read writes nothing: what the sync queued meanwhile is kept, and nothing is sent twice', async () => {
     const io = memoryIo();
     await queueHaEntries(io, 'companion', () => [entry('a')], NOW);
     let outboxReads = 0;
@@ -172,8 +172,9 @@ describe('drainHomeAssistant', () => {
     }) as typeof fetch;
     await expect(drainHomeAssistant(flaky, slow, NOW)).rejects.toThrow('timeout');
     expect(parseHaOutbox(io.data.get(HA_OUTBOX_SECRET_KEY)).pending.map((e) => e.id)).toEqual(['a', 'synchealth:X']);
-    // The next pass repeats 'a' (the trade-off: one repeated notification) and sends X.
-    expect(await drainHomeAssistant(io, c.fetch, at(5 * 60_000))).toBe(2);
+    // The next pass treats 'a' as sent (it may have arrived) and sends only X.
+    expect(await drainHomeAssistant(io, c.fetch, at(5 * 60_000))).toBe(1);
+    expect(c.calls()).toBe(2);
     expect(parseHaOutbox(io.data.get(HA_OUTBOX_SECRET_KEY)).pending).toEqual([]);
     expect(statusOf(io)).toEqual({ lastOkAt: at(5 * 60_000).toISOString() });
   });
@@ -202,20 +203,38 @@ describe('drainHomeAssistant', () => {
     }
   });
 
-  it('a save that fails only after sending repeats that pass once, then records it', async () => {
+  it('saves that fail on and off never repeat an alert', async () => {
     const io = memoryIo();
     await queueHaEntries(io, 'companion', () => [entry('a')], NOW);
-    let sets = 0;
-    const failsOnce: HaSecretIo = {
+    // Every save after sending fails for 3 passes; the saves before sending work.
+    let failsLeft = 3;
+    const flaky: HaSecretIo = {
       get: io.get,
-      // The 1st save (before sending) works, the 2nd (after) fails, the rest work.
-      set: async (k, v) => { if (++sets === 2) throw new Error('503'); return io.set(k, v); },
+      set: async (k, v) => {
+        const box = parseHaOutbox(v);
+        if (failsLeft > 0 && !box.sending) { failsLeft--; throw new Error('503'); }
+        return io.set(k, v);
+      },
     };
     const c = counting(200);
-    await expect(drainHomeAssistant(failsOnce, c.fetch, NOW)).rejects.toThrow('503');
-    for (let i = 1; i <= 12; i++) await drainHomeAssistant(failsOnce, c.fetch, at(i * 5 * 60_000));
-    expect(c.calls()).toBe(2);
+    for (let i = 0; i < 12; i++) await drainHomeAssistant(flaky, c.fetch, at(i * 5 * 60_000)).catch(() => {});
+    expect(c.calls()).toBe(1);
     expect(parseHaOutbox(io.data.get(HA_OUTBOX_SECRET_KEY)).pending).toEqual([]);
+    expect(parseHaOutbox(io.data.get(HA_OUTBOX_SECRET_KEY)).sending).toBeUndefined();
+  });
+
+  it('after a restart mid-pass, what was being sent is treated as sent, not dropped', async () => {
+    const io = memoryIo();
+    await queueHaEntries(io, 'companion', () => [entry('a', at(-8 * DAY)), entry('b')], NOW);
+    const box = parseHaOutbox(io.data.get(HA_OUTBOX_SECRET_KEY));
+    io.data.set(HA_OUTBOX_SECRET_KEY, JSON.stringify({ ...box, sending: ['a', 'b'] }));
+    const c = counting(200);
+    expect(await drainHomeAssistant(io, c.fetch, NOW)).toBe(0);
+    expect(c.calls()).toBe(0);
+    const after = parseHaOutbox(io.data.get(HA_OUTBOX_SECRET_KEY));
+    expect(after.pending).toEqual([]);
+    expect(after.seen).toHaveProperty('a');
+    expect(after.status?.dropped).toBeUndefined();
   });
 
   it('the extra pass for a caller who joined uses the client that started the drain', async () => {

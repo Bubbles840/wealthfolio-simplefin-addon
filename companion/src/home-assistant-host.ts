@@ -8,7 +8,7 @@
 import {
   drainHaOutbox, HA_ADDON_QUEUE_SECRET_KEY, HA_CONFIG_SECRET_KEY, HA_OUTBOX_SECRET_KEY,
   haDrainMode, haPendingView, haUntriedTest, mergeDrained, nextHaStatus, parseHaOutbox, parseHomeAssistantConfig,
-  queueHaEntries, sendHomeAssistantNotification, syncAlertEntries, syncHealthEntry, type HaSecretIo,
+  queueHaEntries, sendHomeAssistantNotification, syncAlertEntries, syncHealthEntry, type HaEntry, type HaSecretIo,
 } from '../../shared/home-assistant.js';
 import type { SyncResult } from '../../shared/sync-core.js';
 
@@ -139,29 +139,30 @@ async function drainOnce(io: HaSecretIo, fetchImpl: typeof fetch, now: Date): Pr
 
   const previous = main.status ?? null;
   const mode = haDrainMode(previous, config, view.pending, now);
-  // Nothing is sent unless saving works right now: a save just before sending.
-  // If saves are failing, this rejects and nothing goes out, so a failed save
-  // after sending can repeat a pass's sends at most once, never every tick, and
-  // a rejected token is not retried while its park cannot be saved.
-  if (mode !== 'wait') {
+  // Ids an earlier pass was sending when its last save failed: they may have
+  // arrived, so they are marked sent and never sent again.
+  const unconfirmed = new Set(main.sending ?? []);
+  // Each alert's id is saved just before it is sent. If that save fails, the
+  // pass stops and the alert is not sent: while saves fail nothing goes out, so
+  // nothing repeats and a rejected token is not retried.
+  const send = async (entry: HaEntry) => {
     await withOutboxLock(async () => {
       const latest = parseHaOutbox(await io.get(HA_OUTBOX_SECRET_KEY));
-      await io.set(HA_OUTBOX_SECRET_KEY, JSON.stringify({ ...latest, attemptAt: now.toISOString() }));
+      await io.set(HA_OUTBOX_SECRET_KEY, JSON.stringify({ ...latest, sending: [...(latest.sending ?? []), entry.id] }));
     });
-  }
+    return sendHomeAssistantNotification(config, entry, fetchImpl);
+  };
   // Waiting: only age out, and count, what is too old. Tests only: the untried
   // tests, never the alert that failed.
-  const result = await drainHaOutbox(
-    view,
-    mode === 'wait' ? null : (entry) => sendHomeAssistantNotification(config, entry, fetchImpl),
-    now,
-    mode === 'tests' ? { only: (entry) => haUntriedTest(previous, entry) } : {},
-  );
-  // ONE write for what went out and the status. Re-read first: this companion's
-  // own sync may have queued more while the sends ran. A failed re-read or write
-  // rejects and writes nothing, so nothing queued meanwhile is lost; the next
-  // pass sends this pass's alerts again, once (the save before sending stops it
-  // from happening more). The add-on's key is never written here.
+  const result = await drainHaOutbox(view, mode === 'wait' ? null : send, now, {
+    unconfirmed: (id) => unconfirmed.has(id),
+    ...(mode === 'tests' ? { only: (entry: HaEntry) => haUntriedTest(previous, entry) } : {}),
+  });
+  // ONE write for what went out and the status, which also clears `sending`.
+  // Re-read first: this companion's own sync may have queued more while the
+  // sends ran. A failed re-read or write rejects and writes nothing, so nothing
+  // queued meanwhile is lost; the next pass treats what this one was sending as
+  // sent. The add-on's key is never written here.
   const status = nextHaStatus(previous, result, config, now);
   await withOutboxLock(async () => {
     const latest = await io.get(HA_OUTBOX_SECRET_KEY);
