@@ -185,6 +185,82 @@ describe('drainHomeAssistant', () => {
     expect(parseHaOutbox(io.data.get(HA_OUTBOX_SECRET_KEY)).pending).toEqual([]);
   });
 
+  it('many tests pressed while parked are each tried once, never in a loop', async () => {
+    const io = memoryIo();
+    await queueHaEntries(io, 'companion', () => [entry('a')], NOW);
+    const bad = counting(401);
+    await drainHomeAssistant(io, bad.fetch, NOW);
+    for (let i = 1; i <= 25; i++) {
+      await queueHaEntries(io, 'addon', () => [haTestEntry(at(i * 60_000))], at(i * 60_000));
+      await drainHomeAssistant(io, bad.fetch, at(i * 60_000 + 1_000));
+    }
+    expect(bad.calls()).toBe(26);
+    for (let i = 1; i <= 288; i++) await drainHomeAssistant(io, bad.fetch, at(DAY / 24 + i * 5 * 60_000));
+    expect(bad.calls()).toBe(26);
+  });
+
+  it('a park survives a status write that fails', async () => {
+    const io = memoryIo();
+    await queueHaEntries(io, 'companion', () => [entry('a')], NOW);
+    const failingStatus: HaSecretIo = {
+      get: io.get,
+      set: async (k, v) => { if (k === HA_STATUS_SECRET_KEY) throw new Error('503'); return io.set(k, v); },
+    };
+    const bad = counting(401);
+    await expect(drainHomeAssistant(failingStatus, bad.fetch, NOW)).rejects.toThrow('503');
+    for (let i = 1; i <= 12; i++) await drainHomeAssistant(failingStatus, bad.fetch, at(i * 5 * 60_000)).catch(() => {});
+    expect(bad.calls()).toBe(1);
+  });
+
+  it('a Reset clears the park: the stored status is read again once writes work', async () => {
+    const io = memoryIo();
+    await queueHaEntries(io, 'companion', () => [entry('a')], NOW);
+    await drainHomeAssistant(io, answering(401), NOW);
+    io.data.delete(HA_STATUS_SECRET_KEY);
+    const ok = counting(200);
+    expect(await drainHomeAssistant(io, ok.fetch, at(5 * 60_000))).toBe(1);
+  });
+
+  it('a test delivered before a failed outbox write still shows as a success', async () => {
+    const io = memoryIo();
+    await queueHaEntries(io, 'companion', () => [entry('a')], NOW);
+    await drainHomeAssistant(io, answering(401), NOW);
+    await queueHaEntries(io, 'addon', () => [haTestEntry(at(60_000))], at(60_000));
+    const failingOutbox: HaSecretIo = {
+      get: io.get,
+      set: async (k, v) => { if (k === HA_OUTBOX_SECRET_KEY) throw new Error('session expired'); return io.set(k, v); },
+    };
+    await expect(drainHomeAssistant(failingOutbox, answering(200), at(2 * 60_000))).rejects.toThrow('session expired');
+    expect(statusOf(io)).toEqual({ lastOkAt: at(2 * 60_000).toISOString() });
+  });
+
+  it('a week offline: the add-on\'s unsent alerts are counted dropped once, not lost silently', async () => {
+    const io = memoryIo();
+    await queueHaEntries(io, 'addon', () => [entry('x', NOW)], NOW);
+    // The add-on keeps syncing for 8 days while the companion is down.
+    await queueHaEntries(io, 'addon', () => [entry('y', at(8 * DAY))], at(8 * DAY));
+    await drainHomeAssistant(io, answering(200), at(8 * DAY + 60_000));
+    expect(statusOf(io)).toMatchObject({ dropped: 1 });
+    await drainHomeAssistant(io, answering(200), at(8 * DAY + 6 * 60_000));
+    expect(statusOf(io)).toMatchObject({ dropped: 1 });
+  });
+
+  it('a drain asked for while one runs gets one more pass for what was just queued', async () => {
+    const io = memoryIo();
+    await queueHaEntries(io, 'companion', () => [entry('a')], NOW);
+    const c = counting(200);
+    let release!: () => void;
+    const gate = new Promise<void>((r) => { release = r; });
+    const slow = (async (...args: Parameters<typeof fetch>) => { await gate; return c.fetch(...args); }) as typeof fetch;
+    const first = drainHomeAssistant(io, slow, NOW);
+    await queueHaEntries(io, 'companion', () => [entry('b', at(1_000))], at(1_000));
+    const second = drainHomeAssistant(io, slow, NOW);
+    release();
+    expect(await first).toBe(2);
+    expect(await second).toBe(2);
+    expect(c.calls()).toBe(2);
+  });
+
   it('keeps an alert the companion\'s own sync queued while the sends ran', async () => {
     const io = memoryIo();
     await queueHaEntries(io, 'companion', () => [haTestEntry(NOW)], NOW);

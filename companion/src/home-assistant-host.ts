@@ -8,7 +8,7 @@
 import {
   drainHaOutbox, HA_ADDON_QUEUE_SECRET_KEY, HA_CONFIG_SECRET_KEY, HA_OUTBOX_SECRET_KEY, HA_STATUS_SECRET_KEY,
   haDrainMode, haPendingView, haUntriedTest, mergeDrained, nextHaStatus, parseHaOutbox, parseHaStatus, parseHomeAssistantConfig,
-  queueHaEntries, sendHomeAssistantNotification, syncAlertEntries, syncHealthEntry, type HaSecretIo,
+  queueHaEntries, sendHomeAssistantNotification, syncAlertEntries, syncHealthEntry, type HaSecretIo, type HaStatus,
 } from '../../shared/home-assistant.js';
 import type { SyncResult } from '../../shared/sync-core.js';
 
@@ -58,9 +58,15 @@ export function haDrainDue(now = Date.now()): boolean {
 }
 
 /** Whether the last config read found Home Assistant set up. The 5-minute drain
- *  logs and signs in again only then: someone without it hears nothing. */
+ *  logs only then: someone without it hears nothing. */
 export function haKnownSetUp(): boolean {
   return lastSeen?.setUp === true;
+}
+
+/** Whether the last config read found Home Assistant NOT set up (unknown is
+ *  neither). */
+export function haKnownNotSetUp(): boolean {
+  return lastSeen?.setUp === false;
 }
 
 /** Ids this process delivered, and when: if writing `seen` fails after a send,
@@ -70,17 +76,28 @@ export function haKnownSetUp(): boolean {
 const deliveredHere = new Map<string, number>();
 const DELIVERED_MEMORY_MS = 24 * 60 * 60 * 1000;
 
+/** A status this process decided but could not write. Only the companion
+ *  writes `ha_status`, so until a write succeeds this is the truth, not the
+ *  stored one: a park or back-off is never lost to a failed write. Cleared by
+ *  the next write that succeeds, so a Reset's empty status is read as usual. */
+let unwrittenStatus: { status: HaStatus } | null = null;
+
 /** Tests only. */
 export function resetHaDrainMemory(): void {
   lastSeen = null;
   deliveredHere.clear();
+  unwrittenStatus = null;
+  again = false;
 }
 
 let inFlight: Promise<number> | null = null;
+/** A drain was asked for while one ran: its reads may predate what was just
+ *  queued, so one more pass follows. */
+let again = false;
 
 /**
  * Sends what is queued, and records the outcome in `ha_status` for the add-on's
- * settings to show. Returns how many were delivered. Throws only when a secret
+ * settings to show. Returns how many it sent. Throws only when a secret
  * cannot be read, so the caller can sign in again and retry. One drain at a
  * time: the after-sync drain and the 5-minute one would otherwise both send the
  * same alert.
@@ -90,7 +107,18 @@ export function drainHomeAssistant(
   fetchImpl: typeof fetch = fetch,
   now = new Date(),
 ): Promise<number> {
-  inFlight ??= drainOnce(io, fetchImpl, now).finally(() => { inFlight = null; });
+  if (inFlight) {
+    again = true;
+    return inFlight;
+  }
+  inFlight = (async () => {
+    let delivered = 0;
+    do {
+      again = false;
+      delivered += await drainOnce(io, fetchImpl, now);
+    } while (again);
+    return delivered;
+  })().finally(() => { inFlight = null; });
   return inFlight;
 }
 
@@ -101,14 +129,15 @@ async function drainOnce(io: HaSecretIo, fetchImpl: typeof fetch, now: Date): Pr
   // Every read must succeed: an unreadable status would read as "nothing holds
   // delivery back" and send through a park.
   const [raw, addonRaw, statusRaw] = await Promise.all([
-    io.get(HA_OUTBOX_SECRET_KEY), io.get(HA_ADDON_QUEUE_SECRET_KEY), io.get(HA_STATUS_SECRET_KEY),
+    io.get(HA_OUTBOX_SECRET_KEY), io.get(HA_ADDON_QUEUE_SECRET_KEY),
+    unwrittenStatus ? Promise.resolve(null) : io.get(HA_STATUS_SECRET_KEY),
   ]);
   const view = haPendingView(parseHaOutbox(raw), parseHaOutbox(addonRaw), now);
   if (view.pending.length === 0) return 0;
 
   const t = now.getTime();
   for (const [id, at] of deliveredHere) if (t - at > DELIVERED_MEMORY_MS) deliveredHere.delete(id);
-  const previous = parseHaStatus(statusRaw);
+  const previous = unwrittenStatus ? unwrittenStatus.status : parseHaStatus(statusRaw);
   const mode = haDrainMode(previous, config, view.pending, now);
   // Waiting: only age out, and count, what is too old. Tests only: the untried
   // tests, never the alert that failed.
@@ -125,6 +154,18 @@ async function drainOnce(io: HaSecretIo, fetchImpl: typeof fetch, now: Date): Pr
       ...(mode === 'tests' ? { only: (entry) => haUntriedTest(previous, entry) } : {}),
     },
   );
+  // The status first, and kept here if its write fails: a park or back-off
+  // holds even then.
+  const status = nextHaStatus(previous, result, config, now);
+  if (status) {
+    try {
+      await io.set(HA_STATUS_SECRET_KEY, JSON.stringify(status));
+      unwrittenStatus = null;
+    } catch (err) {
+      unwrittenStatus = { status };
+      throw err;
+    }
+  }
   // Re-read: this companion's own sync may have queued more while the sends ran.
   // A failed re-read or write throws instead of writing an older copy, which
   // would lose what was queued meanwhile; `deliveredHere` keeps the next drain
@@ -132,8 +173,5 @@ async function drainOnce(io: HaSecretIo, fetchImpl: typeof fetch, now: Date): Pr
   const latest = await io.get(HA_OUTBOX_SECRET_KEY);
   const json = JSON.stringify(mergeDrained(parseHaOutbox(latest), result.outbox, now));
   if (json !== latest) await io.set(HA_OUTBOX_SECRET_KEY, json);
-
-  const status = nextHaStatus(previous, result, config, now);
-  if (status) await io.set(HA_STATUS_SECRET_KEY, JSON.stringify(status));
-  return result.delivered;
+  return result.sentNow;
 }

@@ -493,11 +493,12 @@ export async function queueHaEntriesStrict(
     return 'queued';
   }
   const own = parseHaOutbox(raw);
-  // Delivered (or dropped) by the companion: no longer the add-on's to keep. Past
-  // a week, the companion would drop it anyway; keeping it longer than the
-  // companion remembers it as seen would bring it back as pending.
+  // Delivered (or dropped) by the companion: no longer the add-on's to keep.
+  // Kept unsent for as long as the companion remembers what it handled, not
+  // only the week it sends for: a companion that was down for a week still
+  // finds them, and counts them as dropped. Past that, the drain ignores them.
   const t = now.getTime();
-  const undelivered = own.pending.filter((e) => !(e.id in main.seen) && ageMs(e.createdAt, t) <= HA_PENDING_MAX_AGE_MS);
+  const undelivered = own.pending.filter((e) => !(e.id in main.seen) && ageMs(e.createdAt, t) <= HA_SEEN_MAX_AGE_MS);
   const known = haKnown({ pending: [...main.pending, ...undelivered], seen: main.seen });
   const entries = build(known, config).filter((e) => !known(e.id));
   const next = JSON.stringify(trimmedQueue({ pending: [...undelivered, ...entries], seen: {} }, now));
@@ -566,20 +567,22 @@ export async function drainHaOutbox(
     alreadySent?: (id: string) => boolean;
   } = {},
 ): Promise<HaDrainResult> {
-  const { outbox: current, dropped } = prune(outbox, now);
+  // What already went out is recorded first, whatever its age: it was
+  // delivered, not dropped, and it counts as a delivery for the status.
+  const sentBefore = outbox.pending.filter((e) => options.alreadySent?.(e.id));
+  const { outbox: current, dropped } = prune(
+    { pending: outbox.pending.filter((e) => !options.alreadySent?.(e.id)), seen: outbox.seen }, now,
+  );
   const seen = { ...current.seen };
   const remember = (e: HaEntry) => { for (const k of [e.id, ...(e.keys ?? [])]) seen[k] ??= e.createdAt; };
+  sentBefore.forEach(remember);
   dropped.forEach(remember);
   const remaining: HaEntry[] = [];
   const tried: string[] = [];
-  let delivered = 0;
+  let delivered = sentBefore.length;
   const queue = current.pending;
   for (let i = 0; i < queue.length; i++) {
     const entry = queue[i];
-    if (options.alreadySent?.(entry.id)) {
-      remember(entry);
-      continue;
-    }
     if (!send || (options.only && !options.only(entry))) {
       remaining.push(entry);
       continue;
@@ -589,19 +592,26 @@ export async function drainHaOutbox(
     if (!res.ok) {
       remaining.push(...queue.slice(i));
       return {
-        outbox: { pending: remaining, seen }, delivered, dropped: dropped.length, attempted: true, tried,
+        outbox: { pending: remaining, seen }, delivered, sentNow: delivered - sentBefore.length,
+        dropped: dropped.length, attempted: true, tried,
         error: res.description ?? 'delivery failed', ...(res.permanent ? { permanent: true } : {}),
       };
     }
     delivered++;
     remember(entry);
   }
-  return { outbox: { pending: remaining, seen }, delivered, dropped: dropped.length, attempted: tried.length > 0, tried };
+  return {
+    outbox: { pending: remaining, seen }, delivered, sentNow: delivered - sentBefore.length,
+    dropped: dropped.length, attempted: delivered > 0, tried,
+  };
 }
 
 export interface HaDrainResult {
   outbox: HaOutbox;
+  /** Delivered, including what an earlier pass sent but could not record. */
   delivered: number;
+  /** Sent by this pass. */
+  sentNow: number;
   dropped: number;
   attempted: boolean;
   /** Ids of the entries a send was attempted for, in order. */
@@ -652,14 +662,14 @@ export function haUntriedTest(status: HaStatus | null, entry: Pick<HaEntry, 'id'
   return entry.id.startsWith('test:') && !(status?.triedTests ?? []).includes(entry.id);
 }
 
-/** How many tried test ids the status keeps. */
-const TRIED_TESTS_KEPT = 20;
+
 
 /** The status after a drain. Unchanged (null) when the drain neither sent nor
  *  dropped anything, so an idle pass never overwrites an error with "Connected". */
 export function nextHaStatus(
   previous: HaStatus | null,
-  result: Pick<HaDrainResult, 'delivered' | 'dropped' | 'attempted' | 'error' | 'permanent'> & { tried?: string[] },
+  result: Pick<HaDrainResult, 'delivered' | 'dropped' | 'attempted' | 'error' | 'permanent'>
+    & { tried?: string[]; outbox?: HaOutbox },
   config: HomeAssistantConfig,
   now: Date,
 ): HaStatus | null {
@@ -685,15 +695,20 @@ export function nextHaStatus(
   const key = haConfigKey(config);
   // A failure with a new config starts its own back-off and its own tried tests.
   const sameConfig = prev.failedFor === key;
+  // Every tried test still waiting is kept, however many: one dropped from the
+  // list would count as untried and be sent again on every pass.
+  const stillPending = result.outbox ? new Set(result.outbox.pending.map((e) => e.id)) : null;
   const triedTests = [...new Set([
     ...(sameConfig ? prev.triedTests ?? [] : []),
     ...(result.tried ?? []).filter((id) => id.startsWith('test:')),
-  ])].slice(-TRIED_TESTS_KEPT);
+  ])].filter((id) => !stillPending || stillPending.has(id));
   const failed: HaStatus = {
     ...base, lastError: result.error, lastErrorAt: at, failedFor: key,
     ...(triedTests.length ? { triedTests } : {}),
   };
-  if (result.permanent) return { ...failed, parked: true };
+  // A park lasts until a delivery or a config change: a test that only timed
+  // out through it says nothing about the token, so it does not lift it.
+  if (result.permanent || (sameConfig && prev.parked)) return { ...failed, parked: true };
   const failures = (sameConfig ? prev.failures ?? 0 : 0) + 1;
   const wait = Math.min(HA_RETRY_BASE_MS * 2 ** (failures - 1), HA_RETRY_MAX_MS);
   return { ...failed, failures, retryAt: new Date(t + wait).toISOString() };

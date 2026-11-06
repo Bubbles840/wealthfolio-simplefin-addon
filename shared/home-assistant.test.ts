@@ -280,11 +280,13 @@ describe('the add-on queue', () => {
     expect(haPendingView({ pending: [], seen: {} }, addon, NOW).pending.map((e) => e.id)).toEqual(['old']);
   });
 
-  it('the add-on drops its own entries the companion could no longer send', async () => {
+  it('the add-on keeps unsent entries as long as the companion remembers, so a week offline is still counted', async () => {
     const io = memoryIo();
-    io.data.set(HA_ADDON_QUEUE_SECRET_KEY, JSON.stringify({ pending: [entry('stale', at(-8 * DAY)), entry('fresh', at(-DAY))], seen: {} }));
+    io.data.set(HA_ADDON_QUEUE_SECRET_KEY, JSON.stringify({
+      pending: [entry('ancient', at(-31 * DAY)), entry('week-old', at(-8 * DAY)), entry('fresh', at(-DAY))], seen: {},
+    }));
     await queueHaEntries(io, 'addon', () => [entry('new')], NOW);
-    expect(parseHaOutbox(io.data.get(HA_ADDON_QUEUE_SECRET_KEY)).pending.map((e) => e.id)).toEqual(['fresh', 'new']);
+    expect(parseHaOutbox(io.data.get(HA_ADDON_QUEUE_SECRET_KEY)).pending.map((e) => e.id)).toEqual(['week-old', 'fresh', 'new']);
   });
 });
 
@@ -352,13 +354,28 @@ describe('drainHaOutbox options', () => {
     expect(res.outbox.pending.map((e) => e.id)).toEqual(['failed-before']);
   });
 
-  it('records what was already delivered without sending it again', async () => {
+  it('records what was already delivered without sending it again, and counts it delivered', async () => {
     const sent: string[] = [];
     const box: HaOutbox = { pending: [entry('a', NOW, ['k1']), entry('b')], seen: {} };
     const res = await drainHaOutbox(box, async (e) => { sent.push(e.id); return { ok: true }; }, NOW, { alreadySent: (id) => id === 'a' });
     expect(sent).toEqual(['b']);
-    expect(res.delivered).toBe(1);
+    expect(res.delivered).toBe(2);
     expect(Object.keys(res.outbox.seen).sort()).toEqual(['a', 'b', 'k1']);
+  });
+
+  it('never counts an already-delivered entry as dropped, and records it even after a failure', async () => {
+    const box: HaOutbox = { pending: [entry('old-sent', at(-8 * DAY)), entry('fails', at(-60_000)), entry('later-sent')], seen: {} };
+    const res = await drainHaOutbox(box, async () => ({ ok: false, description: 'down' }), NOW, {
+      alreadySent: (id) => id === 'old-sent' || id === 'later-sent',
+    });
+    expect(res.dropped).toBe(0);
+    expect(res.outbox.pending.map((e) => e.id)).toEqual(['fails']);
+    expect(Object.keys(res.outbox.seen).sort()).toEqual(['later-sent', 'old-sent']);
+  });
+
+  it('a delivery recorded only now still counts as attempted, so the status records the success', async () => {
+    const res = await drainHaOutbox({ pending: [entry('a')], seen: {} }, null, NOW, { alreadySent: () => true });
+    expect(res).toMatchObject({ delivered: 1, attempted: true });
   });
 });
 
@@ -394,6 +411,26 @@ describe('nextHaStatus', () => {
     expect(nextHaStatus(first, { ...fail, tried: ['test:2', 'stuck:x'] }, CONFIG, NOW)!.triedTests).toEqual(['test:1', 'test:2']);
     expect(nextHaStatus(first, { ...fail, tried: ['test:2'] }, { ...CONFIG, token: 'new' }, NOW)!.triedTests).toEqual(['test:2']);
     expect(nextHaStatus(first, { ...sent, tried: ['test:2'] }, CONFIG, NOW)).toEqual({ lastOkAt: NOW.toISOString() });
+  });
+
+  it('keeps every tried test still waiting, however many', () => {
+    const fail = { ...sent, delivered: 0, error: 'Home Assistant answered 401', permanent: true };
+    const ids = Array.from({ length: 30 }, (_, i) => `test:${i}`);
+    let status = null as ReturnType<typeof nextHaStatus>;
+    for (const id of ids) {
+      status = nextHaStatus(status, { ...fail, tried: [id], outbox: { pending: ids.map((x) => entry(x)), seen: {} } }, CONFIG, NOW);
+    }
+    expect(status!.triedTests).toEqual(ids);
+    // One no longer waiting drops out.
+    const after = nextHaStatus(status, { ...fail, tried: [], outbox: { pending: ids.slice(1).map((x) => entry(x)), seen: {} } }, CONFIG, NOW);
+    expect(after!.triedTests).toEqual(ids.slice(1));
+  });
+
+  it('a test that only times out through a park leaves the park in place', () => {
+    const parked = { lastError: 'Home Assistant answered 403', lastErrorAt: failedAtIso(), failedFor: key, parked: true as const };
+    const timedOut = nextHaStatus(parked, { ...sent, delivered: 0, error: 'Could not reach Home Assistant (timed out)', tried: ['test:1'] }, CONFIG, NOW)!;
+    expect(timedOut.parked).toBe(true);
+    expect(haDrainMode(timedOut, CONFIG, [entry('a')], at(10 * 60_000))).toBe('wait');
   });
 
   it('a success clears the error, the park and the back-off', () => {

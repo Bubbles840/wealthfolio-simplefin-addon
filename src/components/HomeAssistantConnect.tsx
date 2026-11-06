@@ -16,7 +16,6 @@ interface Props {
 
 export const HOME_ASSISTANT_CARD = 'home-assistant';
 
-const EMPTY: HomeAssistantConfig = EMPTY_HA_CONFIG;
 
 /** "3 min ago" for the last-delivery line. */
 function ago(iso: string, now = Date.now()): string {
@@ -38,8 +37,8 @@ function ago(iso: string, now = Date.now()): string {
  * wrong token or service is visible here rather than only in container logs.
  */
 export function HomeAssistantConnect({ store, isOpen, toggleCard }: Props) {
-  const [cfg, setCfg] = useState<HomeAssistantConfig>(EMPTY);
-  const [saved, setSaved] = useState<HomeAssistantConfig>(EMPTY);
+  const [cfg, setCfg] = useState<HomeAssistantConfig>(EMPTY_HA_CONFIG);
+  const [saved, setSaved] = useState<HomeAssistantConfig>(EMPTY_HA_CONFIG);
   const [delivery, setDelivery] = useState<HaStatus | null>(null);
   const [companion, setCompanion] = useState<string | null | undefined>(undefined);
   const [status, setStatus] = useState<StatusMessage | null>(null);
@@ -55,8 +54,8 @@ export function HomeAssistantConnect({ store, isOpen, toggleCard }: Props) {
     ])).then(([stored, s, v]) => {
       if (!live) return;
       // Every field present, whatever the store returned (an older mock, a partial secret).
-      const c = { ...EMPTY, ...stored };
-      setCfg((cur) => (JSON.stringify(cur) === JSON.stringify(EMPTY) ? c : cur));
+      const c = { ...EMPTY_HA_CONFIG, ...stored };
+      setCfg((cur) => (JSON.stringify(cur) === JSON.stringify(EMPTY_HA_CONFIG) ? c : cur));
       setSaved(c);
       setDelivery(s);
       setCompanion(v);

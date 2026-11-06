@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach, onTestFinished } from 'vitest';
-import { maskUrl, publishLiveReports, validateStartupEnv, startupWarnings, runCompanionSync, resolvePassword, sendDailyTelegramReport, sendWeeklyTelegramReport, sendMonthlyTelegramReport, previousYearMonth, sendImportNotice, readBudgetSnapshot, composeDailyDigestMessage, composeDailyDigest, composeWeeklyReportMessage, composeMonthlyWrapUpMessage, runCompanionSyncExclusive, markNotTransferExclusive, FIX_SYNC_RUNNING, syncStatus, wealthfolioDbPath, verifyProfileDatabase, createWealthfolioClient, resetProfileDbPinForTest, profileDbFile, buildTelegramCommandHandler, applyTelegramDismissal, undoTelegramDismissal, formatDismissedReply, buildTelegramListenerDeps, buildCategorizeController, buildCategorizeDeps, rememberImportScope, sendUnmappedAccountsNotice, updateCheckDeps, buildAskSessions, cubeBuildDeps, wealthfolioSession } from './index.js';
+import { maskUrl, publishLiveReports, validateStartupEnv, startupWarnings, runCompanionSync, resolvePassword, sendDailyTelegramReport, sendWeeklyTelegramReport, sendMonthlyTelegramReport, previousYearMonth, sendImportNotice, readBudgetSnapshot, composeDailyDigestMessage, composeDailyDigest, composeWeeklyReportMessage, composeMonthlyWrapUpMessage, runCompanionSyncExclusive, markNotTransferExclusive, FIX_SYNC_RUNNING, syncStatus, wealthfolioDbPath, verifyProfileDatabase, createWealthfolioClient, resetProfileDbPinForTest, profileDbFile, buildTelegramCommandHandler, applyTelegramDismissal, undoTelegramDismissal, formatDismissedReply, buildTelegramListenerDeps, buildCategorizeController, buildCategorizeDeps, rememberImportScope, sendUnmappedAccountsNotice, updateCheckDeps, buildAskSessions, cubeBuildDeps, signInWealthfolio, wealthfolioSession } from './index.js';
 import { findingHandle } from '../../shared/findings.js';
 import { whyRunHandle } from './why-menu.js';
 import { formatHelpReply, parseCommand } from '../../shared/telegram-commands.js';
@@ -7031,5 +7031,24 @@ describe('wealthfolioSession', () => {
     vi.stubEnv('WEALTHFOLIO_PASSWORD', '');
     vi.stubEnv('WEALTHFOLIO_PASSWORD_FILE', '');
     await expect(wealthfolioSession(client as never, 60_000, 'no password').ensure()).rejects.toThrow('no password');
+  });
+});
+
+describe('signInWealthfolio', () => {
+  afterEach(() => { vi.unstubAllEnvs(); });
+
+  it('uses the key, else the password, else nothing (a server without sign-in)', async () => {
+    vi.stubEnv('WEALTHFOLIO_API_KEY', 'key-1');
+    const client = { login: vi.fn(async () => {}), token: '' };
+    expect(await signInWealthfolio(client as never)).toBe('key');
+    expect(client.token).toBe('key-1');
+    vi.stubEnv('WEALTHFOLIO_API_KEY', '');
+    vi.stubEnv('WEALTHFOLIO_PASSWORD', 'pw');
+    expect(await signInWealthfolio(client as never)).toBe('password');
+    expect(client.login).toHaveBeenCalledWith('pw');
+    vi.stubEnv('WEALTHFOLIO_PASSWORD', '');
+    vi.stubEnv('WEALTHFOLIO_PASSWORD_FILE', '');
+    expect(await signInWealthfolio(client as never)).toBe('none');
+    expect(client.login).toHaveBeenCalledTimes(1);
   });
 });

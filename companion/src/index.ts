@@ -252,7 +252,7 @@ import { buildReportCube, type CubeBuildDeps } from './report-cube-build.js';
 import { createReceiptHost } from './receipt-host.js';
 import { getNativeSpendRows, getNativeSpendingSettings } from './sqlite-native.js';
 import {
-  drainHomeAssistant, haDrainDue, haKnownSetUp, haSecretIo, queueSyncAlertsForHomeAssistant,
+  drainHomeAssistant, HA_IDLE_RECHECK_MS, haDrainDue, haKnownNotSetUp, haKnownSetUp, haSecretIo, queueSyncAlertsForHomeAssistant,
   queueSyncHealthForHomeAssistant,
 } from './home-assistant-host.js';
 
@@ -4074,24 +4074,34 @@ export function buildTelegramCommandHandler(
 const LISTENER_SESSION_MAX_AGE_MS = 30 * 60 * 1000;
 
 /**
+ * Signs `client` in: the API key when set, else the password. With neither,
+ * nothing: a Wealthfolio server without authentication needs no sign-in.
+ * Resolves which one it used.
+ */
+export async function signInWealthfolio(client: WealthfolioClient): Promise<'key' | 'password' | 'none'> {
+  const key = process.env.WEALTHFOLIO_API_KEY;
+  if (key) {
+    (client as unknown as { token: string }).token = key;
+    return 'key';
+  }
+  const password = resolvePassword();
+  if (!password) return 'none';
+  await client.login(password);
+  return 'password';
+}
+
+/**
  * A Wealthfolio session for a long-lived caller of `client`: `ensure` signs in
- * (API key, else password) when the last sign-in is older than `maxAgeMs`, and
- * `expire` makes the next `ensure` sign in again (after a read that failed).
- * Rejects with `noPassword` when there is neither credential.
+ * when the last sign-in is older than `maxAgeMs`, and `expire` makes the next
+ * `ensure` sign in again (after a read that failed). Rejects with `noPassword`
+ * when there is neither credential.
  */
 export function wealthfolioSession(client: WealthfolioClient, maxAgeMs: number, noPassword: string) {
   let establishedAt = 0;
   return {
     async ensure(): Promise<void> {
       if (Date.now() - establishedAt < maxAgeMs) return;
-      const key = process.env.WEALTHFOLIO_API_KEY;
-      if (key) {
-        (client as unknown as { token: string }).token = key;
-      } else {
-        const password = resolvePassword();
-        if (!password) throw new Error(noPassword);
-        await client.login(password);
-      }
+      if (await signInWealthfolio(client) === 'none') throw new Error(noPassword);
       establishedAt = Date.now();
     },
     expire(): void {
@@ -4667,16 +4677,19 @@ if (!process.env.VITEST) {
 
   // Home Assistant: alerts the add-on queued (it cannot reach Home Assistant
   // itself) go out within minutes instead of at the next sync. This client is
-  // not the sync's, so it keeps its own session: signed in when it is older than
-  // half an hour, and again at once after a read fails. Without Home Assistant
-  // set up it reads the config once per 15 minutes, and never logs.
-  const haSession = wealthfolioSession(wfClient, LISTENER_SESSION_MAX_AGE_MS, 'no Wealthfolio password available');
+  // not the sync's: it signs in only after a read fails (an expired or never
+  // started session), at once while Home Assistant is or may be set up, at most
+  // once per 15 minutes while it is known not to be (the pace it reads the config
+  // at then). It never logs for an install without Home Assistant.
+  let haSignedInAt = 0;
   cron.schedule('*/5 * * * *', () => {
     if (!haDrainDue()) return;
-    const drain = () => haSession.ensure().then(() => drainHomeAssistant(haSecretIo(wfClient)));
+    const drain = () => drainHomeAssistant(haSecretIo(wfClient));
     drain()
-      .catch(() => {
-        haSession.expire();
+      .catch(async (err) => {
+        if (haKnownNotSetUp() && Date.now() - haSignedInAt < HA_IDLE_RECHECK_MS) throw err;
+        haSignedInAt = Date.now();
+        await signInWealthfolio(wfClient);
         return drain();
       })
       .then((n) => { if (n > 0) log(`Home Assistant: sent ${n} alert(s).`); })
@@ -4685,12 +4698,7 @@ if (!process.env.VITEST) {
 
   cron.schedule(dailySchedule, () => {
     log('Triggering scheduled daily spending check (per-category weekly envelope)...');
-    const password = resolvePassword();
-    const apiKey = process.env.WEALTHFOLIO_API_KEY;
-    if (apiKey) {
-      (wfClient as unknown as { token: string }).token = apiKey;
-    }
-    const loginPromise = apiKey ? Promise.resolve() : (password ? wfClient.login(password) : Promise.resolve());
+    const loginPromise = signInWealthfolio(wfClient);
     loginPromise
       .then(() => sendDailyTelegramReport(wfClient))
       .catch((err) => log(`Daily report error: ${formatError(err)}`));
@@ -4698,12 +4706,7 @@ if (!process.env.VITEST) {
 
   cron.schedule(weeklySchedule, () => {
     log('Triggering scheduled weekly budget summary report...');
-    const password = resolvePassword();
-    const apiKey = process.env.WEALTHFOLIO_API_KEY;
-    if (apiKey) {
-      (wfClient as unknown as { token: string }).token = apiKey;
-    }
-    const loginPromise = apiKey ? Promise.resolve() : (password ? wfClient.login(password) : Promise.resolve());
+    const loginPromise = signInWealthfolio(wfClient);
     loginPromise
       .then(() => sendWeeklyTelegramReport(wfClient))
       .catch((err) => log(`Weekly report error: ${formatError(err)}`));
@@ -4711,12 +4714,7 @@ if (!process.env.VITEST) {
 
   cron.schedule(monthlySchedule, () => {
     log('Triggering scheduled monthly wrap-up report (previous month)...');
-    const password = resolvePassword();
-    const apiKey = process.env.WEALTHFOLIO_API_KEY;
-    if (apiKey) {
-      (wfClient as unknown as { token: string }).token = apiKey;
-    }
-    const loginPromise = apiKey ? Promise.resolve() : (password ? wfClient.login(password) : Promise.resolve());
+    const loginPromise = signInWealthfolio(wfClient);
     // The `.catch` is the whole point of the chain: a rejection escaping a cron
     // callback is an unhandled rejection, which takes the daemon down and stops
     // syncing entirely over a failed report.
