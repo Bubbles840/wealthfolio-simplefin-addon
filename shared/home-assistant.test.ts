@@ -291,6 +291,18 @@ describe('the add-on queue', () => {
 });
 
 describe('mergeDrained', () => {
+  it('saves the new status with what went out, and keeps the old one when there is none', () => {
+    const current: HaOutbox = { pending: [entry('a')], seen: {}, status: { lastOkAt: 'old' } };
+    const drained: HaOutbox = { pending: [], seen: { a: NOW.toISOString() } };
+    expect(mergeDrained(current, drained, NOW, { lastOkAt: 'new' }).status).toEqual({ lastOkAt: 'new' });
+    expect(mergeDrained(current, drained, NOW, null).status).toEqual({ lastOkAt: 'old' });
+  });
+
+  it('queueing keeps the status', () => {
+    const box = enqueueHa({ pending: [], seen: {}, status: { lastOkAt: 'x' } }, [entry('b')], NOW);
+    expect(box.status).toEqual({ lastOkAt: 'x' });
+  });
+
   it('drops what was delivered and keeps what was queued meanwhile', () => {
     const drained: HaOutbox = { pending: [], seen: { a: NOW.toISOString() } };
     const current: HaOutbox = { pending: [entry('a'), entry('late')], seen: {} };
@@ -354,29 +366,6 @@ describe('drainHaOutbox options', () => {
     expect(res.outbox.pending.map((e) => e.id)).toEqual(['failed-before']);
   });
 
-  it('records what was already delivered without sending it again, and counts it delivered', async () => {
-    const sent: string[] = [];
-    const box: HaOutbox = { pending: [entry('a', NOW, ['k1']), entry('b')], seen: {} };
-    const res = await drainHaOutbox(box, async (e) => { sent.push(e.id); return { ok: true }; }, NOW, { alreadySent: (id) => id === 'a' });
-    expect(sent).toEqual(['b']);
-    expect(res.delivered).toBe(2);
-    expect(Object.keys(res.outbox.seen).sort()).toEqual(['a', 'b', 'k1']);
-  });
-
-  it('never counts an already-delivered entry as dropped, and records it even after a failure', async () => {
-    const box: HaOutbox = { pending: [entry('old-sent', at(-8 * DAY)), entry('fails', at(-60_000)), entry('later-sent')], seen: {} };
-    const res = await drainHaOutbox(box, async () => ({ ok: false, description: 'down' }), NOW, {
-      alreadySent: (id) => id === 'old-sent' || id === 'later-sent',
-    });
-    expect(res.dropped).toBe(0);
-    expect(res.outbox.pending.map((e) => e.id)).toEqual(['fails']);
-    expect(Object.keys(res.outbox.seen).sort()).toEqual(['later-sent', 'old-sent']);
-  });
-
-  it('a delivery recorded only now still counts as attempted, so the status records the success', async () => {
-    const res = await drainHaOutbox({ pending: [entry('a')], seen: {} }, null, NOW, { alreadySent: () => true });
-    expect(res).toMatchObject({ delivered: 1, attempted: true });
-  });
 });
 
 describe('nextHaStatus', () => {

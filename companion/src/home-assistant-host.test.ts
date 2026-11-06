@@ -3,7 +3,7 @@ import {
   drainHomeAssistant, haDrainDue, haKnownSetUp, HA_IDLE_RECHECK_MS, queueSyncHealthForHomeAssistant, resetHaDrainMemory,
 } from './home-assistant-host.js';
 import {
-  HA_ADDON_QUEUE_SECRET_KEY, HA_CONFIG_SECRET_KEY, HA_OUTBOX_SECRET_KEY, HA_STATUS_SECRET_KEY, haConfigKey, haTestEntry,
+  HA_ADDON_QUEUE_SECRET_KEY, HA_CONFIG_SECRET_KEY, HA_OUTBOX_SECRET_KEY, haConfigKey, haTestEntry,
   parseHaOutbox, queueHaEntries, type HaEntry, type HaSecretIo,
 } from '../../shared/home-assistant.js';
 
@@ -24,7 +24,7 @@ function counting(status: number): { fetch: typeof fetch; calls: () => number } 
   let n = 0;
   return { fetch: (async () => { n++; return new Response('', { status }); }) as unknown as typeof fetch, calls: () => n };
 }
-const statusOf = (io: { data: Map<string, string> }) => JSON.parse(io.data.get(HA_STATUS_SECRET_KEY) ?? 'null');
+const statusOf = (io: { data: Map<string, string> }) => parseHaOutbox(io.data.get(HA_OUTBOX_SECRET_KEY)).status ?? null;
 const entry = (id: string, createdAt = NOW): HaEntry => ({ id, title: id, message: 'm', createdAt: createdAt.toISOString() });
 
 beforeEach(() => resetHaDrainMemory());
@@ -138,53 +138,6 @@ describe('drainHomeAssistant', () => {
     expect(ok.calls()).toBe(2);
   });
 
-  it('sends nothing when the status cannot be read', async () => {
-    const io = memoryIo();
-    await queueHaEntries(io, 'companion', () => [entry('a')], NOW);
-    await drainHomeAssistant(io, answering(401), NOW);
-    const c = counting(401);
-    const flaky: HaSecretIo = { get: async (k) => { if (k === HA_STATUS_SECRET_KEY) throw new Error('503'); return io.get(k); }, set: io.set };
-    await expect(drainHomeAssistant(flaky, c.fetch, at(5 * 60_000))).rejects.toThrow('503');
-    expect(c.calls()).toBe(0);
-  });
-
-  it('never writes an older copy of the outbox when the re-read fails, and never sends twice', async () => {
-    const io = memoryIo();
-    await queueHaEntries(io, 'companion', () => [entry('a')], NOW);
-    let outboxReads = 0;
-    const flaky: HaSecretIo = {
-      get: async (k) => {
-        if (k === HA_OUTBOX_SECRET_KEY && ++outboxReads === 2) throw new Error('timeout');
-        return io.get(k);
-      },
-      set: io.set,
-    };
-    const c = counting(200);
-    const slow = (async (...args: Parameters<typeof fetch>) => {
-      // The sync queues X while the send runs.
-      await queueHaEntries(io, 'companion', () => [entry('X', at(30_000))], at(30_000));
-      return c.fetch(...args);
-    }) as typeof fetch;
-    await expect(drainHomeAssistant(flaky, slow, NOW)).rejects.toThrow('timeout');
-    expect(parseHaOutbox(io.data.get(HA_OUTBOX_SECRET_KEY)).pending.map((e) => e.id)).toEqual(['a', 'X']);
-    // Next pass: 'a' is recorded as delivered, not sent again; X goes out.
-    expect(await drainHomeAssistant(io, c.fetch, at(5 * 60_000))).toBe(1);
-    expect(c.calls()).toBe(2);
-    expect(parseHaOutbox(io.data.get(HA_OUTBOX_SECRET_KEY)).pending).toEqual([]);
-  });
-
-  it('a failed write of the outbox is reported, and what went out is not sent again', async () => {
-    const io = memoryIo();
-    await queueHaEntries(io, 'companion', () => [entry('a'), entry('b')], NOW);
-    const unwritable: HaSecretIo = { get: io.get, set: async () => { throw new Error('session expired'); } };
-    const c = counting(200);
-    await expect(drainHomeAssistant(unwritable, c.fetch, NOW)).rejects.toThrow('session expired');
-    expect(c.calls()).toBe(2);
-    expect(await drainHomeAssistant(io, c.fetch, at(5 * 60_000))).toBe(0);
-    expect(c.calls()).toBe(2);
-    expect(parseHaOutbox(io.data.get(HA_OUTBOX_SECRET_KEY)).pending).toEqual([]);
-  });
-
   it('many tests pressed while parked are each tried once, never in a loop', async () => {
     const io = memoryIo();
     await queueHaEntries(io, 'companion', () => [entry('a')], NOW);
@@ -199,39 +152,86 @@ describe('drainHomeAssistant', () => {
     expect(bad.calls()).toBe(26);
   });
 
-  it('a park survives a status write that fails', async () => {
+  it('a failed re-read writes nothing: what the sync queued meanwhile is kept, and the next pass repeats', async () => {
     const io = memoryIo();
     await queueHaEntries(io, 'companion', () => [entry('a')], NOW);
-    const failingStatus: HaSecretIo = {
-      get: io.get,
-      set: async (k, v) => { if (k === HA_STATUS_SECRET_KEY) throw new Error('503'); return io.set(k, v); },
+    let outboxReads = 0;
+    const flaky: HaSecretIo = {
+      get: async (k) => {
+        if (k === HA_OUTBOX_SECRET_KEY && ++outboxReads === 2) throw new Error('timeout');
+        return io.get(k);
+      },
+      set: io.set,
     };
-    const bad = counting(401);
-    await expect(drainHomeAssistant(failingStatus, bad.fetch, NOW)).rejects.toThrow('503');
-    for (let i = 1; i <= 12; i++) await drainHomeAssistant(failingStatus, bad.fetch, at(i * 5 * 60_000)).catch(() => {});
-    expect(bad.calls()).toBe(1);
+    const c = counting(200);
+    const slow = (async (...args: Parameters<typeof fetch>) => {
+      await queueSyncHealthForHomeAssistant(io, 'X', undefined, at(30_000));
+      return c.fetch(...args);
+    }) as typeof fetch;
+    await expect(drainHomeAssistant(flaky, slow, NOW)).rejects.toThrow('timeout');
+    expect(parseHaOutbox(io.data.get(HA_OUTBOX_SECRET_KEY)).pending.map((e) => e.id)).toEqual(['a', 'synchealth:X']);
+    // The next pass repeats 'a' (the trade-off: one repeated notification) and sends X.
+    expect(await drainHomeAssistant(io, c.fetch, at(5 * 60_000))).toBe(2);
+    expect(parseHaOutbox(io.data.get(HA_OUTBOX_SECRET_KEY)).pending).toEqual([]);
+    expect(statusOf(io)).toEqual({ lastOkAt: at(5 * 60_000).toISOString() });
   });
 
-  it('a Reset clears the park: the stored status is read again once writes work', async () => {
+  it('a failed write changes nothing: neither what went out nor the status is half-saved', async () => {
+    const io = memoryIo();
+    await queueHaEntries(io, 'companion', () => [entry('a')], NOW);
+    const before = io.data.get(HA_OUTBOX_SECRET_KEY);
+    const unwritable: HaSecretIo = { get: io.get, set: async () => { throw new Error('session expired'); } };
+    await expect(drainHomeAssistant(unwritable, answering(401), NOW)).rejects.toThrow('session expired');
+    expect(io.data.get(HA_OUTBOX_SECRET_KEY)).toBe(before);
+    // Once writes work, the pass is repeated and the park recorded with it.
+    await drainHomeAssistant(io, answering(401), at(5 * 60_000));
+    expect(statusOf(io)).toMatchObject({ parked: true });
+  });
+
+  it('a Reset (the outbox deleted) clears the park', async () => {
     const io = memoryIo();
     await queueHaEntries(io, 'companion', () => [entry('a')], NOW);
     await drainHomeAssistant(io, answering(401), NOW);
-    io.data.delete(HA_STATUS_SECRET_KEY);
-    const ok = counting(200);
-    expect(await drainHomeAssistant(io, ok.fetch, at(5 * 60_000))).toBe(1);
+    io.data.delete(HA_OUTBOX_SECRET_KEY);
+    await queueHaEntries(io, 'companion', () => [entry('b')], at(60_000));
+    expect(await drainHomeAssistant(io, answering(200), at(5 * 60_000))).toBe(1);
   });
 
-  it('a test delivered before a failed outbox write still shows as a success', async () => {
+  it('the sync queueing during a drain\'s save never overwrites it, nor is overwritten', async () => {
     const io = memoryIo();
     await queueHaEntries(io, 'companion', () => [entry('a')], NOW);
-    await drainHomeAssistant(io, answering(401), NOW);
-    await queueHaEntries(io, 'addon', () => [haTestEntry(at(60_000))], at(60_000));
-    const failingOutbox: HaSecretIo = {
-      get: io.get,
-      set: async (k, v) => { if (k === HA_OUTBOX_SECRET_KEY) throw new Error('session expired'); return io.set(k, v); },
+    let outboxReads = 0;
+    let queued: Promise<void> | null = null;
+    // On the drain's final re-read, the sync queues an alert and is given time to
+    // read and write before the drain writes: the two read-modify-writes overlap.
+    const drainIo: HaSecretIo = {
+      get: async (k) => {
+        const v = await io.get(k);
+        if (k === HA_OUTBOX_SECRET_KEY && ++outboxReads === 2) {
+          queued = queueSyncHealthForHomeAssistant(io, 'X', undefined, at(1_000));
+          await new Promise((r) => setTimeout(r, 5));
+        }
+        return v;
+      },
+      set: io.set,
     };
-    await expect(drainHomeAssistant(failingOutbox, answering(200), at(2 * 60_000))).rejects.toThrow('session expired');
-    expect(statusOf(io)).toEqual({ lastOkAt: at(2 * 60_000).toISOString() });
+    await drainHomeAssistant(drainIo, answering(200), NOW);
+    await queued;
+    const box = parseHaOutbox(io.data.get(HA_OUTBOX_SECRET_KEY));
+    expect(box.seen).toHaveProperty('a');
+    expect(box.pending.map((e) => e.id)).toEqual(['synchealth:X']);
+    expect(box.status).toEqual({ lastOkAt: NOW.toISOString() });
+  });
+
+  it('a delivery in the same pass lifts a park, even when a second test then times out', async () => {
+    const io = memoryIo();
+    await queueHaEntries(io, 'companion', () => [entry('a')], NOW);
+    await drainHomeAssistant(io, answering(403), NOW);
+    await queueHaEntries(io, 'addon', () => [haTestEntry(at(60_000)), haTestEntry(at(61_000))], at(61_000));
+    let n = 0;
+    const firstOk = (async () => new Response('', { status: ++n === 1 ? 200 : 503 })) as unknown as typeof fetch;
+    await drainHomeAssistant(io, firstOk, at(2 * 60_000));
+    expect(statusOf(io)!.parked).toBeUndefined();
   });
 
   it('a week offline: the add-on\'s unsent alerts are counted dropped once, not lost silently', async () => {
@@ -284,7 +284,7 @@ describe('drainHomeAssistant', () => {
   it('does nothing, and writes nothing, with an empty outbox', async () => {
     const io = memoryIo();
     expect(await drainHomeAssistant(io, answering(500), NOW)).toBe(0);
-    expect(io.data.has(HA_STATUS_SECRET_KEY)).toBe(false);
+    expect(io.data.has(HA_OUTBOX_SECRET_KEY)).toBe(false);
   });
 
   it('a week of alerts aging out keeps the error and says they were dropped, not Connected', async () => {

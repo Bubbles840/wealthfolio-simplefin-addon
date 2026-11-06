@@ -60,7 +60,7 @@ only the companion talks to Home Assistant.
   same secret, so a re-reported alert is not sent again.
 - **One drain at a time, merged on write**: the companion's after-sync drain (not awaited, so a slow Home Assistant never
   holds the sync) and its 5-minute drain share one in-flight run, and a drain re-reads `ha_outbox` before writing it back.
-- **Bounded (my call)**: the drain sends the 50 newest, and drops (and counts, in `ha_status`) an entry older than 7 days.
+- **Bounded (my call)**: the drain sends the 50 newest, and drops (and counts, in the status) an entry older than 7 days.
   An entry dated in the future (a fast clock) counts as queued now.
 - **Failures**: a 401/403, a notify 400/404, a webhook 404/405 or any redirect parks delivery until the access fields
   (mode, URL, token, service) change, or a test the drain has not tried yet is queued (tracked by id, never by comparing
@@ -79,9 +79,11 @@ only the companion talks to Home Assistant.
 
 A "Home Assistant" card under the Telegram cards in Settings, with its own Save: URL, token, notify service, the import
 switches, on/off, and "Send a test", which queues a test alert (and says when Home Assistant is off, or the queue can't be
-written). Only an http(s) URL with a host and no credentials is accepted, by both halves. The companion writes `ha_status`
-(last delivery, last error, parked or backing off, alerts dropped) after a drain that sent or dropped something, and the
-section shows it, so a wrong token or service is visible without reading container logs. Reset clears all four secrets.
+written). Only an http(s) URL with a host and no credentials is accepted, by both halves. The companion records a status
+(last delivery, last error, parked or backing off, alerts dropped) inside `ha_outbox`, in the same write as what it sent,
+after a drain that sent or dropped something; the section shows it, so a wrong token or service is visible without
+reading container logs. One write means a failed write repeats the pass (at worst one repeated notification) instead of
+leaving the two out of step. Reset clears all three secrets.
 
 The section only appears when the companion understands it (`HOME_ASSISTANT_SINCE` in shared/version.ts): with an
 older companion, nothing would drain the outbox.

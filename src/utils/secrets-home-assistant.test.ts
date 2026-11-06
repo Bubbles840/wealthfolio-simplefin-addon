@@ -1,7 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import { SecretsStore } from './secrets';
 import {
-  HA_ADDON_QUEUE_SECRET_KEY, HA_CONFIG_SECRET_KEY, HA_OUTBOX_SECRET_KEY, HA_STATUS_SECRET_KEY, parseHaOutbox,
+  HA_ADDON_QUEUE_SECRET_KEY, HA_CONFIG_SECRET_KEY, HA_OUTBOX_SECRET_KEY, parseHaOutbox,
   type HomeAssistantConfig,
 } from '../../shared/home-assistant';
 
@@ -21,12 +21,11 @@ const CONFIG: HomeAssistantConfig = {
 };
 
 describe('SecretsStore — Home Assistant', () => {
-  it('Reset clears the token, both queues and the delivery status', async () => {
+  it('Reset clears the token, both queues and the delivery status they hold', async () => {
     const data: Record<string, string> = {
       [HA_CONFIG_SECRET_KEY]: JSON.stringify(CONFIG),
-      [HA_OUTBOX_SECRET_KEY]: '{"pending":[],"seen":{}}',
+      [HA_OUTBOX_SECRET_KEY]: '{"pending":[],"seen":{},"status":{"lastOkAt":"2027-03-15T15:00:00.000Z"}}',
       [HA_ADDON_QUEUE_SECRET_KEY]: '{"pending":[],"seen":{}}',
-      [HA_STATUS_SECRET_KEY]: '{"lastOkAt":"2027-03-15T15:00:00.000Z"}',
     };
     await new SecretsStore(ctxOver(data)).clearAll();
     expect(data).toEqual({});
@@ -47,5 +46,11 @@ describe('SecretsStore — Home Assistant', () => {
     expect(data[HA_OUTBOX_SECRET_KEY]).toBeUndefined();
     data[HA_CONFIG_SECRET_KEY] = JSON.stringify({ ...CONFIG, enabled: false });
     expect(await store.queueHomeAssistantTest()).toBe('off');
+  });
+
+  it('reads the delivery status from the companion\'s outbox', async () => {
+    const data: Record<string, string> = { [HA_OUTBOX_SECRET_KEY]: '{"pending":[],"seen":{},"status":{"lastOkAt":"t"}}' };
+    expect(await new SecretsStore(ctxOver(data)).getHomeAssistantStatus()).toEqual({ lastOkAt: 't' });
+    expect(await new SecretsStore(ctxOver({})).getHomeAssistantStatus()).toBeNull();
   });
 });

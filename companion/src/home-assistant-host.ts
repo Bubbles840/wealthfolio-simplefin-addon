@@ -6,9 +6,9 @@
  * companion sends, because only it can reach a Home Assistant address.
  */
 import {
-  drainHaOutbox, HA_ADDON_QUEUE_SECRET_KEY, HA_CONFIG_SECRET_KEY, HA_OUTBOX_SECRET_KEY, HA_STATUS_SECRET_KEY,
-  haDrainMode, haPendingView, haUntriedTest, mergeDrained, nextHaStatus, parseHaOutbox, parseHaStatus, parseHomeAssistantConfig,
-  queueHaEntries, sendHomeAssistantNotification, syncAlertEntries, syncHealthEntry, type HaSecretIo, type HaStatus,
+  drainHaOutbox, HA_ADDON_QUEUE_SECRET_KEY, HA_CONFIG_SECRET_KEY, HA_OUTBOX_SECRET_KEY,
+  haDrainMode, haPendingView, haUntriedTest, mergeDrained, nextHaStatus, parseHaOutbox, parseHomeAssistantConfig,
+  queueHaEntries, sendHomeAssistantNotification, syncAlertEntries, syncHealthEntry, type HaSecretIo,
 } from '../../shared/home-assistant.js';
 import type { SyncResult } from '../../shared/sync-core.js';
 
@@ -25,9 +25,22 @@ export function haSecretIo(client: {
   };
 }
 
+/**
+ * Every read-modify-write of `ha_outbox` in this process, one at a time: the
+ * sync's queueing and a drain's final write each read it and write it back, and
+ * interleaved, the later write would drop what the earlier one recorded (sent
+ * alerts would go out again, the status would go back). Sends happen outside it.
+ */
+let outboxChain: Promise<unknown> = Promise.resolve();
+function withOutboxLock<T>(fn: () => Promise<T>): Promise<T> {
+  const run = outboxChain.then(fn, fn);
+  outboxChain = run.catch(() => {});
+  return run;
+}
+
 /** Queues this run's alerts. A no-op when Home Assistant is not set up. */
 export function queueSyncAlertsForHomeAssistant(io: HaSecretIo, result: SyncResult, now = new Date()): Promise<void> {
-  return queueHaEntries(io, 'companion', (known, config) => syncAlertEntries(result, now, known, config), now);
+  return withOutboxLock(() => queueHaEntries(io, 'companion', (known, config) => syncAlertEntries(result, now, known, config), now));
 }
 
 /** Queues the sync-failing alert for a streak that has run past the alert age.
@@ -38,7 +51,7 @@ export function queueSyncHealthForHomeAssistant(
   lastError: string | undefined,
   now = new Date(),
 ): Promise<void> {
-  return queueHaEntries(io, 'companion', () => [syncHealthEntry(firstFailedAt, lastError, now)], now);
+  return withOutboxLock(() => queueHaEntries(io, 'companion', () => [syncHealthEntry(firstFailedAt, lastError, now)], now));
 }
 
 /** While Home Assistant is not set up, the 5-minute drain looks again this often
@@ -69,56 +82,42 @@ export function haKnownNotSetUp(): boolean {
   return lastSeen?.setUp === false;
 }
 
-/** Ids this process delivered, and when: if writing `seen` fails after a send,
- *  the next drain records them instead of sending them again. A day covers any
- *  write that fails for a while; the companion restarting forgets them, which
- *  costs at most a repeat. */
-const deliveredHere = new Map<string, number>();
-const DELIVERED_MEMORY_MS = 24 * 60 * 60 * 1000;
-
-/** A status this process decided but could not write. Only the companion
- *  writes `ha_status`, so until a write succeeds this is the truth, not the
- *  stored one: a park or back-off is never lost to a failed write. Cleared by
- *  the next write that succeeds, so a Reset's empty status is read as usual. */
-let unwrittenStatus: { status: HaStatus } | null = null;
-
 /** Tests only. */
 export function resetHaDrainMemory(): void {
   lastSeen = null;
-  deliveredHere.clear();
-  unwrittenStatus = null;
-  again = false;
+  rerun = null;
 }
 
 let inFlight: Promise<number> | null = null;
-/** A drain was asked for while one ran: its reads may predate what was just
- *  queued, so one more pass follows. */
-let again = false;
+/** A drain asked for while one ran: its reads may predate what was just
+ *  queued, so one more pass follows, with that caller's client and time. */
+let rerun: { io: HaSecretIo; fetchImpl: typeof fetch; now?: Date } | null = null;
 
 /**
- * Sends what is queued, and records the outcome in `ha_status` for the add-on's
- * settings to show. Returns how many it sent. Throws only when a secret
- * cannot be read, so the caller can sign in again and retry. One drain at a
- * time: the after-sync drain and the 5-minute one would otherwise both send the
- * same alert.
+ * Sends what is queued, and records it and the outcome in `ha_outbox` (the
+ * status is what the add-on's settings show). Returns how many it sent. Rejects
+ * when a secret cannot be read or written, so the caller can sign in again and
+ * retry. One drain at a time: the after-sync drain and the 5-minute one would
+ * otherwise both send the same alert.
  */
-export function drainHomeAssistant(
-  io: HaSecretIo,
-  fetchImpl: typeof fetch = fetch,
-  now = new Date(),
-): Promise<number> {
+export function drainHomeAssistant(io: HaSecretIo, fetchImpl: typeof fetch = fetch, now?: Date): Promise<number> {
   if (inFlight) {
-    again = true;
+    rerun = { io, fetchImpl, now };
     return inFlight;
   }
   inFlight = (async () => {
-    let delivered = 0;
-    do {
-      again = false;
-      delivered += await drainOnce(io, fetchImpl, now);
-    } while (again);
-    return delivered;
-  })().finally(() => { inFlight = null; });
+    let sent = 0;
+    let next: typeof rerun = { io, fetchImpl, now };
+    while (next) {
+      rerun = null;
+      sent += await drainOnce(next.io, next.fetchImpl, next.now ?? new Date());
+      next = rerun;
+    }
+    return sent;
+  })().finally(() => {
+    inFlight = null;
+    rerun = null;
+  });
   return inFlight;
 }
 
@@ -126,52 +125,31 @@ async function drainOnce(io: HaSecretIo, fetchImpl: typeof fetch, now: Date): Pr
   const config = parseHomeAssistantConfig(await io.get(HA_CONFIG_SECRET_KEY));
   lastSeen = { setUp: !!config, at: now.getTime() };
   if (!config) return 0;
-  // Every read must succeed: an unreadable status would read as "nothing holds
-  // delivery back" and send through a park.
-  const [raw, addonRaw, statusRaw] = await Promise.all([
-    io.get(HA_OUTBOX_SECRET_KEY), io.get(HA_ADDON_QUEUE_SECRET_KEY),
-    unwrittenStatus ? Promise.resolve(null) : io.get(HA_STATUS_SECRET_KEY),
-  ]);
-  const view = haPendingView(parseHaOutbox(raw), parseHaOutbox(addonRaw), now);
+  const [raw, addonRaw] = await Promise.all([io.get(HA_OUTBOX_SECRET_KEY), io.get(HA_ADDON_QUEUE_SECRET_KEY)]);
+  const main = parseHaOutbox(raw);
+  const view = haPendingView(main, parseHaOutbox(addonRaw), now);
   if (view.pending.length === 0) return 0;
 
-  const t = now.getTime();
-  for (const [id, at] of deliveredHere) if (t - at > DELIVERED_MEMORY_MS) deliveredHere.delete(id);
-  const previous = unwrittenStatus ? unwrittenStatus.status : parseHaStatus(statusRaw);
+  const previous = main.status ?? null;
   const mode = haDrainMode(previous, config, view.pending, now);
   // Waiting: only age out, and count, what is too old. Tests only: the untried
   // tests, never the alert that failed.
   const result = await drainHaOutbox(
     view,
-    mode === 'wait' ? null : async (entry) => {
-      const res = await sendHomeAssistantNotification(config, entry, fetchImpl);
-      if (res.ok) deliveredHere.set(entry.id, t);
-      return res;
-    },
+    mode === 'wait' ? null : (entry) => sendHomeAssistantNotification(config, entry, fetchImpl),
     now,
-    {
-      alreadySent: (id) => deliveredHere.has(id),
-      ...(mode === 'tests' ? { only: (entry) => haUntriedTest(previous, entry) } : {}),
-    },
+    mode === 'tests' ? { only: (entry) => haUntriedTest(previous, entry) } : {},
   );
-  // The status first, and kept here if its write fails: a park or back-off
-  // holds even then.
+  // ONE write for what went out and the status. Re-read first: this companion's
+  // own sync may have queued more while the sends ran. A failed re-read or write
+  // rejects and writes nothing, so nothing queued meanwhile is lost; the next
+  // pass repeats this one (at worst one repeated notification). The add-on's
+  // key is never written here.
   const status = nextHaStatus(previous, result, config, now);
-  if (status) {
-    try {
-      await io.set(HA_STATUS_SECRET_KEY, JSON.stringify(status));
-      unwrittenStatus = null;
-    } catch (err) {
-      unwrittenStatus = { status };
-      throw err;
-    }
-  }
-  // Re-read: this companion's own sync may have queued more while the sends ran.
-  // A failed re-read or write throws instead of writing an older copy, which
-  // would lose what was queued meanwhile; `deliveredHere` keeps the next drain
-  // from sending again what went out. The add-on's key is never written here.
-  const latest = await io.get(HA_OUTBOX_SECRET_KEY);
-  const json = JSON.stringify(mergeDrained(parseHaOutbox(latest), result.outbox, now));
-  if (json !== latest) await io.set(HA_OUTBOX_SECRET_KEY, json);
-  return result.sentNow;
+  await withOutboxLock(async () => {
+    const latest = await io.get(HA_OUTBOX_SECRET_KEY);
+    const json = JSON.stringify(mergeDrained(parseHaOutbox(latest), result.outbox, now, status));
+    if (json !== latest) await io.set(HA_OUTBOX_SECRET_KEY, json);
+  });
+  return result.delivered;
 }

@@ -16,7 +16,6 @@ interface Props {
 
 export const HOME_ASSISTANT_CARD = 'home-assistant';
 
-
 /** "3 min ago" for the last-delivery line. */
 function ago(iso: string, now = Date.now()): string {
   const min = Math.max(0, Math.round((now - Date.parse(iso)) / 60_000));
