@@ -3682,6 +3682,19 @@ describe('holdings snapshots for investment accounts', () => {
     expect(result.errors).toEqual([]);
   });
 
+  it('reports that the holdings step ran, on a host that can write snapshots', async () => {
+    const { host, store } = createFakeHost(brokerageSeed());
+    const result = await runSyncCore(host, store, { force: true });
+    expect(result.holdingsPassRan).toBe(true);
+  });
+
+  it('reports no holdings step on a run the minimum interval stopped', async () => {
+    const { host, store } = createFakeHost(brokerageSeed());
+    await store.setLastSyncAt(new Date());
+    const result = await runSyncCore(host, store, {});
+    expect(result.holdingsPassRan).toBeUndefined();
+  });
+
   it('skips the account when the host cannot import snapshots at all', async () => {
     // The companion's REST host has no snapshot endpoint to call, so the
     // capability is optional and its absence is not an error.
@@ -3691,6 +3704,8 @@ describe('holdings snapshots for investment accounts', () => {
     const result = await runSyncCore(host, store, { force: true });
     expect(result.holdingsSnapshots).toEqual({ imported: 0, skipped: 0, unresolvedSymbols: [] });
     expect(result.errors).toEqual([]);
+    // So a companion sync never dates the add-on's catch-up.
+    expect(result.holdingsPassRan).toBeUndefined();
   });
 
   it('a failing snapshot import is reported, and never stops the transaction sync', async () => {

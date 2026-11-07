@@ -452,6 +452,10 @@ export interface SyncResult {
    *  snapshot capability, and on a set of accounts that publishes no holdings —
    *  which is every bank and card account. */
   holdingsSnapshots: HoldingsSyncOutcome;
+  /** True when this run reached the holdings step on a host that can write
+   *  snapshots, whatever it wrote. The add-on's catch-up (src/utils/
+   *  holdings-catchup.ts) dates its last pass from it. Absent otherwise. */
+  holdingsPassRan?: true;
   /** Present only on a run the SimpleFin budget stopped (shared/simplefin-budget.ts):
    *  `checkOnly` re-checked balances against the last download, `skipped` was
    *  refused by the daily limit, the gap or an unreadable request record. `line`
@@ -4893,6 +4897,7 @@ async function runSyncPass(
   // taking the run down over positions would cost the thing that matters to save
   // the thing that does not.
   const holdingsSnapshots = noHoldings();
+  const holdingsPassRan = !!host.syncHoldings;
   if (host.syncHoldings) {
     for (const sfAccount of accountSet.accounts) {
       const wfAccountId = mapping[sfAccount.id];
@@ -5223,6 +5228,7 @@ async function runSyncPass(
     largeTransactionAlerts, balanceDriftAlerts, prunedDuplicates, unmappedAccounts,
     refusedCreates,
     holdingsSnapshots,
+    ...(holdingsPassRan ? { holdingsPassRan: true as const } : {}),
     ignoredByRules,
     relinkAdopted,
     loanBalancesRecorded,

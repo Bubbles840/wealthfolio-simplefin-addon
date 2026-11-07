@@ -158,6 +158,26 @@ describe('runSync', () => {
     expect(result.errors).toHaveLength(0);
   });
 
+  it('records the holdings pass for the catch-up when the run reached it', async () => {
+    vi.mocked(fetchAccounts).mockResolvedValueOnce(makeAccountSet([]));
+    const setHoldingsPassAt = vi.fn(async (_at: Date) => {});
+    await runSync(makeCtx(), makeStore({ setHoldingsPassAt }) as any);
+    expect(setHoldingsPassAt).toHaveBeenCalledTimes(1);
+  });
+
+  it('records no holdings pass when the run stopped before it', async () => {
+    const setHoldingsPassAt = vi.fn(async (_at: Date) => {});
+    await runSync(makeCtx(), makeStore({ getAccessUrl: vi.fn(async () => null), setHoldingsPassAt }) as any);
+    expect(setHoldingsPassAt).not.toHaveBeenCalled();
+  });
+
+  it('keeps the sync result when recording the holdings pass fails', async () => {
+    vi.mocked(fetchAccounts).mockResolvedValueOnce(makeAccountSet([]));
+    const setHoldingsPassAt = vi.fn(async () => { throw new Error('secret write failed'); });
+    const result = await runSync(makeCtx(), makeStore({ setHoldingsPassAt }) as any);
+    expect(result.errors).toHaveLength(0);
+  });
+
   it('surfaces SimpleFin error strings verbatim (not "undefined — undefined")', async () => {
     vi.mocked(fetchAccounts).mockResolvedValueOnce({
       errors: ['Connection to 360 Performance Savings may need attention'],

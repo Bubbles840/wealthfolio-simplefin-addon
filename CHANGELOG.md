@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Holdings catch-up.** While Wealthfolio is open, the add-on syncs on its own
+  when it has not written investment positions for 20 hours and an investment
+  account is mapped, even with its schedule off. Only the add-on can write
+  them, and a companion that synced first used to leave them days old.
+
 ## [1.73.0] - 2026-11-05
 
 Update both halves. Update the add-on in the app as usual (no new

@@ -23,6 +23,7 @@ vi.mock('./utils/sync', () => ({
 import enable, { SimplefinSyncView } from './addon';
 import { SIMPLEFIN_SYNC_VERSION } from '../shared/version';
 import { runSync } from './utils/sync';
+import { SCHEDULER_POLL_MS } from './utils/scheduler';
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -138,9 +139,63 @@ describe('addon enable()', () => {
       sync_schedule_hours: '0',
     };
     ctx.api.secrets.get = vi.fn(async (k: string) => values[k] ?? null);
+    // A cash account: the holdings catch-up has nothing to catch up either.
+    ctx.api.accounts = { getAll: vi.fn(async () => [{ id: 'wf-a', accountType: 'CASH', trackingMode: 'TRANSACTIONS' }]) };
     enable(ctx);
     await new Promise((r) => setTimeout(r, 20));
+    expect(ctx.api.accounts.getAll).toHaveBeenCalled();
     expect(runSync).not.toHaveBeenCalled();
+  });
+
+  describe('holdings catch-up', () => {
+    const investmentSetup = (extra: Record<string, string> = {}) => {
+      const ctx = makeCtx();
+      const values: Record<string, string> = {
+        simplefin_access_url: 'https://u:p@bridge.simplefin.org/simplefin',
+        account_mapping: JSON.stringify({ 'sfin-1': 'wf-a' }),
+        sync_schedule_hours: '0',
+        ...extra,
+      };
+      ctx.api.secrets.get = vi.fn(async (k: string) => values[k] ?? null);
+      ctx.api.accounts = { getAll: vi.fn(async () => [{ id: 'wf-a', accountType: 'SECURITIES', trackingMode: 'HOLDINGS' }]) };
+      return ctx;
+    };
+
+    it('syncs, forced past the last sync time, with the schedule off when an investment account is mapped', async () => {
+      vi.mocked(runSync).mockClear();
+      const ctx = investmentSetup();
+      enable(ctx);
+      await waitFor(() => expect(runSync).toHaveBeenCalledWith(expect.anything(), expect.anything(), { force: true }));
+      ctx._triggerDisable();
+    });
+
+    it('does not sync when the add-on wrote snapshots recently', async () => {
+      vi.mocked(runSync).mockClear();
+      const ctx = investmentSetup({ holdings_pass_at: new Date().toISOString() });
+      enable(ctx);
+      await new Promise((r) => setTimeout(r, 20));
+      expect(runSync).not.toHaveBeenCalled();
+      ctx._triggerDisable();
+    });
+
+    it('stops polling when the add-on is disabled', async () => {
+      vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
+      try {
+        const ctx = investmentSetup({ holdings_pass_at: new Date().toISOString() });
+        const passReads = () => vi.mocked(ctx.api.secrets.get).mock.calls.filter((call: unknown[]) => call[0] === 'holdings_pass_at').length;
+        enable(ctx);
+        // Only the interval is faked; a real timeout lets the first check finish.
+        await new Promise((r) => setTimeout(r, 20));
+        expect(passReads()).toBe(1);
+        await vi.advanceTimersByTimeAsync(SCHEDULER_POLL_MS);
+        expect(passReads()).toBe(2);
+        ctx._triggerDisable();
+        await vi.advanceTimersByTimeAsync(SCHEDULER_POLL_MS * 3);
+        expect(passReads()).toBe(2);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
   });
 
   it('does not sync on startup when not configured', async () => {

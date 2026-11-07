@@ -6,6 +6,7 @@ import { SyncPage } from './pages/SyncPage';
 import { SecretsStore } from './utils/secrets';
 import { withChunkedSecrets } from './utils/chunked-secrets';
 import { Scheduler } from './utils/scheduler';
+import { HoldingsCatchUp, mapsInvestmentAccount } from './utils/holdings-catchup';
 import { runSync } from './utils/sync';
 import { ThemeStyles } from './components/ui';
 
@@ -128,6 +129,21 @@ const enable: AddonEnableFunction = (hostCtx) => {
     }
   })();
 
+  // Started whatever the setup state and schedule: every poll checks setup
+  // itself, so an install finished later in this session is covered too.
+  // Not kept in a module variable: nothing outside enable/disable touches it.
+  const holdingsCatchUp = new HoldingsCatchUp({
+    getHoldingsPassAt: () => startupStore.getHoldingsPassAt(),
+    getRequestLog: () => startupStore.getSimplefinRequests(),
+    hasInvestmentAccounts: async () => {
+      const [accessUrl, mapping] = await Promise.all([startupStore.getAccessUrl(), startupStore.getAccountMapping()]);
+      if (!accessUrl || !mapping) return false;
+      return mapsInvestmentAccount(mapping, await ctx.api.accounts.getAll());
+    },
+    runSync: () => runSync(ctx, startupStore, { force: true }),
+  });
+  holdingsCatchUp.start();
+
   const sidebarItem = ctx.sidebar.addItem({
     id: 'simplefin-sync',
     label: 'SimpleFin Sync',
@@ -155,6 +171,7 @@ const enable: AddonEnableFunction = (hostCtx) => {
 
   ctx.onDisable(() => {
     addonScheduler!.stop();
+    holdingsCatchUp.stop();
     root?.unmount();
     sidebarItem.remove();
     addonCtx = undefined;

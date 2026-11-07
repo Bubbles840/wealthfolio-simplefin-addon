@@ -120,6 +120,7 @@ const KEYS = {
   mappingRules: 'mapping_rules',
   syncScheduleHours: 'sync_schedule_hours',
   lastSyncAt: 'last_sync_at',
+  holdingsPassAt: 'holdings_pass_at',
   linkedGroups: 'linked_groups',
   transferLinkFailures: 'transfer_link_failures',
   driftAlerts: 'drift_alerts',
@@ -381,6 +382,18 @@ export class SecretsStore {
   }
   async setLastSyncAt(date: Date): Promise<void> {
     await this.ctx.api.secrets.set(KEYS.lastSyncAt, date.toISOString());
+  }
+
+  /** When an add-on sync last reached the holdings step (`holdingsPassRan`).
+   *  Add-on only: the companion cannot write snapshots, so its syncs never set
+   *  it. An unparseable value reads as never. */
+  async getHoldingsPassAt(): Promise<Date | null> {
+    const raw = await this.ctx.api.secrets.get(KEYS.holdingsPassAt);
+    const at = raw ? new Date(raw) : null;
+    return at && Number.isFinite(at.getTime()) ? at : null;
+  }
+  async setHoldingsPassAt(date: Date): Promise<void> {
+    await this.ctx.api.secrets.set(KEYS.holdingsPassAt, date.toISOString());
   }
 
   /** Ledger of SimpleFin tx id → shared sourceGroupId for linked transfer
