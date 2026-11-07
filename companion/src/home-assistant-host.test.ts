@@ -1,6 +1,9 @@
-import { beforeEach, describe, it, expect } from 'vitest';
+import { beforeEach, describe, it, expect, vi } from 'vitest';
+
+/** An error as the companion's Wealthfolio client raises it: message plus HTTP status. */
+const httpError = (message: string, status: number) => Object.assign(new Error(message), { status });
 import {
-  drainHomeAssistant, haDrainDue, haKnownSetUp, haMaySignIn, HA_IDLE_RECHECK_MS, queueSyncHealthForHomeAssistant, resetHaDrainMemory,
+  drainHomeAssistant, haDrainDue, haKnownSetUp, haMaySignIn, haSecretIo, HA_IDLE_RECHECK_MS, isWealthfolioAuthError, queueSyncHealthForHomeAssistant, resetHaDrainMemory,
 } from './home-assistant-host.js';
 import {
   HA_ADDON_QUEUE_SECRET_KEY, HA_CONFIG_SECRET_KEY, HA_OUTBOX_SECRET_KEY, haConfigKey, haTestEntry,
@@ -172,11 +175,11 @@ describe('drainHomeAssistant', () => {
     }) as typeof fetch;
     await expect(drainHomeAssistant(flaky, slow, NOW)).rejects.toThrow('timeout');
     expect(parseHaOutbox(io.data.get(HA_OUTBOX_SECRET_KEY)).pending.map((e) => e.id)).toEqual(['a', 'synchealth:X']);
-    // The next pass treats 'a' as sent (it may have arrived) and sends only X.
+    // The next pass treats 'a' as sent and sends only X.
     expect(await drainHomeAssistant(io, c.fetch, at(5 * 60_000))).toBe(1);
     expect(c.calls()).toBe(2);
     expect(parseHaOutbox(io.data.get(HA_OUTBOX_SECRET_KEY)).pending).toEqual([]);
-    // 'a' is not silently gone: the card says it may not have arrived.
+    // With no way to sign in again, 'a' is treated as sent, and the card says it may not have arrived.
     expect(statusOf(io)).toEqual({ lastOkAt: at(5 * 60_000).toISOString(), unsure: 1, unsureAt: at(5 * 60_000).toISOString() });
   });
 
@@ -301,6 +304,31 @@ describe('drainHomeAssistant', () => {
     expect(statusOf(io)?.unsure).toBeUndefined();
   });
 
+  it('a session that expires mid-pass signs in again and the pass carries on', async () => {
+    const io = memoryIo();
+    await queueHaEntries(io, 'companion', () => [entry('a'), entry('b', at(1_000))], at(1_000));
+    // A client whose session expires right after 'a' is sent, until it signs in again.
+    let expired = false;
+    let signIns = 0;
+    const client = {
+      getAddonSecret: async (_id: string, k: string) => { if (expired) throw httpError('getAddonSecret failed: 401', 401); return io.get(k); },
+      setAddonSecret: async (_id: string, k: string, v: string) => { if (expired) throw httpError('setAddonSecret failed: 401', 401); return io.set(k, v); },
+    };
+    const session = haSecretIo(client, async () => { signIns++; expired = false; });
+    const c = counting(200);
+    const sendThenExpire = (async (...args: Parameters<typeof fetch>) => {
+      const res = await c.fetch(...args);
+      if (c.calls() === 1) expired = true;
+      return res;
+    }) as typeof fetch;
+    expect(await drainHomeAssistant(session, sendThenExpire, at(2_000))).toBe(2);
+    expect(signIns).toBe(1);
+    const box = parseHaOutbox(io.data.get(HA_OUTBOX_SECRET_KEY));
+    expect(box.pending).toEqual([]);
+    expect(box.sending).toBeUndefined();
+    expect(box.status?.unsure).toBeUndefined();
+  });
+
   it('a Reset (the outbox deleted) clears the park', async () => {
     const io = memoryIo();
     await queueHaEntries(io, 'companion', () => [entry('a')], NOW);
@@ -418,15 +446,61 @@ describe('drainHomeAssistant', () => {
   });
 });
 
+describe('haSecretIo signing in again', () => {
+  const failing = (message: string, status?: number) => {
+    let calls = 0;
+    return {
+      calls: () => calls,
+      client: {
+        getAddonSecret: async () => { if (++calls === 1) throw (status ? httpError(message, status) : new Error(message)); return 'v'; },
+        setAddonSecret: async () => {},
+      },
+    };
+  };
+
+  it('signs in and retries once after a refused session (401 or 403)', async () => {
+    for (const status of [401, 403]) {
+      const f = failing(`getAddonSecret failed: ${status}`, status);
+      let signIns = 0;
+      expect(await haSecretIo(f.client, async () => { signIns++; }).get('k')).toBe('v');
+      expect(signIns).toBe(1);
+      expect(f.calls()).toBe(2);
+    }
+  });
+
+  it('never signs in for a server error, an unreachable server or a locked profile', async () => {
+    for (const [message, status] of [['getAddonSecret failed: 500 - busy', 500], ['fetch failed', undefined], ['Wealthfolio refused the request: a profile is locked (HTTP 423 PROFILE_LOCKED)', 423]] as const) {
+      const signIn = vi.fn(async () => {});
+      await expect(haSecretIo(failing(message, status).client, signIn).get('k')).rejects.toThrow(message);
+      expect(signIn).not.toHaveBeenCalled();
+    }
+  });
+
+  it('reports the original error when signing in fails', async () => {
+    const f = failing('getAddonSecret failed: 401', 401);
+    await expect(haSecretIo(f.client, async () => { throw new Error('Wealthfolio login failed: 500'); }).get('k'))
+      .rejects.toThrow('getAddonSecret failed: 401');
+    expect(f.calls()).toBe(1);
+  });
+
+  it('tells a refused session from other errors by the status, not the wording', () => {
+    expect(isWealthfolioAuthError(httpError('anything at all', 401))).toBe(true);
+    expect(isWealthfolioAuthError(httpError('anything at all', 403))).toBe(true);
+    expect(isWealthfolioAuthError(httpError('getAddonSecret failed: 500', 500))).toBe(false);
+    expect(isWealthfolioAuthError(new Error('getAddonSecret failed: 401'))).toBe(false);
+  });
+});
+
 describe('the 5-minute drain without Home Assistant set up', () => {
-  it('signs in again at most once per 15 minutes while the config has never been read', async () => {
-    // Never read (a wrong password, say): the first sign-in goes through, then the pace is limited.
+  it('signs in again at most once per 15 minutes, whether or not Home Assistant is set up', async () => {
+    // The first sign-in goes through; a wrong password then can't fail a login every tick.
     expect(haMaySignIn(0, NOW.getTime())).toBe(true);
     expect(haMaySignIn(NOW.getTime(), at(5 * 60_000).getTime())).toBe(false);
     expect(haMaySignIn(NOW.getTime(), at(HA_IDLE_RECHECK_MS).getTime())).toBe(true);
-    // Known to be set up: at once, every time.
+    // The same once Home Assistant is known to be set up.
     await drainHomeAssistant(memoryIo(), answering(200), NOW);
-    expect(haMaySignIn(NOW.getTime(), at(5 * 60_000).getTime())).toBe(true);
+    expect(haKnownSetUp()).toBe(true);
+    expect(haMaySignIn(NOW.getTime(), at(5 * 60_000).getTime())).toBe(false);
   });
 
   it('reads the config once per 15 minutes, not every tick', async () => {

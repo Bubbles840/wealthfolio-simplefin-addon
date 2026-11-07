@@ -327,13 +327,21 @@ describe('when delivery waits', () => {
     expect(haDrainMode(status, { ...CONFIG, url: 'http://ha.fixed:8123' }, [entry('a')], NOW)).not.toBe('wait');
   });
 
-  it('a test not tried yet goes through, whatever either clock says', () => {
-    const tried = haTestEntry(at(-60 * 60_000));
-    const status = { lastError: 'x', lastErrorAt: failedAt, failedFor: key, parked: true as const, triedTests: [tried.id] };
-    // A browser clock an hour behind or a day ahead makes no difference: only the id counts.
+  it('a queued test goes through a park, whatever either clock says; nothing else does', () => {
+    const status = { lastError: 'x', lastErrorAt: failedAt, failedFor: key, parked: true as const };
+    // A browser clock an hour behind or a day ahead makes no difference.
     expect(haDrainMode(status, CONFIG, [entry('a'), haTestEntry(at(-2 * 60 * 60_000))], NOW)).toBe('tests');
     expect(haDrainMode(status, CONFIG, [entry('a'), haTestEntry(at(DAY))], NOW)).toBe('tests');
-    expect(haDrainMode(status, CONFIG, [tried], NOW)).toBe('wait');
+    expect(haDrainMode(status, CONFIG, [entry('a')], NOW)).toBe('wait');
+  });
+
+  it('a failed test is handled, not kept, so it can never be tried twice', async () => {
+    const sent: string[] = [];
+    const box: HaOutbox = { pending: [entry('a', at(-60_000)), haTestEntry(NOW), entry('b')], seen: {} };
+    const res = await drainHaOutbox(box, async (e) => { sent.push(e.id); return { ok: false, description: '401' }; }, NOW, { only: (e) => e.id.startsWith('test:') });
+    expect(sent).toEqual([haTestEntry(NOW).id]);
+    expect(res.outbox.pending.map((e) => e.id)).toEqual(['a', 'b']);
+    expect(res.outbox.seen).toHaveProperty(haTestEntry(NOW).id);
   });
 
   it('a recoverable failure waits for its back-off', () => {
@@ -364,7 +372,7 @@ describe('drainHaOutbox options', () => {
     const box: HaOutbox = { pending: [entry('failed-before', at(-60_000)), entry('test:x')], seen: {} };
     const res = await drainHaOutbox(box, async (e) => { sent.push(e.id); return { ok: true }; }, NOW, { only: (e) => e.id.startsWith('test:') });
     expect(sent).toEqual(['test:x']);
-    expect(res.tried).toEqual(['test:x']);
+    expect(res.delivered).toBe(1);
     expect(res.outbox.pending.map((e) => e.id)).toEqual(['failed-before']);
   });
 
@@ -395,31 +403,9 @@ describe('nextHaStatus', () => {
     expect(nextHaStatus(prev, fail, other, NOW)).toMatchObject({ failures: 1, failedFor: haConfigKey(other) });
   });
 
-  it('remembers which tests it tried, until a delivery or a config change', () => {
-    const fail = { ...sent, delivered: 0, error: 'Home Assistant answered 401', permanent: true };
-    const first = nextHaStatus(null, { ...fail, tried: ['test:1'] }, CONFIG, NOW)!;
-    expect(first.triedTests).toEqual(['test:1']);
-    expect(nextHaStatus(first, { ...fail, tried: ['test:2', 'stuck:x'] }, CONFIG, NOW)!.triedTests).toEqual(['test:1', 'test:2']);
-    expect(nextHaStatus(first, { ...fail, tried: ['test:2'] }, { ...CONFIG, token: 'new' }, NOW)!.triedTests).toEqual(['test:2']);
-    expect(nextHaStatus(first, { ...sent, tried: ['test:2'] }, CONFIG, NOW)).toEqual({ lastOkAt: NOW.toISOString() });
-  });
-
-  it('keeps every tried test still waiting, however many', () => {
-    const fail = { ...sent, delivered: 0, error: 'Home Assistant answered 401', permanent: true };
-    const ids = Array.from({ length: 30 }, (_, i) => `test:${i}`);
-    let status = null as ReturnType<typeof nextHaStatus>;
-    for (const id of ids) {
-      status = nextHaStatus(status, { ...fail, tried: [id], outbox: { pending: ids.map((x) => entry(x)), seen: {} } }, CONFIG, NOW);
-    }
-    expect(status!.triedTests).toEqual(ids);
-    // One no longer waiting drops out.
-    const after = nextHaStatus(status, { ...fail, tried: [], outbox: { pending: ids.slice(1).map((x) => entry(x)), seen: {} } }, CONFIG, NOW);
-    expect(after!.triedTests).toEqual(ids.slice(1));
-  });
-
   it('a test that only times out through a park leaves the park in place', () => {
     const parked = { lastError: 'Home Assistant answered 403', lastErrorAt: failedAtIso(), failedFor: key, parked: true as const };
-    const timedOut = nextHaStatus(parked, { ...sent, delivered: 0, error: 'Could not reach Home Assistant (timed out)', tried: ['test:1'] }, CONFIG, NOW)!;
+    const timedOut = nextHaStatus(parked, { ...sent, delivered: 0, error: 'Could not reach Home Assistant (timed out)' }, CONFIG, NOW)!;
     expect(timedOut.parked).toBe(true);
     expect(haDrainMode(timedOut, CONFIG, [entry('a')], at(10 * 60_000))).toBe('wait');
   });

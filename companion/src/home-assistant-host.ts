@@ -7,21 +7,46 @@
  */
 import {
   drainHaOutbox, HA_ADDON_QUEUE_SECRET_KEY, HA_CONFIG_SECRET_KEY, HA_OUTBOX_SECRET_KEY,
-  haDrainMode, haPendingView, haUntriedTest, mergeDrained, nextHaStatus, parseHaOutbox, parseHomeAssistantConfig,
+  haDrainMode, haIsTest, haPendingView, mergeDrained, nextHaStatus, parseHaOutbox, parseHomeAssistantConfig,
   queueHaEntries, sendHomeAssistantNotification, syncAlertEntries, syncHealthEntry, type HaEntry, type HaSecretIo,
 } from '../../shared/home-assistant.js';
 import type { SyncResult } from '../../shared/sync-core.js';
 
 const ADDON_ID = 'simplefin-sync';
 
-/** The secret reads and writes the shared module needs, over REST. */
-export function haSecretIo(client: {
-  getAddonSecret(addonId: string, key: string): Promise<string | null>;
-  setAddonSecret(addonId: string, key: string, value: string): Promise<void>;
-}): HaSecretIo {
+/** Whether a Wealthfolio REST error is a refused session (HTTP 401 or 403):
+ *  the client's errors carry the response's `status`. */
+export function isWealthfolioAuthError(err: unknown): boolean {
+  const status = (err as { status?: unknown } | null)?.status;
+  return status === 401 || status === 403;
+}
+
+/**
+ * The secret reads and writes the shared module needs, over REST. With
+ * `signIn`, a read or write refused for an expired session (401/403 only, never
+ * a 500 or an unreachable server) signs in once and is tried again, so a pass
+ * whose session expires midway carries on. If signing in fails, the original
+ * error is the one reported. `signIn` decides how often it may run.
+ */
+export function haSecretIo(
+  client: {
+    getAddonSecret(addonId: string, key: string): Promise<string | null>;
+    setAddonSecret(addonId: string, key: string, value: string): Promise<void>;
+  },
+  signIn?: () => Promise<unknown>,
+): HaSecretIo {
+  const retrying = async <T>(op: () => Promise<T>): Promise<T> => {
+    try {
+      return await op();
+    } catch (err) {
+      if (!signIn || !isWealthfolioAuthError(err)) throw err;
+      try { await signIn(); } catch { throw err; }
+      return op();
+    }
+  };
   return {
-    get: (key) => client.getAddonSecret(ADDON_ID, key),
-    set: (key, value) => client.setAddonSecret(ADDON_ID, key, value),
+    get: (key) => retrying(() => client.getAddonSecret(ADDON_ID, key)),
+    set: (key, value) => retrying(() => client.setAddonSecret(ADDON_ID, key, value)),
   };
 }
 
@@ -55,7 +80,8 @@ export function queueSyncHealthForHomeAssistant(
 }
 
 /** While Home Assistant is not set up, the 5-minute drain looks again this often
- *  instead of every tick. */
+ *  instead of every tick. Also the most often a client signs in again after an
+ *  expired session (`haMaySignIn`), set up or not. */
 export const HA_IDLE_RECHECK_MS = 15 * 60 * 1000;
 
 /** What the last config read found: whether Home Assistant is set up, and when. */
@@ -77,13 +103,14 @@ export function haKnownSetUp(): boolean {
 }
 
 /**
- * For the 5-minute drain, after a read failed: whether to sign in again now. At
- * once while Home Assistant is known to be set up; otherwise (known not set up,
- * or never read, e.g. a wrong password) at most once per `HA_IDLE_RECHECK_MS`.
+ * After a read or write was refused for an expired session: whether a client
+ * may sign in again now. At most once per `HA_IDLE_RECHECK_MS`, set up or not:
+ * a session that expired after a quiet spell signs in at once (the last sign-in
+ * is long past), but a wrong password can't cause a failed login every tick.
  * `lastSignInAt` 0 lets the first one through.
  */
 export function haMaySignIn(lastSignInAt: number, now = Date.now()): boolean {
-  return haKnownSetUp() || now - lastSignInAt >= HA_IDLE_RECHECK_MS;
+  return now - lastSignInAt >= HA_IDLE_RECHECK_MS;
 }
 
 /** Tests only. */
@@ -103,8 +130,8 @@ let rerun = false;
 /**
  * Sends what is queued, and records it and the outcome in `ha_outbox` (the
  * status is what the add-on's settings show). Returns how many it sent. Rejects
- * when a secret cannot be read or written, so the caller can sign in again and
- * retry. One drain at a time: the after-sync drain and the 5-minute one would
+ * when a secret cannot be read or written (for an expired session, after `io`
+ * signed in again if its limit allowed); the next pass retries. One drain at a time: the after-sync drain and the 5-minute one would
  * otherwise both send the same alert.
  */
 export function drainHomeAssistant(io: HaSecretIo, fetchImpl: typeof fetch = fetch, now?: Date): Promise<number> {
@@ -156,11 +183,11 @@ async function drainOnce(io: HaSecretIo, fetchImpl: typeof fetch, now: Date): Pr
     });
     return sendHomeAssistantNotification(config, entry, fetchImpl);
   };
-  // Waiting: only age out, and count, what is too old. Tests only: the untried
+  // Waiting: only age out, and count, what is too old. Tests only: the queued
   // tests, never the alert that failed.
   const result = await drainHaOutbox(view, mode === 'wait' ? null : send, now, {
     unconfirmed: (id) => unconfirmed.has(id),
-    ...(mode === 'tests' ? { only: (entry: HaEntry) => haUntriedTest(previous, entry) } : {}),
+    ...(mode === 'tests' ? { only: haIsTest } : {}),
   });
   // ONE write for what went out and the status, which also clears `sending`.
   // Re-read first: this companion's own sync may have queued more while the
@@ -168,6 +195,8 @@ async function drainOnce(io: HaSecretIo, fetchImpl: typeof fetch, now: Date): Pr
   // queued meanwhile is lost; the next pass treats what this one was sending as
   // sent. The add-on's key is never written here.
   const status = nextHaStatus(previous, result, config, now);
+  // If this save fails even after `io` signed in again, the `sending` ids make
+  // the next pass treat those alerts as sent.
   await withOutboxLock(async () => {
     const latest = await io.get(HA_OUTBOX_SECRET_KEY);
     const json = JSON.stringify(mergeDrained(parseHaOutbox(latest), result.outbox, now, status));

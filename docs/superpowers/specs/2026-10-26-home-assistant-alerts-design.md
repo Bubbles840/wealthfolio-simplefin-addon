@@ -63,8 +63,8 @@ only the companion talks to Home Assistant.
 - **Bounded (my call)**: the drain sends the 50 newest, and drops (and counts, in the status) an entry older than 7 days.
   An entry dated in the future (a fast clock) counts as queued now.
 - **Failures**: a 401/403, a notify 400/404, a webhook 404/405 or any redirect parks delivery until the access fields
-  (mode, URL, token, service) change, or a test the drain has not tried yet is queued (tracked by id, never by comparing
-  the browser's clock with the companion's). Redirects are never followed. A 5xx or a network error backs off from 5
+  (mode, URL, token, service) change, or a test is queued (a test is tried once: delivered, or handled if it fails, so none
+  is retried; no clocks are compared). Redirects are never followed. A 5xx or a network error backs off from 5
   minutes, doubling, up to 4 hours; a change to those fields ends the wait, and the card says the change is unchecked.
 - **Two memories, one horizon**: the add-on drops its own entries after 7 days, and the drain ignores add-on entries
   older than its 30-day memory of what it sent, so a long-delivered alert can't come back as pending. Stored errors name the kind of failure (timed out,
@@ -83,11 +83,12 @@ written). Only an http(s) URL with a host and no credentials is accepted, by bot
 (last delivery, last error, parked or backing off, alerts dropped) inside `ha_outbox`, in the same write as what it sent,
 after a drain that sent or dropped something; the section shows it, so a wrong token or service is visible without
 reading container logs. One write means the two never fall out of step. Each alert's id is saved just before it is
-sent (nothing is sent if that fails); if the save after sending fails, the next pass treats those alerts as sent. So an
-alert never repeats (my call: never resend). The cost: an alert that did not arrive (Home Assistant refused it, or the
-companion stopped right before sending it) when a save failed at that moment is not retried; the card counts these as
-"may not have reached Home Assistant", the same way it counts dropped alerts. Each alert costs one extra outbox read and
-write. Reset clears all three secrets.
+sent (nothing is sent if that fails). A read or write Wealthfolio refuses for an expired session (401/403) is retried once
+after signing in again, when the limit allows (one sign-in per 15 minutes per client; a request refused within a
+minute of a sign-in that worked is just retried); if the save after sending still fails, the next pass treats those alerts as sent. So an alert never repeats (my call: never resend). The
+cost: an alert that did not arrive (Home Assistant refused it, or the companion stopped right before sending it) when
+saves failed at that moment is not retried; the card counts these as "may not have reached Home Assistant", the same
+way it counts dropped alerts. Each alert costs one extra outbox read and write. Reset clears all three secrets.
 
 The section only appears when the companion understands it (`HOME_ASSISTANT_SINCE` in shared/version.ts): with an
 older companion, nothing would drain the outbox.

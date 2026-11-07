@@ -412,8 +412,8 @@ async function checkSyncHealthAlert(wfClient: WealthfolioClient): Promise<void> 
   // Queued and sent now, with this (signed-in) client: a failed sync never
   // reaches the after-sync drain. Not awaited, like that one, so a slow
   // Wealthfolio or Home Assistant never holds the sync open.
-  void queueSyncHealthForHomeAssistant(haSecretIo(wfClient), health.firstFailedAt, health.lastError ?? undefined)
-    .then(() => drainHomeAssistant(haSecretIo(wfClient)))
+  void queueSyncHealthForHomeAssistant(haIoFor(wfClient), health.firstFailedAt, health.lastError ?? undefined)
+    .then(() => drainHomeAssistant(haIoFor(wfClient)))
     .catch((err) => { if (haKnownSetUp()) log(`Home Assistant delivery failed, will retry: ${formatError(err)}`); });
   if (health.alerted) return;
 
@@ -1492,8 +1492,8 @@ async function runCompanionSyncOnce(opts: { force?: boolean; manual?: boolean })
     // sent straight away (the 5-minute drain also sends what the add-on queues).
     // Never throws: a notification problem is not a sync failure. Not awaited:
     // a slow Home Assistant must not hold the sync (and its lock) open.
-    void queueSyncAlertsForHomeAssistant(haSecretIo(wfClient), result)
-      .then(() => drainHomeAssistant(haSecretIo(wfClient)))
+    void queueSyncAlertsForHomeAssistant(haIoFor(wfClient), result)
+      .then(() => drainHomeAssistant(haIoFor(wfClient)))
       .catch((err) => { if (haKnownSetUp()) log(`Home Assistant delivery failed, will retry: ${formatError(err)}`); });
 
     // 2c: the checks behind the app's Checks card, its account chips and the
@@ -4074,6 +4074,38 @@ export function buildTelegramCommandHandler(
  *  outlive a process that runs for weeks. Half an hour sits between the two. */
 const LISTENER_SESSION_MAX_AGE_MS = 30 * 60 * 1000;
 
+/** When each client last tried to sign in again for Home Assistant's reads and
+ *  writes, when one last worked, and the one in progress, which concurrent
+ *  refused reads share. */
+const haSignedInAt = new WeakMap<WealthfolioClient, number>();
+const haSignInWorkedAt = new WeakMap<WealthfolioClient, number>();
+const haSigningIn = new WeakMap<WealthfolioClient, Promise<unknown>>();
+/** A request refused this soon after a sign-in that worked was most likely sent
+ *  before it: retried as it is, without signing in again. */
+const HA_FRESH_SIGN_IN_MS = 60 * 1000;
+
+/**
+ * Home Assistant's secret reads and writes on `client`: one refused for an
+ * expired session is retried once, after signing in again (at most once per 15
+ * minutes per client, see `haMaySignIn`; concurrent refusals share one sign-in),
+ * or straight away when a sign-in worked in the last minute (it was most likely
+ * sent before that sign-in).
+ */
+export function haIoFor(client: WealthfolioClient) {
+  return haSecretIo(client, () => {
+    const running = haSigningIn.get(client);
+    if (running) return running;
+    if (Date.now() - (haSignInWorkedAt.get(client) ?? 0) < HA_FRESH_SIGN_IN_MS) return Promise.resolve();
+    if (!haMaySignIn(haSignedInAt.get(client) ?? 0)) return Promise.reject(new Error('signed in again too recently'));
+    haSignedInAt.set(client, Date.now());
+    const signIn = signInWealthfolio(client)
+      .then((how) => { haSignInWorkedAt.set(client, Date.now()); return how; })
+      .finally(() => haSigningIn.delete(client));
+    haSigningIn.set(client, signIn);
+    return signIn;
+  });
+}
+
 /**
  * Signs `client` in: the API key when set, else the password. With neither,
  * nothing: a Wealthfolio server without authentication needs no sign-in.
@@ -4678,22 +4710,12 @@ if (!process.env.VITEST) {
 
   // Home Assistant: alerts the add-on queued (it cannot reach Home Assistant
   // itself) go out within minutes instead of at the next sync. This client is
-  // not the sync's: it signs in only after a read fails (an expired or never
-  // started session), at once while Home Assistant is known to be set up, and
-  // otherwise at most once per 15 minutes (`haMaySignIn`), so a wrong password
-  // can't make it sign in every tick. It never logs for an install without Home
-  // Assistant.
-  let haSignedInAt = 0;
+  // not the sync's: `haIoFor` signs it in when a read or write is refused for
+  // an expired or never-started session, at most once per 15 minutes. It never
+  // logs for an install without Home Assistant.
   cron.schedule('*/5 * * * *', () => {
     if (!haDrainDue()) return;
-    const drain = () => drainHomeAssistant(haSecretIo(wfClient));
-    drain()
-      .catch(async (err) => {
-        if (!haMaySignIn(haSignedInAt)) throw err;
-        haSignedInAt = Date.now();
-        await signInWealthfolio(wfClient);
-        return drain();
-      })
+    drainHomeAssistant(haIoFor(wfClient))
       .then((n) => { if (n > 0) log(`Home Assistant: sent ${n} alert(s).`); })
       .catch((err) => { if (haKnownSetUp()) log(`Home Assistant delivery failed, will retry: ${formatError(err)}`); });
   });

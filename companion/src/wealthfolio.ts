@@ -272,9 +272,9 @@ export class WealthfolioClient {
     // Wealthfolio 3.10 answers 423 PROFILE_LOCKED to a request with no profile
     // scope when the instance has several profiles or a locked one.
     if (res.status === 423 && !this.profile) {
-      return new Error(
+      return Object.assign(new Error(
         'Wealthfolio refused the request: a profile is locked or there is more than one profile (HTTP 423 PROFILE_LOCKED). Set WEALTHFOLIO_PROFILE_ID to the profile to sync; it must have no lock.',
-      );
+      ), { status: res.status });
     }
     const MAX_BODY_CHARS = 300;
     let body = '';
@@ -289,9 +289,11 @@ export class WealthfolioClient {
     const detail = body ? ` - ${body}` : '';
     if (res.status === 423 && this.profile) {
       // Still a temporary failure to `isRowRefusal`, which reads only 400/422.
-      return new Error(`${action} failed: Wealthfolio refused profile ${this.profile.id} (HTTP 423)${detail}`);
+      return Object.assign(new Error(`${action} failed: Wealthfolio refused profile ${this.profile.id} (HTTP 423)${detail}`), { status: res.status });
     }
-    return new Error(`${action} failed: ${res.status}${detail}`);
+    // `status` lets a caller tell a refused session (401/403) from other errors
+    // without reading the message.
+    return Object.assign(new Error(`${action} failed: ${res.status}${detail}`), { status: res.status });
   }
 
   async checkImport(accountId: string, activities: unknown[]): Promise<unknown[]> {

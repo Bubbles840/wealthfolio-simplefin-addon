@@ -12,8 +12,10 @@
  *
  * A drain saves what it sent and the status in ONE write, so the two never
  * disagree. Each alert's id is saved just before it is sent, and nothing is
- * sent if that save fails. If the save after sending fails, the next pass finds
- * those ids and treats the alerts as sent, and the status counts them as
+ * sent if that save fails (the companion's reads and writes sign in again once
+ * after an expired session, see companion/src/home-assistant-host.ts). If the
+ * save after sending still fails, the next pass finds those ids and treats the
+ * alerts as sent, and the status counts them as
  * "may not have arrived": never a repeat, at the cost of an alert that did not
  * arrive (Home Assistant refused it, or the companion stopped right before
  * sending it) when a save failed at that moment.
@@ -207,10 +209,6 @@ export interface HaStatus {
    *  when the next try is due. */
   failures?: number;
   retryAt?: string;
-  /** Test entries already tried since the last delivery. A test not in it goes
-   *  through a park or a back-off once. Ids, not times: the test's time is the
-   *  browser's clock and the failure's the companion's. */
-  triedTests?: string[];
   /** Alerts dropped unsent after a week in the queue: how many, and when. */
   dropped?: number;
   droppedAt?: string;
@@ -592,7 +590,6 @@ export async function drainHaOutbox(
   doubtful.forEach(remember);
   dropped.forEach(remember);
   const remaining: HaEntry[] = [];
-  const tried: string[] = [];
   let delivered = 0;
   const queue = current.pending;
   for (let i = 0; i < queue.length; i++) {
@@ -601,7 +598,6 @@ export async function drainHaOutbox(
       remaining.push(entry);
       continue;
     }
-    tried.push(entry.id);
     let res: HaSendResult;
     try {
       res = await send(entry);
@@ -609,24 +605,23 @@ export async function drainHaOutbox(
       // `send` rejects only when the entry was NOT sent (the save before it
       // failed): stop here, but return what this pass did, so the caller still
       // records the deliveries before it and then reports the error.
-      tried.pop();
       remaining.push(...queue.slice(i));
       return {
         outbox: { pending: remaining, seen }, delivered, dropped: dropped.length, unsure: doubtful.length,
-        attempted: delivered > 0, tried, aborted: err,
+        attempted: delivered > 0, aborted: err,
       };
     }
     if (!res.ok) {
       // A test is a one-off check: tried and failed, it is handled (the status
       // shows the result), never kept to go out later with the real alerts.
-      if (entry.id.startsWith('test:')) {
+      if (haIsTest(entry)) {
         remember(entry);
         remaining.push(...queue.slice(i + 1));
       } else {
         remaining.push(...queue.slice(i));
       }
       return {
-        outbox: { pending: remaining, seen }, delivered, dropped: dropped.length, unsure: doubtful.length, attempted: true, tried,
+        outbox: { pending: remaining, seen }, delivered, dropped: dropped.length, unsure: doubtful.length, attempted: true,
         error: res.description ?? 'delivery failed', ...(res.permanent ? { permanent: true } : {}),
       };
     }
@@ -635,7 +630,7 @@ export async function drainHaOutbox(
   }
   return {
     outbox: { pending: remaining, seen }, delivered, dropped: dropped.length, unsure: doubtful.length,
-    attempted: delivered > 0, tried,
+    attempted: delivered > 0,
   };
 }
 
@@ -649,8 +644,6 @@ export interface HaDrainResult {
   /** Set when the pass stopped because `send` rejected before sending: the
    *  caller records what was done, then reports this. */
   aborted?: unknown;
-  /** Ids of the entries a send was attempted for, in order. */
-  tried: string[];
   error?: string;
   permanent?: boolean;
 }
@@ -678,9 +671,10 @@ export function haChangedSinceFailure(status: HaStatus | null, config: Pick<Home
  * What the drain may send now:
  *  - `all`: nothing holds delivery back, or the config changed since the failure.
  *  - `wait`: a parked failure (until the config changes) or a back-off.
- *  - `tests`: waiting, but a test not tried yet is queued. Only untried tests
- *    are sent, never the alert that failed: sending it first is the retry loop
- *    the park is there to stop, and the test would never be reached.
+ *  - `tests`: waiting, but a test is queued. Only tests are sent, never the
+ *    alert that failed: sending it first is the retry loop the park is there to
+ *    stop, and the test would never be reached. A test is tried once: it is
+ *    then delivered or, failing, handled (`drainHaOutbox`), so none is retried.
  */
 export function haDrainMode(
   status: HaStatus | null,
@@ -691,12 +685,12 @@ export function haDrainMode(
   if (!status?.lastError || haChangedSinceFailure(status, config)) return 'all';
   const waits = !!status.parked || (!!status.retryAt && now.getTime() < Date.parse(status.retryAt));
   if (!waits) return 'all';
-  return pending.some((e) => haUntriedTest(status, e)) ? 'tests' : 'wait';
+  return pending.some(haIsTest) ? 'tests' : 'wait';
 }
 
-/** A test entry the drain has not tried since the last failure. */
-export function haUntriedTest(status: HaStatus | null, entry: Pick<HaEntry, 'id'>): boolean {
-  return entry.id.startsWith('test:') && !(status?.triedTests ?? []).includes(entry.id);
+/** Whether an entry is a "Send a test" entry. */
+export function haIsTest(entry: Pick<HaEntry, 'id'>): boolean {
+  return entry.id.startsWith('test:');
 }
 
 /** The status after a drain. Unchanged (null) when the drain neither sent nor
@@ -704,7 +698,7 @@ export function haUntriedTest(status: HaStatus | null, entry: Pick<HaEntry, 'id'
 export function nextHaStatus(
   previous: HaStatus | null,
   result: Pick<HaDrainResult, 'delivered' | 'dropped' | 'attempted' | 'error' | 'permanent'>
-    & { tried?: string[]; outbox?: HaOutbox; unsure?: number },
+    & { unsure?: number },
   config: HomeAssistantConfig,
   now: Date,
 ): HaStatus | null {
@@ -735,19 +729,9 @@ export function nextHaStatus(
   }
   if (!result.error) return base;
   const key = haConfigKey(config);
-  // A failure with a new config starts its own back-off and its own tried tests.
+  // A failure with a new config starts its own back-off.
   const sameConfig = prev.failedFor === key;
-  // Every tried test still waiting is kept, however many: one dropped from the
-  // list would count as untried and be sent again on every pass.
-  const stillPending = result.outbox ? new Set(result.outbox.pending.map((e) => e.id)) : null;
-  const triedTests = [...new Set([
-    ...(sameConfig ? prev.triedTests ?? [] : []),
-    ...(result.tried ?? []).filter((id) => id.startsWith('test:')),
-  ])].filter((id) => !stillPending || stillPending.has(id));
-  const failed: HaStatus = {
-    ...base, lastError: result.error, lastErrorAt: at, failedFor: key,
-    ...(triedTests.length ? { triedTests } : {}),
-  };
+  const failed: HaStatus = { ...base, lastError: result.error, lastErrorAt: at, failedFor: key };
   // A park lasts until a delivery or a config change: a test that only timed
   // out through it says nothing about the token, so it does not lift it, but a
   // delivery in the same pass shows delivery works again.
