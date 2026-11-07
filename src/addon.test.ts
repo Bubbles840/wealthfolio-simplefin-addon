@@ -161,11 +161,11 @@ describe('addon enable()', () => {
       return ctx;
     };
 
-    it('syncs, forced past the last sync time, with the schedule off when an investment account is mapped', async () => {
+    it('syncs past the minimum interval, with the schedule off when an investment account is mapped', async () => {
       vi.mocked(runSync).mockClear();
       const ctx = investmentSetup();
       enable(ctx);
-      await waitFor(() => expect(runSync).toHaveBeenCalledWith(expect.anything(), expect.anything(), { force: true }));
+      await waitFor(() => expect(runSync).toHaveBeenCalledWith(expect.anything(), expect.anything(), { catchUp: true }));
       ctx._triggerDisable();
     });
 

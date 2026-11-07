@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   automaticDownloadAllowed,
   HOLDINGS_CATCHUP_AFTER_MS,
+  HOLDINGS_CATCHUP_QUIET_MS,
   HoldingsCatchUp,
   holdingsCatchUpDue,
   mapsInvestmentAccount,
@@ -63,6 +64,10 @@ describe('mapsInvestmentAccount', () => {
     expect(mapsInvestmentAccount(mapping, [{ id: 'wf-1', accountType: 'SECURITIES', trackingMode: 'TRANSACTIONS' }])).toBe(true);
   });
 
+  it('finds a mapped crypto account', () => {
+    expect(mapsInvestmentAccount(mapping, [{ id: 'wf-1', accountType: 'CRYPTOCURRENCY', trackingMode: 'TRANSACTIONS' }])).toBe(true);
+  });
+
   it('finds a mapped account in Holdings mode, whatever its type', () => {
     expect(mapsInvestmentAccount(mapping, [{ id: 'wf-2', accountType: 'CASH', trackingMode: 'HOLDINGS' }])).toBe(true);
   });
@@ -114,6 +119,33 @@ describe('HoldingsCatchUp', () => {
     const d = deps(over);
     await checkOnce(d);
     expect(d.runSync).not.toHaveBeenCalled();
+  });
+
+  it('starts no sync once stopped, even from a check already under way', async () => {
+    let release: (v: boolean) => void = () => {};
+    const d = deps({ hasInvestmentAccounts: () => new Promise<boolean>((r) => { release = r; }) });
+    const c = new HoldingsCatchUp(d);
+    const pending = c.check();
+    await vi.waitFor(() => expect(release).not.toBe(undefined));
+    await Promise.resolve();
+    c.stop();
+    release(true);
+    await pending;
+    expect(d.runSync).not.toHaveBeenCalled();
+  });
+
+  it('stays quiet for a while after finding no investment account, then asks again', async () => {
+    let now = NOW;
+    const hasInvestmentAccounts = vi.fn(async () => false);
+    const d = deps({ hasInvestmentAccounts, now: () => now });
+    const c = new HoldingsCatchUp(d);
+    await c.check();
+    now = new Date(NOW.getTime() + HOLDINGS_CATCHUP_QUIET_MS - 1);
+    await c.check();
+    expect(hasInvestmentAccounts).toHaveBeenCalledTimes(1);
+    now = new Date(NOW.getTime() + HOLDINGS_CATCHUP_QUIET_MS);
+    await c.check();
+    expect(hasInvestmentAccounts).toHaveBeenCalledTimes(2);
   });
 
   it('checks the budget before reading accounts, so a wait costs no account read', async () => {

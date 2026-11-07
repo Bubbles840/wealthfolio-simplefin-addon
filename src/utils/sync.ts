@@ -90,9 +90,6 @@ export function runSync(
       const result = await runSyncCore(await bookkeepingHost(ctx, store, warn, !!opts.manual), store, {
         ...opts, ...(changeLog ? { changeLog } : {}), dividendSecurities,
       });
-      // For the holdings catch-up: a failed write only means one extra catch-up,
-      // which the SimpleFin budget's hour between automatic downloads bounds.
-      if (result.holdingsPassRan) await store.setHoldingsPassAt?.(new Date()).catch(() => {});
       // Deliver INSIDE the single-flight lock and inside the returned promise, so
       // one run announces its own alerts exactly once and a caller that awaits the
       // sync has also awaited the sends. `deliverAddonAlerts` never rejects, so it

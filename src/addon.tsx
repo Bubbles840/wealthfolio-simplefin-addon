@@ -140,7 +140,7 @@ const enable: AddonEnableFunction = (hostCtx) => {
       if (!accessUrl || !mapping) return false;
       return mapsInvestmentAccount(mapping, await ctx.api.accounts.getAll());
     },
-    runSync: () => runSync(ctx, startupStore, { force: true }),
+    runSync: () => runSync(ctx, startupStore, { catchUp: true }),
   });
   holdingsCatchUp.start();
 
