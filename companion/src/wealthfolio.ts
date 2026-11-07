@@ -312,7 +312,7 @@ export class WealthfolioClient {
       headers: this.authHeaders(),
     });
     if (!res.ok) throw await this.httpError('getAccounts', res);
-    return res.json() as Promise<Array<{ id: string; name?: string; accountType?: string; currency?: string; isArchived?: boolean; isActive?: boolean }>>;
+    return res.json() as Promise<Array<{ id: string; name?: string; accountType?: string; currency?: string; isArchived?: boolean; isActive?: boolean; trackingMode?: string }>>;
   }
 
   /**

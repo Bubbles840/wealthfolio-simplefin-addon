@@ -8,12 +8,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
-- **No holdings snapshots on accounts Wealthfolio tracks by transactions.** A
-  cash account whose feed lists a money market fund got imported snapshots that
-  duplicated the ones Wealthfolio builds from its activities.
-- **No starting balance on accounts Wealthfolio values from holdings.** After a
-  re-link, an investment account could get its whole value booked as a cash
-  credit, which then showed as that year's income.
+- **No holdings snapshots on cash accounts Wealthfolio tracks by transactions.**
+  A cash account whose feed lists a money market fund got imported snapshots
+  that duplicated the ones Wealthfolio builds from its activities. Investment
+  accounts keep their snapshots whatever their tracking mode.
+- **No starting balance on accounts valued from their positions** (tracking
+  mode Holdings, or an investment account whose feed lists positions). After a
+  re-link, such an account could get its whole value booked as a cash credit,
+  which then showed as that year's income. The starting balance also waits for
+  a run that can read the account list.
 
 ## [1.73.0] - 2026-11-05
 

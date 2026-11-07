@@ -3,7 +3,7 @@ import { runSyncCore, applyBaselineFix, neutralAdjustmentFields, startingBalance
 import { createFakeHost, type FakeHostSeed } from './fake-host.js';
 import { accountTxKey } from './transfers.js';
 import { linkPairByRecreate } from './link-pair.js';
-import type { HostActivity, LinkLeg, SyncHost } from './sync-host.js';
+import type { HostActivity, ImportRow, LinkLeg, SyncHost } from './sync-host.js';
 
 describe('runSyncCore', () => {
   beforeEach(() => {
@@ -3682,9 +3682,14 @@ describe('holdings snapshots for investment accounts', () => {
     expect(result.errors).toEqual([]);
   });
 
-  it('gives an account Wealthfolio tracks by transactions no snapshot', async () => {
-    // Wealthfolio builds that account's snapshots from its activities.
+  const sbRows = (imported: ImportRow[][]) =>
+    imported.flat().filter((r) => r.comment === 'Starting balance · sfin-b');
+
+  it('gives a CASH account Wealthfolio tracks by transactions no snapshot', async () => {
+    // A cash account whose feed lists a money market fund: Wealthfolio builds
+    // its snapshots from its activities.
     const seed = brokerageSeed();
+    seed.accountTypes = { 'wf-b': 'CASH' };
     seed.trackingModes = { 'wf-b': 'TRANSACTIONS' };
     const { host, store, holdings } = createFakeHost(seed);
     const result = await runSyncCore(host, store, { force: true });
@@ -3693,8 +3698,15 @@ describe('holdings snapshots for investment accounts', () => {
     expect(result.errors).toEqual([]);
   });
 
-  it.each(['HOLDINGS', 'NOT_SET'])('still gives an account tracked as %s its snapshot', async (mode) => {
+  it.each([
+    ['SECURITIES', 'TRANSACTIONS'], // what the add-on creates an investment account as
+    ['SECURITIES', 'HOLDINGS'],
+    ['SECURITIES', 'NOT_SET'],
+    ['CASH', 'NOT_SET'],
+    ['CASH', 'HOLDINGS'],
+  ])('still gives a %s account tracked as %s its snapshot', async (type, mode) => {
     const seed = brokerageSeed();
+    seed.accountTypes = { 'wf-b': type };
     seed.trackingModes = { 'wf-b': mode };
     const { host, store, holdings } = createFakeHost(seed);
     await runSyncCore(host, store, { force: true });
@@ -3703,6 +3715,7 @@ describe('holdings snapshots for investment accounts', () => {
 
   it('still gives the account its snapshot when the account list cannot be read', async () => {
     const seed = brokerageSeed();
+    seed.accountTypes = { 'wf-b': 'CASH' };
     seed.trackingModes = { 'wf-b': 'TRANSACTIONS' };
     const { host, store, holdings } = createFakeHost(seed);
     host.listAccounts = async () => { throw new Error('unreachable'); };
@@ -3710,26 +3723,68 @@ describe('holdings snapshots for investment accounts', () => {
     expect(holdings.map((h) => h.wfAccountId)).toEqual(['wf-b']);
   });
 
-  it('books no starting balance on an account Wealthfolio values from holdings', async () => {
-    // Its value comes from snapshots, so a cash credit for the whole balance
-    // would only count as income.
+  it.each(['HOLDINGS', 'TRANSACTIONS', 'NOT_SET', undefined])(
+    'books no starting balance on a SECURITIES account with positions tracked as %s, and leaves it undecided',
+    async (mode) => {
+      // Its value is its positions: with no valuation row the balance read
+      // falls back to its cash activities, and the whole value would be booked
+      // as a cash credit that counts as income.
+      const seed = brokerageSeed();
+      if (mode) seed.trackingModes = { 'wf-b': mode };
+      seed.valuations = new Map([['wf-b', 0]]);
+      const { host, store, imported } = createFakeHost(seed);
+      await runSyncCore(host, store, { force: true });
+      expect(sbRows(imported)).toEqual([]);
+      // Not marked done, so a later switch of mode or feed decides it afresh.
+      expect(await store.getBalanceInitialized()).not.toContain('sfin-b');
+    },
+  );
+
+  it('books none on a HOLDINGS account even without positions in the feed', async () => {
     const seed = brokerageSeed();
+    seed.accountSet!.accounts[0].holdings = [];
+    seed.accountTypes = { 'wf-b': 'CASH' };
     seed.trackingModes = { 'wf-b': 'HOLDINGS' };
     seed.valuations = new Map([['wf-b', 0]]);
     const { host, store, imported } = createFakeHost(seed);
     await runSyncCore(host, store, { force: true });
-    expect(imported.flat().filter((r) => r.comment?.startsWith('Starting balance'))).toEqual([]);
-    // Marked done, so later runs do not look for one either.
-    expect(await store.getBalanceInitialized()).toContain('sfin-b');
+    expect(sbRows(imported)).toEqual([]);
   });
 
-  it.each(['TRANSACTIONS', 'NOT_SET', undefined])('still books one when the account is tracked as %s', async (mode) => {
+  it.each([
+    ['SECURITIES', 'TRANSACTIONS', []],
+    ['CASH', 'TRANSACTIONS', undefined], // keeps its money market fund
+    ['CASH', 'NOT_SET', undefined],
+  ])('still books one on a %s account tracked as %s whose value is not positions', async (type, mode, holdings) => {
     const seed = brokerageSeed();
-    if (mode) seed.trackingModes = { 'wf-b': mode };
+    if (holdings) seed.accountSet!.accounts[0].holdings = holdings;
+    seed.accountTypes = { 'wf-b': type };
+    seed.trackingModes = { 'wf-b': mode };
     seed.valuations = new Map([['wf-b', 0]]);
     const { host, store, imported } = createFakeHost(seed);
     await runSyncCore(host, store, { force: true });
-    expect(imported.flat().filter((r) => r.comment === 'Starting balance · sfin-b')).toHaveLength(1);
+    expect(sbRows(imported)).toHaveLength(1);
+    expect(await store.getBalanceInitialized()).toContain('sfin-b');
+  });
+
+  it('waits for a readable account list before booking a starting balance', async () => {
+    // Without the list there is no type or mode to tell a positions account
+    // from a cash one; the next run that can read it decides.
+    const seed = brokerageSeed();
+    seed.accountSet!.accounts[0].holdings = [];
+    seed.accountTypes = { 'wf-b': 'CASH' };
+    seed.trackingModes = { 'wf-b': 'TRANSACTIONS' };
+    seed.valuations = new Map([['wf-b', 0]]);
+    const { host, store, imported } = createFakeHost(seed);
+    const realList = host.listAccounts.bind(host);
+    host.listAccounts = async () => { throw new Error('unreachable'); };
+    await runSyncCore(host, store, { force: true });
+    expect(sbRows(imported)).toEqual([]);
+    expect(await store.getBalanceInitialized()).not.toContain('sfin-b');
+
+    host.listAccounts = realList;
+    await runSyncCore(host, store, { force: true });
+    expect(sbRows(imported)).toHaveLength(1);
   });
 
   it('skips the account when the host cannot import snapshots at all', async () => {
