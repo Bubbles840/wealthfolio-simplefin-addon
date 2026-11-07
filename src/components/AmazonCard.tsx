@@ -4,6 +4,8 @@ import type { StatusMessage } from './ui';
 import { CategoryIcon } from './CategoryIcon';
 import {
   DEFAULT_AMAZON_CATEGORY,
+  amazonCategoryValue,
+  findAmazonCategory,
   normalizeAppPassword,
   resolveAmazonCategory,
   type AmazonLabelCatalog,
@@ -12,6 +14,9 @@ import {
 import type { CategoryCatalogEntry, SecretsStore } from '../utils/secrets';
 import type { AmazonMailSample, AmazonMailSamples, AmazonMailStatus } from '../../shared/status-keys';
 import { amazonSamplesAsFixtureText } from '../../shared/amazon-sample';
+import { companionFilesAmazonSubcategories } from '../../shared/version';
+import { SYNC_BOOKKEEPING_CATEGORY } from '../../shared/bookkeeping-filing';
+import { OPENING_BALANCES_CATEGORY } from '../../shared/sync-core';
 
 /**
  * Setup for automatic categorization of Amazon charges.
@@ -168,12 +173,16 @@ interface Props {
   guideOpen: boolean;
   onToggle: () => void;
   onToggleGuide: () => void;
-  /** Parent categories the user actually has, for the override dropdowns. */
+  /** The categories the user actually has, for the override dropdowns. */
   categories: CategoryCatalogEntry[];
+  /** The connected companion's version: subcategories are offered only when
+   *  it can file under them. */
+  companionVersion?: string | null;
 }
 
 export function AmazonCard({
   amazon, cardId, guideId, open, guideOpen, onToggle, onToggleGuide, categories,
+  companionVersion = null,
 }: Props) {
   const { draft, patch, labels, mailStatus, samples, loaded, dirty, configured } = amazon;
   const { host, user, password, defaultCategory, overrides } = draft;
@@ -184,9 +193,18 @@ export function AmazonCard({
   const [status, setStatus] = useState<StatusMessage | null>(null);
 
   const labelNames = Object.keys(labels).sort((a, b) => a.localeCompare(b));
-  // Parents only. Wealthfolio's budgets live at parent level, so offering a
-  // subcategory here would let a user pick something no budget can ever show.
+  // The fallback stays top-level: it catches whatever no rule knows, and a
+  // broad category is the honest home for that.
   const options = categories.filter((c) => !c.parent).map((c) => c.name);
+  // A label can go to a subcategory, stored as `Parent / Child`, once the
+  // companion can file under one.
+  const subcategories = companionFilesAmazonSubcategories(companionVersion);
+  // Never the sync's own bookkeeping categories: Amazon charges are spending.
+  const labelOptions = subcategories
+    ? [...new Set(categories
+      .filter((c) => c.name !== SYNC_BOOKKEEPING_CATEGORY && c.name !== OPENING_BALANCES_CATEGORY)
+      .map(amazonCategoryValue))].sort((a, b) => a.localeCompare(b))
+    : options;
   const unmatched = labelNames.filter(
     (l) => !resolveAmazonCategory(l, { defaultCategory, labelOverrides: overrides }).matched,
   ).length;
@@ -404,7 +422,14 @@ export function AmazonCard({
                 const resolved = resolveAmazonCategory(label, {
                   defaultCategory, labelOverrides: overrides,
                 });
-                const entry = categories.find((c) => c.name === resolved.category);
+                // A value from an older build is a bare name: shown as the
+                // option it files under, or flagged when it fits several. Shown
+                // as stored while the companion is older, so leaving the row
+                // alone can never save a path it cannot read.
+                const hit = findAmazonCategory(resolved.category, categories);
+                const entry = hit.kind === 'found' ? hit.entry : undefined;
+                const current = entry && subcategories ? amazonCategoryValue(entry) : resolved.category;
+                const shown = labelOptions.includes(current) ? labelOptions : [current, ...labelOptions];
                 return (
                   <div
                     key={label}
@@ -421,6 +446,11 @@ export function AmazonCard({
                       {!resolved.matched && (
                         <span className="sfin-subtle"> · no rule yet</span>
                       )}
+                      {hit.kind === 'ambiguous' && (
+                        <span className="sfin-subtle">
+                          {` · fits ${hit.candidates.length} categories, pick the one you mean`}
+                        </span>
+                      )}
                     </span>
                     <span aria-hidden="true">→</span>
                     {entry && <CategoryIcon name={entry.icon} />}
@@ -428,17 +458,14 @@ export function AmazonCard({
                       className="sfin-select"
                       aria-label={`Wealthfolio category for Amazon's ${label}`}
                       style={{ flex: '1 1 140px' }}
-                      value={resolved.category}
+                      value={current}
                       onChange={(e) =>
                         patch((prev) => ({
                           overrides: { ...prev.overrides, [label]: e.target.value },
                         }))
                       }
                     >
-                      {(options.includes(resolved.category)
-                        ? options
-                        : [resolved.category, ...options]
-                      ).map((name) => <option key={name} value={name}>{name}</option>)}
+                      {shown.map((name) => <option key={name} value={name}>{name}</option>)}
                     </select>
                   </div>
                 );

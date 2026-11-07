@@ -747,6 +747,7 @@ export function SettingsTab({
         onToggle={() => toggleCard(CARD.amazon)}
         onToggleGuide={() => toggleCard(CARD.amazonGuide)}
         categories={categories}
+        companionVersion={companionVersion}
       />
 
       {/* The card's own open state replaces the old "Edit"/"Done" toggle: this

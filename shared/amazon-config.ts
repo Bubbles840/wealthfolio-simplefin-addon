@@ -38,7 +38,10 @@ export interface AmazonMailConfig {
   password?: string;
   /** Wealthfolio category for a label no pattern matches. */
   defaultCategory?: string;
-  /** User overrides, label → Wealthfolio category, set on the Sync page. */
+  /** User overrides, label → Wealthfolio category, set on the Sync page. A
+   *  value is a category path (`findAmazonCategory`): `Parent / Child` for a
+   *  subcategory, the bare name for a top-level one. Older builds stored bare
+   *  names only, and those are still read. */
   labelOverrides?: Record<string, string>;
 }
 
@@ -61,6 +64,60 @@ export function resolveAmazonCategory(
   const fallback = cfg.defaultCategory || DEFAULT_AMAZON_CATEGORY;
   const strict = mapAmazonLabel(label, DEFAULT_AMAZON_LABEL_RULES, fallback, true);
   return strict ? { category: strict, matched: true } : { category: fallback, matched: false };
+}
+
+/** A category as both hosts know it: its name and its parent's name. */
+export interface AmazonCategoryEntry {
+  name: string;
+  /** The parent's NAME, null for a top-level category. */
+  parent: string | null;
+}
+
+/** Between a parent and its subcategory in a stored value. */
+export const AMAZON_CATEGORY_SEPARATOR = ' / ';
+
+/** What a picker stores for a category: `Parent / Child`, or the bare name of
+ *  a top-level one (which is also what every older build stored for it). */
+export function amazonCategoryValue(c: AmazonCategoryEntry): string {
+  return c.parent ? `${c.parent}${AMAZON_CATEGORY_SEPARATOR}${c.name}` : c.name;
+}
+
+export type AmazonCategoryLookup<T> =
+  | { kind: 'found'; entry: T }
+  /** More than one category fits. `entry` is the one builds before 1.74.0
+   *  filed under: the LAST fit in the list as given (their by-name map let
+   *  later entries win), so a value stored back then keeps filing where it
+   *  always did until the person picks again. Callers report it. */
+  | { kind: 'ambiguous'; entry: T; candidates: T[] }
+  | { kind: 'unknown' };
+
+/**
+ * The category a stored value names. Case-insensitive, since older values were
+ * typed by hand.
+ *
+ * 1. The full path: `Parent / Child`, or a top-level category's own name.
+ * 2. Otherwise a bare subcategory name, as stored before subcategories could be
+ *    picked: found when exactly one subcategory has it.
+ *
+ * A top-level category wins over a subcategory of the same name in step 1. Both
+ * pickers only ever offered top-level categories, so a bare name they stored
+ * meant that one.
+ */
+export function findAmazonCategory<T extends AmazonCategoryEntry>(
+  value: string,
+  categories: readonly T[],
+): AmazonCategoryLookup<T> {
+  const wanted = value.trim().toLowerCase();
+  if (!wanted) return { kind: 'unknown' };
+  const pick = (fits: T[]): AmazonCategoryLookup<T> => (
+    fits.length === 1
+      ? { kind: 'found', entry: fits[0] }
+      : { kind: 'ambiguous', entry: fits[fits.length - 1], candidates: fits }
+  );
+  const byPath = categories.filter((c) => amazonCategoryValue(c).trim().toLowerCase() === wanted);
+  if (byPath.length > 0) return pick(byPath);
+  const byName = categories.filter((c) => c.name.trim().toLowerCase() === wanted);
+  return byName.length > 0 ? pick(byName) : { kind: 'unknown' };
 }
 
 /**

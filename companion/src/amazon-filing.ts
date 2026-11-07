@@ -28,7 +28,9 @@
  * user wants fixed, and a charge whose order email arrives days after the
  * charge is only labelled on a later sync anyway.
  */
-import { DEFAULT_AMAZON_CATEGORY, resolveAmazonCategory, type AmazonMailConfig } from '../../shared/amazon-config.js';
+import {
+  DEFAULT_AMAZON_CATEGORY, amazonCategoryValue, findAmazonCategory, resolveAmazonCategory, type AmazonMailConfig,
+} from '../../shared/amazon-config.js';
 import { categoryFiledChange, type ChangeDraft } from '../../shared/change-entries.js';
 import { descriptionFromComment, txIdFromComment } from '../../shared/sync-core.js';
 import { accountTxKey } from '../../shared/transfers.js';
@@ -77,8 +79,10 @@ export interface AmazonFilingDeps {
    * and never appears here.
    */
   ruleCategorized?(): Promise<AmazonFilingRow[]>;
-  /** Every spending category, for name → id. */
-  categories(): Promise<Array<{ id: string; name: string }>>;
+  /** Every spending category, for path → id, in `getNativeSpendingCategories`
+   *  order: an ambiguous old value files under the last fit (see
+   *  `findAmazonCategory`), so the order is part of the contract. */
+  categories(): Promise<Array<{ id: string; name: string; parentName?: string | null }>>;
   readConfig(): Promise<AmazonMailConfig | null>;
   assign(activityId: string, categoryId: string): Promise<void>;
   log(msg: string): void;
@@ -101,6 +105,9 @@ export interface AmazonFilingResult {
   unknownCategories: string[];
   /** Labels no rule matched, left unfiled on purpose — see below. */
   needRule: string[];
+  /** Stored values (bare names from older builds) that fit more than one
+   *  category, with the one they were filed under as before. */
+  ambiguousCategories: Array<{ value: string; filedUnder: string }>;
 }
 
 /**
@@ -109,7 +116,7 @@ export interface AmazonFilingResult {
  * be reported as a sync failure.
  */
 export async function fileAmazonCharges(deps: AmazonFilingDeps): Promise<AmazonFilingResult> {
-  const result: AmazonFilingResult = { filed: 0, unknownCategories: [], needRule: [] };
+  const result: AmazonFilingResult = { filed: 0, unknownCategories: [], needRule: [], ambiguousCategories: [] };
   try {
     const seen = new Set<string>();
     const rows = [...(await deps.uncategorized()), ...((await deps.ruleCategorized?.()) ?? [])]
@@ -121,10 +128,19 @@ export async function fileAmazonCharges(deps: AmazonFilingDeps): Promise<AmazonF
 
     const cfg = (await deps.readConfig()) ?? {};
     const categories = await deps.categories();
-    // Case-insensitive: the label rules and the user's overrides are written by
-    // hand, and "personal care" should find "Personal Care" rather than
-    // silently file nothing.
-    const byName = new Map(categories.map((c) => [c.name.trim().toLowerCase(), c.id]));
+    const entries = categories.map((c) => ({ id: c.id, name: c.name, parent: c.parentName ?? null }));
+    /** The category a value names, by path (`findAmazonCategory`). A name two
+     *  subcategories share used to file under whichever came last; it still
+     *  does, so nothing stops filing, but it is reported so the card can ask
+     *  the person to pick the one they mean. */
+    const idOf = (value: string): string | undefined => {
+      const hit = findAmazonCategory(value, entries);
+      if (hit.kind === 'unknown') return undefined;
+      if (hit.kind === 'ambiguous' && !result.ambiguousCategories.some((a) => a.value === value)) {
+        result.ambiguousCategories.push({ value, filedUnder: amazonCategoryValue(hit.entry) });
+      }
+      return hit.entry.id;
+    };
     const nameOf = new Map(categories.map((c) => [c.id, c.name]));
     /** The change-log entry for a filing that just landed: what it was filed
      *  under before (a rule's choice, or nothing) and what it is now. A failed
@@ -165,7 +181,7 @@ export async function fileAmazonCharges(deps: AmazonFilingDeps): Promise<AmazonF
       // category is the user's own knob for exactly this kind of judgment call.
       if (/^mixed\b/i.test(label)) {
         const fallback = cfg.defaultCategory || DEFAULT_AMAZON_CATEGORY;
-        const fallbackId = byName.get(fallback.trim().toLowerCase());
+        const fallbackId = idOf(fallback);
         if (!fallbackId) {
           if (!result.unknownCategories.includes(fallback)) result.unknownCategories.push(fallback);
           continue;
@@ -191,7 +207,7 @@ export async function fileAmazonCharges(deps: AmazonFilingDeps): Promise<AmazonF
         if (!result.needRule.includes(label)) result.needRule.push(label);
         continue;
       }
-      const categoryId = byName.get(category.trim().toLowerCase());
+      const categoryId = idOf(category);
       if (!categoryId) {
         // A category the mapping names but this Wealthfolio does not have —
         // reported rather than retried silently every sync forever.

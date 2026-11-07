@@ -146,6 +146,68 @@ describe('fileAmazonCharges', () => {
     expect(assigned).toEqual([['a1', 'cat-housing']]);
   });
 
+  describe('subcategories', () => {
+    // Order as `getNativeSpendingCategories` returns it: grouped by parent name.
+    const TREE = [
+      { id: 'cat-hobbies', name: 'Hobbies', parentName: null },
+      { id: 'cat-hobbies-clothing', name: 'Clothing', parentName: 'Hobbies' },
+      { id: 'cat-shopping', name: 'Shopping', parentName: null },
+      { id: 'cat-shopping-clothing', name: 'Clothing', parentName: 'Shopping' },
+      { id: 'cat-shopping-home', name: 'Home Goods', parentName: 'Shopping' },
+    ];
+    const run = async (value: string, categories: typeof TREE = TREE) => {
+      const { deps, assigned } = make({
+        uncategorized: vi.fn(async () => [{ activityId: 'a1', notes: 'Amazon · Amazon: Tools · TRN-1' }]),
+        readConfig: vi.fn(async () => ({ labelOverrides: { Tools: value } } as any)),
+        categories: vi.fn(async () => categories),
+      });
+      const res = await fileAmazonCharges(deps as any);
+      return { res, assigned };
+    };
+
+    it('files a Parent / Child value under exactly that subcategory', async () => {
+      expect((await run('Hobbies / Clothing')).assigned).toEqual([['a1', 'cat-hobbies-clothing']]);
+      expect((await run('shopping / clothing')).assigned).toEqual([['a1', 'cat-shopping-clothing']]);
+    });
+
+    it('still files an old bare name that one subcategory has', async () => {
+      const { res, assigned } = await run('Home Goods');
+      expect(assigned).toEqual([['a1', 'cat-shopping-home']]);
+      expect(res.ambiguousCategories).toEqual([]);
+    });
+
+    it('keeps filing an old bare name two subcategories share where it always did, and reports it', async () => {
+      const { res, assigned } = await run('Clothing');
+      // Builds before this one let the last same-named category win.
+      expect(assigned).toEqual([['a1', 'cat-shopping-clothing']]);
+      expect(res.ambiguousCategories).toEqual([{ value: 'Clothing', filedUnder: 'Shopping / Clothing' }]);
+      expect(res.unknownCategories).toEqual([]);
+    });
+
+    it('takes a bare name to the top-level category over a same-named subcategory', async () => {
+      const tree = [...TREE, { id: 'cat-zz-shopping', name: 'Shopping', parentName: 'Zz Misc' }];
+      const { res, assigned } = await run('Shopping', tree);
+      expect(assigned).toEqual([['a1', 'cat-shopping']]);
+      expect(res.ambiguousCategories).toEqual([]);
+    });
+
+    it('reports a path this Wealthfolio does not have', async () => {
+      const { res, assigned } = await run('Hobbies / Home Goods');
+      expect(assigned).toEqual([]);
+      expect(res.unknownCategories).toEqual(['Hobbies / Home Goods']);
+    });
+
+    it('resolves the default category for a mixed order the same way', async () => {
+      const { deps, assigned } = make({
+        uncategorized: vi.fn(async () => [{ activityId: 'a1', notes: 'Amazon · Amazon: mixed — a + b · TRN-1' }]),
+        readConfig: vi.fn(async () => ({ defaultCategory: 'Shopping / Home Goods' } as any)),
+        categories: vi.fn(async () => TREE),
+      });
+      await fileAmazonCharges(deps as any);
+      expect(assigned).toEqual([['a1', 'cat-shopping-home']]);
+    });
+  });
+
   it('keeps filing the rest when one row is refused', async () => {
     const { deps } = make({
       uncategorized: vi.fn(async () => [
@@ -162,7 +224,7 @@ describe('fileAmazonCharges', () => {
     // It runs after a sync that already succeeded; a filing problem is not a
     // sync failure.
     const { deps } = make({ uncategorized: vi.fn(async () => { throw new Error('no database'); }) });
-    await expect(fileAmazonCharges(deps as any)).resolves.toEqual({ filed: 0, unknownCategories: [], needRule: [] });
+    await expect(fileAmazonCharges(deps as any)).resolves.toEqual({ filed: 0, unknownCategories: [], needRule: [], ambiguousCategories: [] });
   });
 
   it('does nothing, and reads nothing, when no row carries a label', async () => {
