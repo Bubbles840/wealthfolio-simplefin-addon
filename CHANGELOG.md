@@ -13,6 +13,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   with tap-to-open links. Import notices are off until you switch them on.
   Needs this release's companion.
 
+### Fixed
+- **Gains show on holdings accounts with a money market fund.** Brokerages send
+  the cash sweep fund with no cost, and one position with unknown cost makes
+  Wealthfolio hide the account's gain. A money market fund (ticker ending in
+  XX) that the feed values at $1 a share now gets $1 a share as its cost. It
+  shows from the next day's snapshot; a day already saved is not rewritten.
+
 ## [1.73.0] - 2026-11-05
 
 Update both halves. Update the add-on in the app as usual (no new

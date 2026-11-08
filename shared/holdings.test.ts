@@ -99,6 +99,44 @@ describe('toHoldingsSnapshot', () => {
     expect(snapshot?.positions.map((p) => p.avgCost)).toEqual(['101.25', undefined, undefined]);
   });
 
+  it('costs a money market fund at $1 a share when the feed sent no cost', () => {
+    const snapshot = toHoldingsSnapshot(account({ holdings: [
+      { symbol: 'ABCXX', shares: '100', market_value: '100.00', cost_basis: '0.00' },
+      { symbol: 'DEFXX', shares: '5', market_value: '5' },
+      // A cost the feed did send wins.
+      { symbol: 'GHIXX', shares: '10', market_value: '10.00', cost_basis: '9.50' },
+      // Not at $1: the cost stays unknown.
+      { symbol: 'JKLXX', shares: '10', market_value: '10.40', cost_basis: '0' },
+      // Not a money market ticker.
+      { symbol: 'ABC', shares: '1', market_value: '1.00', cost_basis: '0' },
+      // No market value to check against.
+      { symbol: 'MNOXX', shares: '5', cost_basis: '0' },
+    ] }));
+    expect(snapshot?.positions.map((p) => p.avgCost)).toEqual(['1', '1', '0.95', undefined, undefined, undefined]);
+  });
+
+  it.each([
+    ['12.345', '12.35', '1'], // value rounded to the cent
+    ['12.345', '12.34', '1'],
+    ['10', '10.01', '1'], // a cent either way
+    ['10', '9.99', '1'],
+    ['10', '10.02', undefined], // more than a cent
+    ['10', '9.98', undefined],
+    ['0', '0.00', undefined], // nothing held
+  ])('a money market line of %s shares worth %s gets cost %s', (shares, value, cost) => {
+    const snapshot = toHoldingsSnapshot(account({ holdings: [
+      { symbol: 'ABCXX', shares, market_value: value, cost_basis: '0' },
+    ] }));
+    expect(snapshot?.positions[0]?.avgCost).toBe(cost);
+  });
+
+  it('knows a money market ticker the feed sent in lower case', () => {
+    const snapshot = toHoldingsSnapshot(account({ holdings: [
+      { symbol: 'abcxx', shares: '5', market_value: '5.00', cost_basis: '0' },
+    ] }));
+    expect(snapshot?.positions[0]?.avgCost).toBe('1');
+  });
+
   it('dates the snapshot from the balance date, not from today', () => {
     const snapshot = toHoldingsSnapshot(
       account({ 'balance-date': 1735732800, holdings: [{ symbol: 'VTI', shares: '1' }] }),
