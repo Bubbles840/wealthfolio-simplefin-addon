@@ -324,10 +324,12 @@ real text in the test.
 Some providers (often 401(k) plans) send positions without a cost. A position
 like that keeps the cost Wealthfolio already has for it: the same average after
 a sale, and new shares (a contribution, a reinvested dividend, a buy) added at
-the feed's price that day. That is exact for a 401(k) contribution, which buys
-at the day's price, and an estimate for a brokerage buy, which filled at some
-price during the day. Only with no cost in Wealthfolio yet, or no price in the
-feed, does the sync ask you to enter it on the holding.
+the feed's price that day. Synced daily, that is exact for a 401(k)
+contribution, which buys at the day's price; after a gap of several days, or
+for a brokerage buy that filled during the day, it is an estimate. A split or
+shares transferred in also raise the count without new money, so after one,
+correct the cost on the holding. With no price in the feed the sync asks you
+once to enter the cost; a holding with no cost in Wealthfolio stays unknown.
 
 ### Starting balances
 

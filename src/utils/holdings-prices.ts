@@ -300,13 +300,18 @@ export async function syncHoldingsWithFeedPrices(
       const own = moving.has(key) || kept.has(key);
       const out = own ? { ...p, symbol: scoped(p.symbol), quoteMode: 'MANUAL' as const } : p;
       if (p.avgCost || !tag) return out;
-      // The holding as Wealthfolio has it now, under either symbol: one moving
-      // today is still held under the other.
-      const h = held.get(symbolKey(scoped(p.symbol))) ?? held.get(key);
+      // The holding as Wealthfolio has it now: on its per-account asset, or on
+      // the shared one found by id (a shown code drops an exchange suffix, and
+      // a bare code can be another listing's). One moving today is still held
+      // on the shared asset.
+      const h = held.get(symbolKey(scoped(p.symbol))) ?? heldById.get(ids.get(key) ?? '');
       if (!h) return out;
-      if (!own && modeOf(held.get(key))?.toUpperCase() === 'MANUAL') return out;
+      // Onto a shared asset only when the market prices it: the import writes
+      // the cost as the day's price of a hand-priced one. A mode the read does
+      // not report counts as hand-priced.
+      if (!own && modeOf(heldById.get(ids.get(key) ?? ''))?.toUpperCase() !== 'MARKET') return out;
       const carried = carriedCost(p.quantity, { quantity: h.quantity, cost: h.costBasis?.local }, priced.get(key)?.price);
-      if (carried.sharesRose) costUnknown.push(out.symbol);
+      if (carried.sharesRose) costUnknown.push(p.symbol);
       return carried.avgCost ? { ...out, avgCost: carried.avgCost } : out;
     }),
   };

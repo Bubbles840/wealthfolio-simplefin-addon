@@ -379,6 +379,35 @@ describe('syncHoldingsWithFeedPrices', () => {
       expect(r).toEqual({ imported: 1, skipped: 0, unresolvedSymbols: [] });
     });
 
+    it('finds the holding by asset id when its shown code drops the exchange suffix', async () => {
+      const wf = wealthfolio();
+      wf.seedAsset('SHOP.TO', 'MARKET', OLD, 'SHOP');
+      wf.snapshots.set(`wf-a|${DAY}`, snap('SHOP.TO', '10', DAY, '50'));
+      await syncHoldingsWithFeedPrices(wf.io, wf.pricing, 'wf-a', snap('SHOP.TO', '10', NEXT), [], 'AAAA1111', undefined, NOW);
+
+      expect(written(wf, NEXT).avgCost).toBe('50');
+    });
+
+    it('carries nothing onto a shared asset whose pricing mode the read does not report', async () => {
+      // It may be priced by hand, and the import would write the cost as its price.
+      const wf = withTicker();
+      const read = wf.pricing.getHoldings.getMockImplementation()!;
+      wf.pricing.getHoldings.mockImplementation(async (account: string) =>
+        (await read(account)).map((h) => ({ ...h, instrument: { ...h.instrument, pricingMode: undefined as unknown as string } })));
+      await syncHoldingsWithFeedPrices(wf.io, wf.pricing, 'wf-a', snap('VOO', '10', NEXT), [], 'AAAA1111', undefined, NOW);
+
+      expect(written(wf, NEXT).avgCost).toBeUndefined();
+    });
+
+    it('names the holding by its own symbol, not the per-account one, when it asks', async () => {
+      const wf = wealthfolio();
+      wf.seedAsset('VOO (AAAA1111)', 'MANUAL', OLD);
+      wf.snapshots.set(`wf-a|${DAY}`, snap('VOO (AAAA1111)', '10', DAY, '50'));
+      const r = await syncHoldingsWithFeedPrices(wf.io, wf.pricing, 'wf-a', snap('VOO', '12', NEXT), [], 'AAAA1111', undefined, NOW);
+
+      expect(r.costUnknown).toEqual(['VOO']);
+    });
+
     it('keeps it after a sale, which leaves the average cost as it was', async () => {
       const wf = withTicker();
       await syncHoldingsWithFeedPrices(wf.io, wf.pricing, 'wf-a', snap('VOO', '4', NEXT), [], 'AAAA1111', undefined, NOW);
