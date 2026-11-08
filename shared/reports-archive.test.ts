@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
-  emptyReportStore, withLive, withArchived, reportPeriod, parseReportsLink, reportsLink,
+  emptyReportStore, withLive, withArchived, reportPeriod, parseReportsLink, reportsLink, alertLink, parseAlertLink,
   notificationPreview, REPORT_ARCHIVE_LIMITS, REPORTS_MAX_BYTES, type ReportEdition,
 } from './reports-archive.js';
 
@@ -75,5 +75,21 @@ describe('notificationPreview', () => {
     expect(preview.startsWith('Daily check — Sep 23 · Groceries $42.10 left this week')).toBe(true);
     expect(preview).not.toContain('*');
     expect(preview.length).toBeLessThanOrEqual(180);
+  });
+});
+
+describe('links from an alert', () => {
+  it('round-trips a tab, and on Home a transaction story', () => {
+    expect(alertLink('home', 'act 1')).toBe('/addons/simplefin-sync?tab=home&story=act%201');
+    expect(parseAlertLink('?tab=home&story=act%201')).toEqual({ tab: 'home', story: 'act 1' });
+    expect(parseAlertLink(alertLink('home'))).toBeNull(); // the full path is not a query
+    expect(parseAlertLink('?tab=home')).toEqual({ tab: 'home' });
+    expect(parseAlertLink('?tab=settings&story=x')).toEqual({ tab: 'settings' });
+  });
+
+  it('leaves the Reports link and anything else alone', () => {
+    expect(parseAlertLink('?tab=reports&report=weekly')).toBeNull();
+    expect(parseAlertLink('')).toBeNull();
+    expect(parseAlertLink(undefined)).toBeNull();
   });
 });
