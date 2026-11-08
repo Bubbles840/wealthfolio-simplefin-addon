@@ -292,3 +292,19 @@ export const RECEIPTS_SINCE = '1.72.0';
 export function companionReadsReceipts(companionVersion: string | null): boolean {
   return companionVersion !== null && isAtLeastVersion(companionVersion.trim(), RECEIPTS_SINCE);
 }
+
+/**
+ * The first release whose companion files an Amazon label under a
+ * subcategory (`findAmazonCategory`, shared/amazon-config.ts). An older one
+ * looks a stored `Parent / Child` up as a plain name, finds nothing and files
+ * nothing, so the Amazon card offers subcategories only with a companion this
+ * new. Raise to the release that ships this.
+ */
+export const AMAZON_SUBCATEGORIES_SINCE = '1.74.0';
+
+/** True when `companionVersion` files Amazon labels under subcategories.
+ *  Null (no companion, or its version not read yet) is false: only the
+ *  companion files Amazon charges, and an unknown one may be older. */
+export function companionFilesAmazonSubcategories(companionVersion: string | null): boolean {
+  return companionVersion !== null && isAtLeastVersion(companionVersion.trim(), AMAZON_SUBCATEGORIES_SINCE);
+}

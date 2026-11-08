@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'fs';
 import { join } from 'path';
 import {
+  AMAZON_SUBCATEGORIES_SINCE, companionFilesAmazonSubcategories,
   addonUnderstandsDividends, companionReadsReceipts, companionUnderstandsDividends, RECEIPTS_SINCE,
   companionSendsToHomeAssistant, companionUnderstandsIgnoreRules, companionUnderstandsLoanBalances, companionUnderstandsRelinks,
   DIVIDEND_SECURITIES_SINCE, HOME_ASSISTANT_SINCE,
@@ -155,6 +156,15 @@ describe('the receipt reader gate', () => {
     expect(companionReadsReceipts(RECEIPTS_SINCE)).toBe(true);
     expect(companionReadsReceipts('1.71.0')).toBe(false);
     expect(companionReadsReceipts(null)).toBe(false);
+  });
+});
+
+describe('companionFilesAmazonSubcategories', () => {
+  it('needs a companion of AMAZON_SUBCATEGORIES_SINCE or newer', () => {
+    const [maj, min] = AMAZON_SUBCATEGORIES_SINCE.split('.').map(Number);
+    expect(companionFilesAmazonSubcategories(AMAZON_SUBCATEGORIES_SINCE)).toBe(true);
+    expect(companionFilesAmazonSubcategories(`${maj}.${min - 1}.9`)).toBe(false);
+    expect(companionFilesAmazonSubcategories(null)).toBe(false);
   });
 });
 

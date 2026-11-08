@@ -882,6 +882,9 @@ async function fileAmazonLabelledCharges(wfClient: WealthfolioClient, run?: stri
   if (res.unknownCategories.length > 0) {
     log(`Amazon filing: no such category in Wealthfolio — ${res.unknownCategories.join(', ')}`);
   }
+  for (const { value, filedUnder } of res.ambiguousCategories) {
+    log(`Amazon filing: "${value}" fits more than one category; filed under ${filedUnder} as before. Pick the one you mean on the Amazon card.`);
+  }
 }
 
 /**

@@ -10,10 +10,10 @@
  *
  * MAIN CATEGORIES ONLY, deliberately. Every rule in
  * `DEFAULT_AMAZON_LABEL_RULES` targets a top-level category (Groceries,
- * Housing, Electronics …) and `defaultCategory` is one too, so the feature has
- * never filed an Amazon charge under a subcategory. A picker offering them
- * would imply a precision the rest of the feature does not have — and would
- * need paging, since there are ~52.
+ * Housing, Electronics …) and `defaultCategory` is one too. Subcategories are
+ * picked on the Amazon card instead: here they would need paging, since there
+ * are ~52. A top-level name stored bare is still exact (`findAmazonCategory`
+ * prefers a top-level category over a subcategory of the same name).
  */
 import type { InlineKeyboard } from '../../shared/telegram.js';
 import { MENU_CALLBACK_PREFIX } from '../../shared/categorize-menu.js';
