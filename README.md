@@ -319,6 +319,16 @@ add-on and the companion are both on 1.69.0 or later. To add your bank's
 wording, add an entry to `DIVIDEND_PATTERNS` in `shared/dividends.ts` with its
 real text in the test.
 
+### Cost of investment positions
+
+Some providers (often 401(k) plans) send positions without a cost. A position
+like that keeps the cost Wealthfolio already has for it: the same average after
+a sale, and new shares (a contribution, a reinvested dividend, a buy) added at
+the feed's price that day. That is exact for a 401(k) contribution, which buys
+at the day's price, and an estimate for a brokerage buy, which filled at some
+price during the day. Only with no cost in Wealthfolio yet, or no price in the
+feed, does the sync ask you to enter it on the holding.
+
 ### Starting balances
 
 On an account's first sync the addon reads its current balance from

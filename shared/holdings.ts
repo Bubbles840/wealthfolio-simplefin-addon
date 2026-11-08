@@ -159,25 +159,36 @@ function averageCost(
 
 /**
  * The per-share cost to carry onto a position the feed sent without one, from
- * what Wealthfolio already holds for it: its total cost over its shares.
+ * what Wealthfolio already holds for it (its total cost and shares).
  *
- * Carried only while the share count has not gone up: a sale keeps the average
- * cost, but new shares were bought at a price nobody sent, and carrying the old
- * average would understate the cost. `sharesRose` says which case it was, so
- * the caller can ask for the cost instead. The held figures come from the
- * host's holdings read, which gives numbers: they are read as decimal strings,
- * and anything else (an exponent, zero, nothing) carries nothing.
+ * - Shares the same or fewer: the same average cost (a sale keeps it).
+ * - Shares up: the old total cost plus the new shares at `price`, the feed's
+ *   price that day (market value ÷ shares). Exact for a 401(k) contribution or
+ *   a reinvested dividend, which buy at that day's price; close for a
+ *   brokerage buy, which filled at some price during the day.
+ * - Shares up and no usable price: `sharesRose`, so the caller can ask for the
+ *   cost instead of making one up.
+ *
+ * The held figures come from the host's holdings read, which gives numbers:
+ * they are read as decimal strings, and anything else (an exponent, zero,
+ * nothing) carries nothing.
  */
 export function carriedCost(
   shares: string,
   held: { quantity?: number | string | null; cost?: number | string | null },
+  price?: string | null,
 ): { avgCost?: string; sharesRose?: true } {
   const now = parseScaled(shares);
   const before = parseScaled(held.quantity ?? null);
-  if (now === null || before === null || before === 0n) return {};
-  if (now > before) return { sharesRose: true };
-  const avgCost = averageCost(held.cost === null || held.cost === undefined ? null : String(held.cost), null, String(held.quantity));
-  return avgCost ? { avgCost } : {};
+  const cost = parseScaled(held.cost ?? null);
+  if (now === null || before === null || before === 0n || cost === null || cost === 0n) return {};
+  if (now <= before) {
+    const avgCost = averageCost(String(held.cost), null, String(held.quantity));
+    return avgCost ? { avgCost } : {};
+  }
+  const perShare = parseScaled(price ?? null);
+  if (perShare === null || perShare === 0n) return { sharesRose: true };
+  return { avgCost: divideScaled(cost + ((now - before) * perShare) / PRICE_SCALE, now) };
 }
 
 function formatMicros(micros: bigint): string {

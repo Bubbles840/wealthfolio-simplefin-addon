@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **Holdings keep their cost when the feed sends none** (common for 401(k)
+  plans). The cost Wealthfolio already has is carried to the new snapshot;
+  shares added since (a contribution, a reinvested dividend, a buy) are costed
+  at the feed's price that day. Before, the snapshot was stored at cost 0 and
+  Wealthfolio showed no gain for the account.
+
 ## [1.73.0] - 2026-11-05
 
 Update both halves. Update the add-on in the app as usual (no new

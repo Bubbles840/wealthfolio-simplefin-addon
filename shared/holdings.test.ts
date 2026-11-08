@@ -373,12 +373,26 @@ describe('carriedCost', () => {
     expect(carriedCost('5', { quantity: 10, cost: 500 })).toEqual({ avgCost: '50' });
   });
 
-  it('carries nothing when the shares went up, and says so', () => {
+  it('adds new shares at the feed price that day (a contribution, a reinvested dividend)', () => {
+    // (500 + 2 × 60) ÷ 12
+    expect(carriedCost('12', { quantity: 10, cost: 500 }, '60')).toEqual({ avgCost: '51.66666667' });
+    expect(carriedCost('10.5', { quantity: 10, cost: 500 }, '52.5')).toEqual({ avgCost: '50.11904762' });
+  });
+
+  it('ignores the price when the shares did not go up', () => {
+    expect(carriedCost('10', { quantity: 10, cost: 500 }, '999')).toEqual({ avgCost: '50' });
+  });
+
+  it('carries nothing when the shares went up with no usable price, and says so', () => {
     expect(carriedCost('11', { quantity: 10, cost: 500 })).toEqual({ sharesRose: true });
+    expect(carriedCost('11', { quantity: 10, cost: 500 }, '0')).toEqual({ sharesRose: true });
+    expect(carriedCost('11', { quantity: 10, cost: 500 }, 'n/a')).toEqual({ sharesRose: true });
   });
 
   it('carries nothing without a held cost or share count', () => {
     expect(carriedCost('10', { quantity: 10, cost: 0 })).toEqual({});
+    // Zero is unknown: the new shares alone would understate the cost.
+    expect(carriedCost('12', { quantity: 10, cost: 0 }, '60')).toEqual({});
     expect(carriedCost('10', { quantity: 10 })).toEqual({});
     expect(carriedCost('10', { quantity: 0, cost: 500 })).toEqual({});
     expect(carriedCost('10', {})).toEqual({});

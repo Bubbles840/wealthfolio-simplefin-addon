@@ -386,12 +386,32 @@ describe('syncHoldingsWithFeedPrices', () => {
       expect(written(wf, NEXT).avgCost).toBe('50');
     });
 
-    it('asks for the cost instead when the share count went up', async () => {
+    it('adds new shares at the feed price when the share count went up', async () => {
+      const wf = withTicker();
+      const r = await syncHoldingsWithFeedPrices(wf.io, wf.pricing, 'wf-a', snap('VOO', '12', NEXT),
+        [{ symbol: 'VOO', price: '60', currency: 'USD' }], 'AAAA1111', undefined, NOW);
+
+      expect(written(wf, NEXT).avgCost).toBe('51.66666667');
+      expect(r.costUnknown).toBeUndefined();
+    });
+
+    it('asks for the cost instead when the share count went up and the feed gave no price', async () => {
       const wf = withTicker();
       const r = await syncHoldingsWithFeedPrices(wf.io, wf.pricing, 'wf-a', snap('VOO', '12', NEXT), [], 'AAAA1111', undefined, NOW);
 
       expect(written(wf, NEXT).avgCost).toBeUndefined();
       expect(r.costUnknown).toEqual(['VOO']);
+    });
+
+    it('does not ask when that day\'s snapshot already exists and nothing is written', async () => {
+      // The feed's count moved after today's snapshot was saved: the import is
+      // skipped, so there is no cost-less snapshot to ask about.
+      const wf = withTicker();
+      await syncHoldingsWithFeedPrices(wf.io, wf.pricing, 'wf-a', snap('VOO', '10', NEXT), [], 'AAAA1111', undefined, NOW);
+      const r = await syncHoldingsWithFeedPrices(wf.io, wf.pricing, 'wf-a', snap('VOO', '12', NEXT), [], 'AAAA1111', undefined, NOW);
+
+      expect(r.imported).toBe(0);
+      expect(r.costUnknown).toBeUndefined();
     });
 
     it('asks only on the day it writes the snapshot', async () => {

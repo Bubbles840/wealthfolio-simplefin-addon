@@ -4912,7 +4912,7 @@ async function runSyncPass(
         // A cost nobody sent cannot be made up here: the person has it, on
         // their provider's positions page.
         for (const symbol of outcome.costUnknown ?? []) {
-          errors.push(`No cost basis for ${symbol} (${sfAccount.name}): its share count went up and SimpleFin sent no cost. Enter the cost on the holding in Wealthfolio, or gains for the account stay unknown.`);
+          errors.push(`No cost basis for ${symbol} (${sfAccount.name}): its share count went up and SimpleFin sent neither a cost nor a price. Enter the cost on the holding in Wealthfolio, or gains for the account stay unknown.`);
         }
         for (const symbol of outcome.unresolvedSymbols) {
           // Deduped across accounts: the same unresolvable ticker in two

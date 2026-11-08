@@ -40,7 +40,8 @@
  * day (last write wins), so the market value is what stays.
  *
  * A holding the feed sends without a cost keeps the cost Wealthfolio already has
- * for it (shared/holdings.ts `carriedCost`), from the same holdings read: a
+ * for it, new shares added at the feed's price that day (shared/holdings.ts
+ * `carriedCost`), from the same holdings read: a
  * snapshot without one is stored at cost 0, and Wealthfolio then shows no gain
  * for the account at all. Never onto a shared asset the person prices by hand,
  * where the import would write that cost as the day's price.
@@ -304,7 +305,7 @@ export async function syncHoldingsWithFeedPrices(
       const h = held.get(symbolKey(scoped(p.symbol))) ?? held.get(key);
       if (!h) return out;
       if (!own && modeOf(held.get(key))?.toUpperCase() === 'MANUAL') return out;
-      const carried = carriedCost(p.quantity, { quantity: h.quantity, cost: h.costBasis?.local });
+      const carried = carriedCost(p.quantity, { quantity: h.quantity, cost: h.costBasis?.local }, priced.get(key)?.price);
       if (carried.sharesRose) costUnknown.push(out.symbol);
       return carried.avgCost ? { ...out, avgCost: carried.avgCost } : out;
     }),
