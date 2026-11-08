@@ -438,6 +438,22 @@ The companion logs its version on startup (`Starting companion v…`), and the
 addon shows a banner when the tab, the installed addon and the companion
 are different versions, naming the fix (reload, upload the zip, or pull the image).
 
+#### Home Assistant alerts
+
+Under **Settings → Home Assistant**, the companion can also send alerts to Home
+Assistant, through its notify service (with a long-lived access token) or a
+webhook. Problem alerts are sent: sync failing, balance drift, unlinked
+transfers, large transactions, new accounts, refusals and duplicates removed. A
+notice for each import is off until you switch it on. Alerts the add-on raises
+wait for the companion's next pass, within 5 minutes.
+
+A rejected token, a wrong service or webhook, or a redirect pauses delivery
+until you change the address, token or service, or send a test, so a bad token
+is not retried (and counted as a failed login) every few minutes. While Home
+Assistant is down, the companion retries less and less often, up to every 4
+hours; changing the address, token or service ends that wait too. Alerts that wait
+more than a week are dropped, and the card says how many.
+
 #### Several Wealthfolio profiles
 
 Since 3.10, Wealthfolio can hold several profiles. With more than one, or with

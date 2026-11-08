@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Alerts to Home Assistant (#60).** Under Settings → Home Assistant, the
+  companion sends alerts through Home Assistant's notify service or a webhook,
+  with tap-to-open links. Import notices are off until you switch them on.
+  Needs this release's companion.
+
 ## [1.73.0] - 2026-11-05
 
 Update both halves. Update the add-on in the app as usual (no new

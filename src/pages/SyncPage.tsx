@@ -15,7 +15,7 @@ import { HomeTab } from '../tabs/HomeTab';
 import { useTelegramDraft } from '../tabs/NotificationsTab';
 import { SettingsTab, CARD as SETTINGS_CARD } from '../tabs/SettingsTab';
 import { ReportsTab } from '../tabs/ReportsTab';
-import { parseReportsLink } from '../../shared/reports-archive';
+import { parseAlertLink, parseReportsLink } from '../../shared/reports-archive';
 import type { AuditSnapshotRead } from '../../shared/audit-snapshot';
 import type { CashForecastRead } from '../../shared/cash-forecast';
 import { useReportsInbox } from '../hooks/useReportsInbox';
@@ -86,7 +86,9 @@ interface Props {
 export function SyncPage({ ctx, store, onReset, scheduler, initialSearch }: Props) {
   // A notification tap lands here with the report it was about.
   const link = parseReportsLink(initialSearch);
-  const [activeTab, setActiveTab] = useState<TabId>(link ? 'reports' : 'home');
+  // ...or with the alert it was about (shared/home-assistant.ts).
+  const alertLink = link ? null : parseAlertLink(initialSearch);
+  const [activeTab, setActiveTab] = useState<TabId>(link ? 'reports' : alertLink?.tab ?? 'home');
   const [lastSyncAt, setLastSyncAt] = useState<Date | null>(null);
   const [imported, setImported] = useState<number | null>(null);
   const [syncing, setSyncing] = useState(false);
@@ -225,12 +227,15 @@ export function SyncPage({ ctx, store, onReset, scheduler, initialSearch }: Prop
    */
   // A deep link counts as the user's choice: the remembered tab must not
   // overwrite the report they tapped a notification to see.
-  const hasUserActed = useRef({ tab: link !== null, checklist: false, cards: false, dismissals: false });
+  const hasUserActed = useRef({ tab: link !== null || alertLink !== null, checklist: false, cards: false, dismissals: false });
   // A later tap while the page is already open arrives as a new query.
   useEffect(() => {
     if (link) {
       hasUserActed.current.tab = true;
       setActiveTab('reports');
+    } else if (alertLink) {
+      hasUserActed.current.tab = true;
+      setActiveTab(alertLink.tab);
     }
   }, [initialSearch]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -732,6 +737,7 @@ export function SyncPage({ ctx, store, onReset, scheduler, initialSearch }: Prop
           the budget under it. One tab since 1.57 (was Overview + Budget). */}
       <TabPanel tab="home" active={activeTab}>
         <HomeTab
+          linkedStory={alertLink?.story ? { activityId: alertLink.story } : undefined}
           ctx={ctx}
           store={store}
           mapping={mapping}
