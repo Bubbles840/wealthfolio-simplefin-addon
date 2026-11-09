@@ -7,6 +7,7 @@ import { Button, SectionLabel, Why } from '../components/ui';
 import { SetupChecklist } from '../components/SetupChecklist';
 import { UncategorizedList, useDismissals } from '../components/UncategorizedList';
 import { WhyCard } from '../components/WhyCard';
+import { HoldingsWithoutCost } from '../components/HoldingsWithoutCost';
 import { checksToLookAt } from '../components/AuditViews';
 import type { AuditSnapshotRead } from '../../shared/audit-snapshot';
 import { snapshotTripwire, tripwireLine } from '../../shared/spending-tripwire';
@@ -273,6 +274,8 @@ export function HomeTab({
           </div>
         </div>
       )}
+      {/* Holdings Wealthfolio has no cost for: the sync says so once, this stays. */}
+      <HoldingsWithoutCost ctx={ctx} mapping={mapping} syncing={syncing} />
 
       {/* What the reconcile sweep deleted. A needs-to-be-seen notice rather than
           a collapsible detail: rows were removed from the user's ledger without

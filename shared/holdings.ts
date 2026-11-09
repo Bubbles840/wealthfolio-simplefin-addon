@@ -195,6 +195,25 @@ export function carriedCost(
   return { avgCost: divideScaled(cost + ((now - before) * perShare) / PRICE_SCALE, now) };
 }
 
+/**
+ * The holdings Wealthfolio has no cost for: shares held, and a total cost of 0
+ * or none. The account's gain stays hidden while any is listed. Cash lines and
+ * holdings without an instrument are not positions and are left out.
+ */
+export function holdingsWithoutCost(
+  holdings: ReadonlyArray<{
+    holdingType?: string | null;
+    instrument?: { symbol?: string | null } | null;
+    quantity?: number | string | null;
+    costBasis?: { local?: number | string | null } | null;
+  }>,
+): string[] {
+  return holdings
+    .filter((h) => String(h.holdingType ?? '').toLowerCase() !== 'cash' && !!h.instrument?.symbol?.trim())
+    .filter((h) => Number(h.quantity) > 0 && !(Number(h.costBasis?.local) > 0))
+    .map((h) => h.instrument!.symbol!.trim());
+}
+
 /** A US money market fund's ticker: five letters ending in XX (e.g. ABCXX). */
 const MONEY_MARKET_TICKER = /^[A-Z]{3}XX$/;
 /** How far a money market line's value may sit from its share count: a cent. */

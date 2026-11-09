@@ -331,7 +331,10 @@ transferred in raise the count without new money and are costed as a buy, so
 correct the cost on the holding after one. When the share count changes by
 1.5× or more either way (a split, or a large buy or sale) the sync does not
 guess: it asks you once to enter the cost, as it does when the feed has no
-price for new shares. A holding with no cost in Wealthfolio stays unknown.
+price for new shares or Wealthfolio holds the cost in another currency. A
+holding with no cost in Wealthfolio stays unknown, and Home lists it under
+"Wealthfolio has no cost for…" until you enter one (a new holding the feed
+sends without a cost shows there too). That list repeats no alert.
 
 ### Starting balances
 

@@ -39,9 +39,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   401(k) plans). The cost Wealthfolio already has is carried to the new
   snapshot; shares added since (a contribution, a reinvested dividend, a buy)
   are costed at the feed's price that day. A share count that changes by 1.5×
-  or more either way (a split, or a large buy or sale) asks for the cost
-  instead. Before, the snapshot was stored at cost 0 and Wealthfolio showed no
-  gain for the account.
+  or more either way (a split, or a large buy or sale), or a cost held in
+  another currency, asks for the cost instead. Home lists every holding
+  Wealthfolio has no cost for until one is entered. Before, the snapshot was
+  stored at cost 0 and Wealthfolio showed no gain for the account.
 
 ## [1.73.0] - 2026-11-05
 

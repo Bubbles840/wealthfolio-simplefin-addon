@@ -1,5 +1,5 @@
 import { afterEach, describe, it, expect, vi } from 'vitest';
-import { accountTag, carriedCost, feedPrices, holdingSymbol, scopedSymbol, toHoldingsSnapshot } from './holdings.js';
+import { accountTag, carriedCost, feedPrices, holdingsWithoutCost, holdingSymbol, scopedSymbol, toHoldingsSnapshot } from './holdings.js';
 import type { SimplefinAccount } from './types.js';
 
 const account = (over: Partial<SimplefinAccount> = {}): SimplefinAccount => ({
@@ -456,5 +456,18 @@ describe('carriedCost', () => {
     expect(carriedCost('10', { quantity: 0, cost: 500 })).toEqual({});
     expect(carriedCost('10', {})).toEqual({});
     expect(carriedCost('10', { quantity: 1e-7, cost: 500 })).toEqual({});
+  });
+});
+
+describe('holdingsWithoutCost', () => {
+  it('is a holding with shares and a cost of 0 or none; not cash, not sold out, not one with a cost', () => {
+    expect(holdingsWithoutCost([
+      { holdingType: 'security', instrument: { symbol: 'NO COST' }, quantity: 5, costBasis: { local: 0 } },
+      { holdingType: 'security', instrument: { symbol: 'NULL COST' }, quantity: '2.5', costBasis: null },
+      { holdingType: 'security', instrument: { symbol: 'HAS COST' }, quantity: 5, costBasis: { local: 100 } },
+      { holdingType: 'security', instrument: { symbol: 'SOLD' }, quantity: 0, costBasis: { local: 0 } },
+      { holdingType: 'cash', instrument: { symbol: '$CASH-USD' }, quantity: 100, costBasis: { local: 0 } },
+      { holdingType: 'security', instrument: null, quantity: 5, costBasis: null },
+    ])).toEqual(['NO COST', 'NULL COST']);
   });
 });
