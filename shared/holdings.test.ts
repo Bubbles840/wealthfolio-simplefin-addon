@@ -408,8 +408,7 @@ describe('carriedCost', () => {
   });
 
   it('stays the same after a sale', () => {
-    // Half sold, the value halved with it: a sale, not a reverse split.
-    expect(carriedCost('5', { quantity: 10, cost: 500, price: 60 }, '60')).toEqual({ avgCost: '50' });
+    expect(carriedCost('8', { quantity: 10, cost: 500 }, '60')).toEqual({ avgCost: '50' });
   });
 
   it('adds new shares at the feed price that day (a contribution, a reinvested dividend)', () => {
@@ -418,35 +417,18 @@ describe('carriedCost', () => {
     expect(carriedCost('10.5', { quantity: 10, cost: 500 }, '52.5')).toEqual({ avgCost: '50.11904762' });
   });
 
-  describe('a split', () => {
-    it('keeps the total cost when the shares jump and the value stays (10-for-1)', () => {
-      // 100 shares at $100 cost $10,000; then 1,000 shares at $10.
-      expect(carriedCost('1000', { quantity: 100, cost: 10000, price: 100 }, '10')).toEqual({ avgCost: '10.00' });
-    });
-
-    it('keeps the total cost on a reverse split (1-for-10)', () => {
-      expect(carriedCost('10', { quantity: 100, cost: 1000, price: 9 }, '90')).toEqual({ avgCost: '100.00' });
-    });
-
-    it('allows the value to move up to 10% on the day', () => {
-      expect(carriedCost('200', { quantity: 100, cost: 5000, price: 100 }, '55')).toEqual({ avgCost: '25.00' });
-      // 11% off: not a split, so a purchase at the day's price.
-      expect(carriedCost('200', { quantity: 100, cost: 5000, price: 100 }, '55.5')).toEqual({ avgCost: '52.75' });
-    });
-
-    it('treats a jump whose value moved as a purchase or a sale (today\'s rules)', () => {
-      // Shares doubled and so did the value: 100 bought at $50.
-      expect(carriedCost('200', { quantity: 100, cost: 5000, price: 50 }, '50')).toEqual({ avgCost: '50.00' });
-      // Most sold: the average stays.
-      expect(carriedCost('10', { quantity: 100, cost: 5000, price: 50 }, '50')).toEqual({ avgCost: '50' });
-    });
-
-    it('asks when the shares jump and a price to compare is missing', () => {
+  describe('a share count that changes by 1.5× or more', () => {
+    it('asks, whether it went up or down, and whatever the price (a split, a large buy or sale)', () => {
+      // 10-for-1 split, same value.
       expect(carriedCost('1000', { quantity: 100, cost: 10000 }, '10')).toEqual({ ask: true });
-      expect(carriedCost('10', { quantity: 100, cost: 1000, price: 9 })).toEqual({ ask: true });
+      // 1-for-10 reverse split.
+      expect(carriedCost('10', { quantity: 100, cost: 1000 }, '90')).toEqual({ ask: true });
+      // Exactly 1.5× either way.
+      expect(carriedCost('150', { quantity: 100, cost: 5000 }, '50')).toEqual({ ask: true });
+      expect(carriedCost('100', { quantity: 150, cost: 5000 })).toEqual({ ask: true });
     });
 
-    it('does not look for a split under 1.5×', () => {
+    it('costs a change under 1.5× as before', () => {
       expect(carriedCost('149', { quantity: 100, cost: 5000 }, '50')).toEqual({ avgCost: '50.00' });
       expect(carriedCost('67', { quantity: 100, cost: 5000 })).toEqual({ avgCost: '50' });
     });

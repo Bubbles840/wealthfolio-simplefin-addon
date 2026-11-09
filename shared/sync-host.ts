@@ -167,7 +167,7 @@ export interface HoldingsSyncOutcome {
   pricedFromFeed?: string[];
   /** Holdings written without a cost: the feed sent none and the share count
    *  changed in a way that cannot be costed (a rise with no feed price, or a
-   *  large change that cannot be confirmed as a split). Absent on a host that
+   *  change of 1.5× or more either way, which may be a split). Absent on a host that
    *  does not carry costs. */
   costUnknown?: string[];
 }

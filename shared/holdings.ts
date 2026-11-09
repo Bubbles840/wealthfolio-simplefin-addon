@@ -159,19 +159,14 @@ function averageCost(
 
 /** A share count that changes by this factor or more, either way, may be a split. */
 const SPLIT_FACTOR_PERCENT = 150n;
-/** A split leaves the position's value about where it was: within this many percent. */
-const SPLIT_VALUE_PERCENT = 10n;
 
 /**
  * The per-share cost to carry onto a position the feed sent without one, from
- * what Wealthfolio already holds for it (its total cost, shares and last price).
+ * what Wealthfolio already holds for it (its total cost and shares).
  *
- * - Shares changed by 1.5× or more, either way, and the position worth within
- *   10% of what it was (the feed's price now against the held price): a split.
- *   The total cost stays; only the shares change.
- * - Shares changed that much and the value cannot be compared (a price is
- *   missing): `ask`. A split read as a purchase or a sale writes a confident
- *   wrong cost; unknown is better.
+ * - Shares changed by 1.5× or more, either way: `ask`. That may be a split,
+ *   which keeps the total cost, or a large buy or sale, which does not; read
+ *   the wrong way it writes a confident wrong cost, and unknown is better.
  * - Otherwise, shares the same or fewer: the same average cost (a sale keeps it).
  * - Shares up: the old total cost plus the new shares at `price`, the feed's
  *   price that day (market value ÷ shares). Exact for a 401(k) contribution or
@@ -185,27 +180,19 @@ const SPLIT_VALUE_PERCENT = 10n;
  */
 export function carriedCost(
   shares: string,
-  held: { quantity?: number | string | null; cost?: number | string | null; price?: number | string | null },
+  held: { quantity?: number | string | null; cost?: number | string | null },
   price?: string | null,
 ): { avgCost?: string; ask?: true } {
   const now = parseScaled(shares);
   const before = parseScaled(held.quantity ?? null);
   const cost = parseScaled(held.cost ?? null);
   if (now === null || before === null || before === 0n || cost === null || cost === 0n) return {};
-  const perShare = parseScaled(price ?? null);
-  const heldPrice = parseScaled(held.price ?? null);
-  const big = now * 100n >= before * SPLIT_FACTOR_PERCENT || before * 100n >= now * SPLIT_FACTOR_PERCENT;
-  if (big) {
-    if (!perShare || !heldPrice) return { ask: true };
-    const valueNow = now * perShare;
-    const valueBefore = before * heldPrice;
-    const gap = valueNow > valueBefore ? valueNow - valueBefore : valueBefore - valueNow;
-    if (gap * 100n <= valueBefore * SPLIT_VALUE_PERCENT) return { avgCost: divideScaled(cost, now) };
-  }
+  if (now * 100n >= before * SPLIT_FACTOR_PERCENT || before * 100n >= now * SPLIT_FACTOR_PERCENT) return { ask: true };
   if (now <= before) {
     const avgCost = averageCost(String(held.cost), null, String(held.quantity));
     return avgCost ? { avgCost } : {};
   }
+  const perShare = parseScaled(price ?? null);
   if (!perShare) return { ask: true };
   return { avgCost: divideScaled(cost + ((now - before) * perShare) / PRICE_SCALE, now) };
 }

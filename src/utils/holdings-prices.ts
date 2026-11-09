@@ -314,7 +314,7 @@ export async function syncHoldingsWithFeedPrices(
       if (!own && modeOf(heldById.get(ids.get(key) ?? ''))?.toUpperCase() !== 'MARKET') return out;
       // A cost in another currency cannot be added to: carry nothing.
       if (h.localCurrency && p.currency && h.localCurrency.toUpperCase() !== p.currency.toUpperCase()) return out;
-      const carried = carriedCost(p.quantity, { quantity: h.quantity, cost: h.costBasis?.local, price: h.price }, priced.get(key)?.price);
+      const carried = carriedCost(p.quantity, { quantity: h.quantity, cost: h.costBasis?.local }, priced.get(key)?.price);
       if (carried.ask) costUnknown.push(p.symbol);
       return carried.avgCost ? { ...out, avgCost: carried.avgCost } : out;
     }),

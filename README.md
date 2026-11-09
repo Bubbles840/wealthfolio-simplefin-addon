@@ -326,13 +326,12 @@ like that keeps the cost Wealthfolio already has for it: the same average after
 a sale, and new shares (a contribution, a reinvested dividend, a buy) added at
 the feed's price that day. Synced daily, that is exact for a 401(k)
 contribution, which buys at the day's price; after a gap of several days, or
-for a brokerage buy that filled during the day, it is an estimate. A split is
-recognised when the share count changes by 1.5× or more while the position is
-worth about the same (within 10%): the total cost is kept. Shares transferred
-in raise the count without new money and are costed as a buy, so correct the
-cost on the holding after one. When the sync cannot cost a change (no price in
-the feed, or a large change it cannot confirm as a split) it asks you once to
-enter the cost; a holding with no cost in Wealthfolio stays unknown.
+for a brokerage buy that filled during the day, it is an estimate. Shares
+transferred in raise the count without new money and are costed as a buy, so
+correct the cost on the holding after one. When the share count changes by
+1.5× or more either way (a split, or a large buy or sale) the sync does not
+guess: it asks you once to enter the cost, as it does when the feed has no
+price for new shares. A holding with no cost in Wealthfolio stays unknown.
 
 ### Starting balances
 

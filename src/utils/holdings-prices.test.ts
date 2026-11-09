@@ -408,14 +408,15 @@ describe('syncHoldingsWithFeedPrices', () => {
       expect(written(wf, NEXT).avgCost).toBe('50');
     });
 
-    it('keeps the total cost through a split, from the held price', async () => {
+    it('asks instead of guessing when the shares change by 1.5× or more (maybe a split)', async () => {
       const wf = withTicker();
       wf.marketQuote(wf.assets.get('VOO')!.id, DAY, 60);
-      await syncHoldingsWithFeedPrices(wf.io, wf.pricing, 'wf-a', snap('VOO', '40', NEXT),
+      const r = await syncHoldingsWithFeedPrices(wf.io, wf.pricing, 'wf-a', snap('VOO', '40', NEXT),
         [{ symbol: 'VOO', price: '15', currency: 'USD' }], 'AAAA1111', undefined, NOW);
 
-      // 10 shares cost 500; 4-for-1 at about the same value: 40 shares, cost still 500.
-      expect(written(wf, NEXT).avgCost).toBe('12.50');
+      // 10 shares cost 500; 40 shares now, at about the same value: no cost written.
+      expect(written(wf, NEXT).avgCost).toBeUndefined();
+      expect(r.costUnknown).toEqual(['VOO']);
     });
 
     it('carries nothing onto a shared asset whose pricing mode the read does not report', async () => {
@@ -441,7 +442,7 @@ describe('syncHoldingsWithFeedPrices', () => {
     it('keeps it after a sale, which leaves the average cost as it was', async () => {
       const wf = withTicker();
       wf.marketQuote(wf.assets.get('VOO')!.id, DAY, 60);
-      await syncHoldingsWithFeedPrices(wf.io, wf.pricing, 'wf-a', snap('VOO', '4', NEXT), priceOf('VOO', '60'), 'AAAA1111', undefined, NOW);
+      await syncHoldingsWithFeedPrices(wf.io, wf.pricing, 'wf-a', snap('VOO', '8', NEXT), priceOf('VOO', '60'), 'AAAA1111', undefined, NOW);
 
       expect(written(wf, NEXT).avgCost).toBe('50');
     });
