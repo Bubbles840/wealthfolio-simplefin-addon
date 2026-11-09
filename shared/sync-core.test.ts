@@ -3723,6 +3723,18 @@ describe('holdings snapshots for investment accounts', () => {
     expect(holdings.map((h) => h.wfAccountId)).toEqual(['wf-b']);
   });
 
+  it.each(['TRANSACTIONS', 'HOLDINGS'])('books no starting balance on a CRYPTOCURRENCY account with positions tracked as %s', async (mode) => {
+    // Its positions get snapshots too, so the same cash credit would double it.
+    const seed = brokerageSeed();
+    seed.accountTypes = { 'wf-b': 'CRYPTOCURRENCY' };
+    seed.trackingModes = { 'wf-b': mode };
+    seed.valuations = new Map([['wf-b', 0]]);
+    const { host, store, imported } = createFakeHost(seed);
+    await runSyncCore(host, store, { force: true });
+    expect(sbRows(imported)).toEqual([]);
+    expect(await store.getBalanceInitialized()).not.toContain('sfin-b');
+  });
+
   it.each(['HOLDINGS', 'TRANSACTIONS', 'NOT_SET', undefined])(
     'books no starting balance on a SECURITIES account with positions tracked as %s, and leaves it undecided',
     async (mode) => {

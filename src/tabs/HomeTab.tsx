@@ -95,6 +95,8 @@ interface Props {
   /** 1.61: a transaction's story (TxStoryPanel). Present: "Why is this here?"
    *  heads the page and needs-a-category rows open their stories. */
   renderTxStory?: (target: AppStoryTarget) => React.ReactNode;
+  /** The transaction an alert's tap asked for: its story opens first. */
+  linkedStory?: AppStoryTarget;
   /** 2c: the companion's audit snapshot. With something Health flags, the
    *  Accounts tile says so and opens Settings on the Checks card. */
   auditSnapshot?: AuditSnapshotRead | null;
@@ -126,7 +128,7 @@ export function HomeTab({
   prunedDuplicates, unmappedAccounts, onIgnoreAccounts, uncategorized, dismissals, onDismissalsChange,
   isOpen, toggleCard, onBalancesChanged, onClearError, onError,
   companionVersion, telegramConfigured, amazonConfigured, checklistDismissed,
-  onDismissChecklist, onNavigate, poolStatus, onOpenPool, renderTxStory, auditSnapshot, cashForecast,
+  onDismissChecklist, onNavigate, poolStatus, onOpenPool, renderTxStory, linkedStory, auditSnapshot, cashForecast,
   payback, paidBack, paybackNote,
 }: Props) {
   const checksToLook = checksToLookAt(auditSnapshot);
@@ -204,6 +206,12 @@ export function HomeTab({
     <>
       {/* "Why is this here?" (1.61): find any transaction and read its story.
           First, because it is where a question about the numbers starts. */}
+      {renderTxStory && linkedStory && (
+        <div className="sfin-card sfin-why-card" key={linkedStory.activityId}>
+          <SectionLabel>From your alert</SectionLabel>
+          {renderTxStory(linkedStory)}
+        </div>
+      )}
       {renderTxStory && <WhyCard search={searchTx} renderStory={renderTxStory} />}
 
       {/* An account SimpleFin is offering that nothing is mapped to. First

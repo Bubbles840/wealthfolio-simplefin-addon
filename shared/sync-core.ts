@@ -2306,12 +2306,13 @@ async function runSyncPass(
   // balance: Wealthfolio has no valuation row for it, the balance read falls
   // back to its cash activities (about zero), and the whole account value was
   // booked as a cash credit that showed as income (live, after a re-link).
-  // That is every HOLDINGS account, and any SECURITIES account whose feed
-  // lists positions whatever its mode (the add-on creates accounts as
+  // That is every HOLDINGS account, and any investment or crypto account whose
+  // feed lists positions whatever its mode (the add-on creates accounts as
   // TRANSACTIONS).
+  const INVESTMENT_ACCOUNT_TYPES = new Set(['SECURITIES', 'CRYPTOCURRENCY']);
   const noStartingBalance = (wfAccountId: string, sfAccount: SimplefinAccount): boolean =>
     wfModes.get(wfAccountId) === 'HOLDINGS'
-    || (wfTypes.get(wfAccountId) === 'SECURITIES'
+    || (INVESTMENT_ACCOUNT_TYPES.has(wfTypes.get(wfAccountId) ?? '')
       && Array.isArray(sfAccount.holdings) && sfAccount.holdings.length > 0);
   // Names, for the alerts: `name` is optional on the SyncHost contract, so an
   // empty one falls back to the SimpleFin account name at the use site.

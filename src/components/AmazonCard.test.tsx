@@ -3,6 +3,7 @@ import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import React from 'react';
 import { AmazonCard, useAmazonDraft } from './AmazonCard';
 import type { SecretsStore } from '../utils/secrets';
+import { AMAZON_SUBCATEGORIES_SINCE } from '../../shared/version';
 
 const catalog = (...names: string[]) =>
   names.map((name) => ({
@@ -187,12 +188,36 @@ describe('AmazonCard', () => {
     expect(await screen.findByText(/1 need.? a rule/i)).toBeTruthy();
   });
 
-  it('offers parent categories only, since Wealthfolio budgets at parent level', async () => {
+  const sub = (name: string, parent: string) =>
+    ({ name, parent, icon: null, color: null, hasBudget: false, hasSpend: false });
+
+  it('offers subcategories as Parent / Child when the companion can file under them', async () => {
     const props = makeProps({
-      categories: [
-        ...catalog('Housing'),
-        { name: 'Rent', parent: 'Housing', icon: null, color: null, hasBudget: false, hasSpend: false },
-      ],
+      companionVersion: AMAZON_SUBCATEGORIES_SINCE,
+      categories: [...catalog('Housing', 'Shopping', 'Sync bookkeeping'), sub('Clothing', 'Shopping')],
+    });
+    props.store.getAmazonConfig = vi.fn(async () => ({
+      host: 'imap.gmail.com', user: 'r@g.com', password: 'x',
+    })) as any;
+    props.store.getAmazonLabels = vi.fn(async () => ({
+      'Lawn & Garden': { category: 'Housing', matched: true },
+    })) as any;
+    render(<Harness {...props} />);
+    const select = await screen.findByLabelText(/category for Amazon's Lawn & Garden/i);
+    const values = [...(select as HTMLSelectElement).options].map((o) => o.value);
+    expect(values).toEqual(['Housing', 'Shopping', 'Shopping / Clothing']);
+
+    fireEvent.change(select, { target: { value: 'Shopping / Clothing' } });
+    fireEvent.click(screen.getByRole('button', { name: /Save Amazon Settings/i }));
+    await waitFor(() => expect(props.store.setAmazonConfig).toHaveBeenCalled());
+    expect((props.store.setAmazonConfig as any).mock.calls[0][0].labelOverrides)
+      .toEqual({ 'Lawn & Garden': 'Shopping / Clothing' });
+  });
+
+  it('offers parent categories only while the companion is older', async () => {
+    const props = makeProps({
+      companionVersion: '1.73.0',
+      categories: [...catalog('Housing'), sub('Rent', 'Housing')],
     });
     props.store.getAmazonLabels = vi.fn(async () => ({
       'Lawn & Garden': { category: 'Housing', matched: true },
@@ -200,8 +225,68 @@ describe('AmazonCard', () => {
     render(<Harness {...props} />);
     const select = await screen.findByLabelText(/category for Amazon's Lawn & Garden/i);
     const values = [...(select as HTMLSelectElement).options].map((o) => o.value);
-    expect(values).toContain('Housing');
-    expect(values).not.toContain('Rent');
+    expect(values).toEqual(['Housing']);
+  });
+
+  it('shows an old bare subcategory name as the option it files under', async () => {
+    const props = makeProps({
+      companionVersion: AMAZON_SUBCATEGORIES_SINCE,
+      categories: [...catalog('Shopping'), sub('Home Goods', 'Shopping')],
+    });
+    props.store.getAmazonConfig = vi.fn(async () => ({
+      host: 'imap.gmail.com', user: 'r@g.com', password: 'x',
+      labelOverrides: { Kitchen: 'Home Goods' },
+    })) as any;
+    props.store.getAmazonLabels = vi.fn(async () => ({
+      Kitchen: { category: 'Home Goods', matched: true },
+    })) as any;
+    render(<Harness {...props} />);
+    const select = await screen.findByLabelText(/category for Amazon's Kitchen/i);
+    expect((select as HTMLSelectElement).value).toBe('Shopping / Home Goods');
+    expect(screen.queryByText(/pick the one you mean/i)).toBeNull();
+  });
+
+  it('keeps an old bare subcategory name as stored while the companion is older', async () => {
+    // A path shown as the selection could be saved untouched, and an older
+    // companion files nothing under a path.
+    const props = makeProps({
+      companionVersion: '1.73.0',
+      categories: [...catalog('Shopping'), sub('Home Goods', 'Shopping')],
+    });
+    props.store.getAmazonConfig = vi.fn(async () => ({
+      host: 'imap.gmail.com', user: 'r@g.com', password: 'x',
+      labelOverrides: { Kitchen: 'Home Goods' },
+    })) as any;
+    props.store.getAmazonLabels = vi.fn(async () => ({
+      Kitchen: { category: 'Home Goods', matched: true },
+    })) as any;
+    render(<Harness {...props} />);
+    const select = await screen.findByLabelText(/category for Amazon's Kitchen/i);
+    expect((select as HTMLSelectElement).value).toBe('Home Goods');
+  });
+
+  it('flags an old bare name two subcategories share, and keeps it until re-picked', async () => {
+    const props = makeProps({
+      companionVersion: AMAZON_SUBCATEGORIES_SINCE,
+      categories: [...catalog('Hobbies', 'Shopping'), sub('Clothing', 'Hobbies'), sub('Clothing', 'Shopping')],
+    });
+    props.store.getAmazonConfig = vi.fn(async () => ({
+      host: 'imap.gmail.com', user: 'r@g.com', password: 'x',
+      labelOverrides: { Shirts: 'Clothing' },
+    })) as any;
+    props.store.getAmazonLabels = vi.fn(async () => ({
+      Shirts: { category: 'Clothing', matched: true },
+    })) as any;
+    render(<Harness {...props} />);
+    const select = await screen.findByLabelText(/category for Amazon's Shirts/i);
+    expect((select as HTMLSelectElement).value).toBe('Clothing');
+    expect(screen.getByText(/fits 2 categories, pick the one you mean/i)).toBeTruthy();
+
+    fireEvent.change(select, { target: { value: 'Shopping / Clothing' } });
+    fireEvent.click(screen.getByRole('button', { name: /Save Amazon Settings/i }));
+    await waitFor(() => expect(props.store.setAmazonConfig).toHaveBeenCalled());
+    expect((props.store.setAmazonConfig as any).mock.calls[0][0].labelOverrides)
+      .toEqual({ Shirts: 'Shopping / Clothing' });
   });
 
   it('explains that this cannot double-count a purchase', async () => {

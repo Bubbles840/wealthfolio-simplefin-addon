@@ -157,6 +157,31 @@ function averageCost(
   return price && price.n > 0n ? String(purchasePrice).trim() : undefined;
 }
 
+/** A US money market fund's ticker: five letters ending in XX (e.g. ABCXX). */
+const MONEY_MARKET_TICKER = /^[A-Z]{3}XX$/;
+/** How far a money market line's value may sit from its share count: a cent. */
+const MONEY_MARKET_TOLERANCE = 10000n;
+
+/**
+ * `'1'` for a money market fund SimpleFin sent without a cost, else `undefined`.
+ *
+ * Brokerages report the cash sweep fund with a zero cost
+ * basis. Unknown cost on any position makes Wealthfolio drop the account's gain
+ * for every period, so the account shows no gain at all. A money market fund is
+ * held at $1 a share, so its cost is its share count. Only when the feed agrees:
+ * the market value must equal the shares to the cent, so a fund that is not at
+ * $1 keeps its cost unknown.
+ */
+function moneyMarketCost(symbol: string, shares: string, marketValue: string | null | undefined): string | undefined {
+  if (!MONEY_MARKET_TICKER.test(symbol.toUpperCase())) return undefined;
+  const value = parseMicros(marketValue);
+  const count = parseMicros(shares);
+  // No shares: nothing held, so no cost (as `averageCost`).
+  if (value === null || count === null || count <= 0n) return undefined;
+  const diff = value - count;
+  return diff <= MONEY_MARKET_TOLERANCE && diff >= -MONEY_MARKET_TOLERANCE ? '1' : undefined;
+}
+
 function formatMicros(micros: bigint): string {
   const negative = micros < 0n;
   const abs = negative ? -micros : micros;
@@ -276,7 +301,8 @@ export function toHoldingsSnapshot(
     positions.push({
       symbol,
       quantity: shares,
-      avgCost: averageCost(holding.cost_basis, holding.purchase_price, shares),
+      avgCost: averageCost(holding.cost_basis, holding.purchase_price, shares)
+        ?? moneyMarketCost(symbol, shares, holding.market_value),
       // SimpleFin omits a holding's currency when it matches the account's,
       // which is the overwhelmingly common case. Some providers send `""`
       // instead, which means the same thing.

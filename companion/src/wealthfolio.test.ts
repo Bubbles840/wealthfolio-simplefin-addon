@@ -460,3 +460,11 @@ describe('WealthfolioClient', () => {
     );
   });
 });
+
+describe('WealthfolioClient errors carry the HTTP status', () => {
+  it('so a refused session can be told apart without reading the message', async () => {
+    mockFetch.mockResolvedValueOnce(new Response('expired', { status: 401 }));
+    const client = new WealthfolioClient('http://wealthfolio:8088');
+    await expect(client.getAddonSecret('simplefin-sync', 'k')).rejects.toMatchObject({ status: 401 });
+  });
+});
