@@ -653,6 +653,9 @@ export function badgeVerdict(bankBalance: number, wealthfolioFigure: number): { 
   return { drift: Math.abs(d) > DRIFT_THRESHOLD_DOLLARS ? d : null, measured: true };
 }
 
+/** Wealthfolio account types valued from their positions (investment and crypto). */
+const INVESTMENT_ACCOUNT_TYPES: ReadonlySet<string> = new Set(['SECURITIES', 'CRYPTOCURRENCY']);
+
 /** Distinct marker so the UI can recognise an interval skip and offer to
  *  force, rather than treating it as a generic error. */
 export const INTERVAL_SKIP_MESSAGE =
@@ -2309,11 +2312,12 @@ async function runSyncPass(
   // That is every HOLDINGS account, and any investment or crypto account whose
   // feed lists positions whatever its mode (the add-on creates accounts as
   // TRANSACTIONS).
-  const INVESTMENT_ACCOUNT_TYPES = new Set(['SECURITIES', 'CRYPTOCURRENCY']);
   const noStartingBalance = (wfAccountId: string, sfAccount: SimplefinAccount): boolean =>
     wfModes.get(wfAccountId) === 'HOLDINGS'
     || (INVESTMENT_ACCOUNT_TYPES.has(wfTypes.get(wfAccountId) ?? '')
-      && Array.isArray(sfAccount.holdings) && sfAccount.holdings.length > 0);
+      // Positions the holdings step can write: holdings without a symbol or a
+      // share count make no snapshot, and then the cash line is all there is.
+      && toHoldingsSnapshot(sfAccount) !== null);
   // Names, for the alerts: `name` is optional on the SyncHost contract, so an
   // empty one falls back to the SimpleFin account name at the use site.
   const wfNames = new Map<string, string>(

@@ -3723,11 +3723,11 @@ describe('holdings snapshots for investment accounts', () => {
     expect(holdings.map((h) => h.wfAccountId)).toEqual(['wf-b']);
   });
 
-  it.each(['TRANSACTIONS', 'HOLDINGS'])('books no starting balance on a CRYPTOCURRENCY account with positions tracked as %s', async (mode) => {
+  it.each(['TRANSACTIONS', 'HOLDINGS', 'NOT_SET', undefined])('books no starting balance on a CRYPTOCURRENCY account with positions tracked as %s', async (mode) => {
     // Its positions get snapshots too, so the same cash credit would double it.
     const seed = brokerageSeed();
     seed.accountTypes = { 'wf-b': 'CRYPTOCURRENCY' };
-    seed.trackingModes = { 'wf-b': mode };
+    if (mode) seed.trackingModes = { 'wf-b': mode };
     seed.valuations = new Map([['wf-b', 0]]);
     const { host, store, imported } = createFakeHost(seed);
     await runSyncCore(host, store, { force: true });
@@ -3763,7 +3763,20 @@ describe('holdings snapshots for investment accounts', () => {
     expect(sbRows(imported)).toEqual([]);
   });
 
+  it('still books one on an investment account whose holdings make no snapshot', async () => {
+    // No symbol and no share count: nothing for the holdings step to write.
+    const seed = brokerageSeed();
+    seed.accountSet!.accounts[0].holdings = [{ symbol: '', shares: '9' }];
+    seed.accountTypes = { 'wf-b': 'CRYPTOCURRENCY' };
+    seed.trackingModes = { 'wf-b': 'TRANSACTIONS' };
+    seed.valuations = new Map([['wf-b', 0]]);
+    const { host, store, imported } = createFakeHost(seed);
+    await runSyncCore(host, store, { force: true });
+    expect(sbRows(imported)).toHaveLength(1);
+  });
+
   it.each([
+    ['CRYPTOCURRENCY', 'TRANSACTIONS', []],
     ['SECURITIES', 'TRANSACTIONS', []],
     ['CASH', 'TRANSACTIONS', undefined], // keeps its money market fund
     ['CASH', 'NOT_SET', undefined],
