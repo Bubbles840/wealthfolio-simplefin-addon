@@ -26,9 +26,13 @@ import { SCHEDULER_POLL_MS } from './scheduler';
  *     hand; the problem this solves is a companion syncing first;
  *  4. a mapped Wealthfolio account holds investments (SECURITIES,
  *     CRYPTOCURRENCY, or tracking mode HOLDINGS). Set up without one, there is
- *     nothing to catch up, and it stays quiet for HOLDINGS_CATCHUP_QUIET_MS
- *     before asking again, so such an install costs a few reads an hour. Not
- *     set up yet: no quiet, so a setup finished minutes later is caught.
+ *     nothing to catch up.
+ * After 3 or 4 says no, it goes quiet for up to HOLDINGS_CATCHUP_QUIET_MS,
+ * re-reading only what said no: the schedule and the companion's health, or
+ * the account mapping. The quiet ends as soon as that changes, so turning the
+ * schedule on, a companion starting, or a new account mapped is caught at the
+ * next poll. A changed account type is caught when the hour ends. Not set up
+ * yet: no quiet, so a setup finished minutes later is caught.
  * Then it runs an ordinary scheduled sync past the one-hour interval
  * (`catchUp`: the usual download window, and the budget still applies inside
  * it).
@@ -42,7 +46,7 @@ import { SCHEDULER_POLL_MS } from './scheduler';
  *  daily habit of opening Wealthfolio is enough. */
 export const HOLDINGS_CATCHUP_AFTER_MS = 20 * 60 * 60 * 1000;
 
-/** How long to stay quiet after finding no investment account mapped. */
+/** The longest quiet after step 3 or 4 says no (see the rule above). */
 export const HOLDINGS_CATCHUP_QUIET_MS = 60 * 60 * 1000;
 
 const INVESTMENT_ACCOUNT_TYPES = new Set(['SECURITIES', 'CRYPTOCURRENCY']);
@@ -82,9 +86,11 @@ export interface HoldingsCatchUpDeps {
   getRequestLog(): Promise<string | null>;
   /** The add-on's own schedule is on (an interval above zero). */
   scheduleOn(): Promise<boolean>;
-  /** A companion's last successful sync is under two days old. */
-  companionSyncing(): Promise<boolean>;
+  /** A companion's last successful sync is under two days old at `now`. */
+  companionSyncing(now: Date): Promise<boolean>;
   investmentAccounts(): Promise<InvestmentAccounts>;
+  /** The account mapping as stored, compared to end a quiet period when it changes. */
+  setupKey(): Promise<string>;
   /** Starts the sync; resolves when it is over. */
   runSync(): Promise<unknown>;
   now?: () => Date;
@@ -95,8 +101,8 @@ export class HoldingsCatchUp {
   private checking = false;
   /** Set by stop(): a check already past its first await must not start a sync. */
   private stopped = false;
-  /** Epoch ms before which no check runs (no investment account was mapped). */
-  private quietUntil = 0;
+  /** Set when step 3 or 4 said no: until when, and whether its cause still holds. */
+  private quiet: { until: number; still: () => Promise<boolean> } | null = null;
 
   constructor(private readonly deps: HoldingsCatchUpDeps) {}
 
@@ -125,12 +131,22 @@ export class HoldingsCatchUp {
     this.checking = true;
     try {
       const now = deps.now?.() ?? new Date();
-      if (now.getTime() < this.quietUntil) return;
+      if (this.quiet) {
+        if (now.getTime() < this.quiet.until && (await this.quiet.still())) return;
+        this.quiet = null;
+      }
       if (!holdingsCatchUpDue(await deps.getHoldingsPassAt(), now)) return;
       if (!automaticDownloadAllowed(await deps.getRequestLog(), now)) return;
-      if (!(await deps.scheduleOn()) && !(await deps.companionSyncing())) return;
+      const off = async () => !(await deps.scheduleOn()) && !(await deps.companionSyncing(now));
+      if (await off()) {
+        this.quiet = { until: now.getTime() + HOLDINGS_CATCHUP_QUIET_MS, still: off };
+        return;
+      }
       const accounts = await deps.investmentAccounts();
-      if (accounts === 'none') this.quietUntil = now.getTime() + HOLDINGS_CATCHUP_QUIET_MS;
+      if (accounts === 'none') {
+        const key = await deps.setupKey();
+        this.quiet = { until: now.getTime() + HOLDINGS_CATCHUP_QUIET_MS, still: async () => (await deps.setupKey()) === key };
+      }
       if (accounts !== 'mapped') return;
       if (this.stopped) return;
       await deps.runSync();

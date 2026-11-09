@@ -183,6 +183,52 @@ describe('addon enable()', () => {
       ctx._triggerDisable();
     });
 
+    it('does not count a companion stamp far in the future as syncing', async () => {
+      // A clock far ahead would read as "synced" until that date, after the companion stopped.
+      vi.mocked(runSync).mockClear();
+      const ctx = investmentSetup({ sync_health: JSON.stringify({ lastSuccessAt: new Date(Date.now() + 3 * 86_400_000).toISOString() }) });
+      enable(ctx);
+      await new Promise((r) => setTimeout(r, 20));
+      expect(runSync).not.toHaveBeenCalled();
+      ctx._triggerDisable();
+    });
+
+    it('tries again at the next poll when the accounts are not listed yet, instead of going quiet', async () => {
+      vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
+      try {
+        vi.mocked(runSync).mockClear();
+        const ctx = investmentSetup();
+        const list = [{ id: 'wf-a', accountType: 'SECURITIES', trackingMode: 'HOLDINGS' }];
+        ctx.api.accounts = { getAll: vi.fn().mockResolvedValueOnce([]).mockResolvedValue(list) };
+        enable(ctx);
+        await new Promise((r) => setTimeout(r, 20));
+        expect(runSync).not.toHaveBeenCalled();
+        await vi.advanceTimersByTimeAsync(SCHEDULER_POLL_MS);
+        await waitFor(() => expect(runSync).toHaveBeenCalledWith(expect.anything(), expect.anything(), { catchUp: true }));
+        ctx._triggerDisable();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('counts an install with only a loan linked as set up: quiet, not asked again every poll', async () => {
+      vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
+      try {
+        vi.mocked(runSync).mockClear();
+        const ctx = investmentSetup({ account_mapping: '{}', loan_links: JSON.stringify({ 'sfin-loan': 'LIAB-1' }) });
+        const urlReads = () => vi.mocked(ctx.api.secrets.get).mock.calls.filter((call: unknown[]) => call[0] === 'simplefin_access_url').length;
+        enable(ctx);
+        await new Promise((r) => setTimeout(r, 20));
+        const after = urlReads();
+        await vi.advanceTimersByTimeAsync(SCHEDULER_POLL_MS * 2);
+        expect(urlReads()).toBe(after);
+        expect(runSync).not.toHaveBeenCalledWith(expect.anything(), expect.anything(), { catchUp: true });
+        ctx._triggerDisable();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
     it('does not sync when the add-on wrote snapshots recently', async () => {
       vi.mocked(runSync).mockClear();
       const ctx = investmentSetup({ holdings_pass_at: new Date().toISOString() });

@@ -136,12 +136,16 @@ const enable: AddonEnableFunction = (hostCtx) => {
     getHoldingsPassAt: () => startupStore.getHoldingsPassAt(),
     getRequestLog: () => startupStore.getSimplefinRequests(),
     scheduleOn: async () => ((await startupStore.getSyncScheduleHours()) ?? 0) > 0,
-    companionSyncing: () => companionSyncedRecently(startupStore),
+    companionSyncing: (now) => companionSyncedRecently(startupStore, now),
     investmentAccounts: async () => {
-      const [accessUrl, mapping] = await Promise.all([startupStore.getAccessUrl(), startupStore.getAccountMapping()]);
-      if (!accessUrl || !mapping || Object.keys(mapping).length === 0) return 'notSetUp';
-      return mapsInvestmentAccount(mapping, await ctx.api.accounts.getAll()) ? 'mapped' : 'none';
+      const [accessUrl, mapping, loanLinks] = await Promise.all([startupStore.getAccessUrl(), startupStore.getAccountMapping(), readLoanLinks(startupStore)]);
+      if (!accessUrl || !hasAccounts(mapping, loanLinks)) return 'notSetUp';
+      const accounts = await ctx.api.accounts.getAll();
+      // Mapped accounts but none listed: the host has not loaded them yet. Unknown, not "none".
+      if (Object.keys(mapping ?? {}).length > 0 && (accounts ?? []).length === 0) throw new Error('accounts not listed yet');
+      return mapsInvestmentAccount(mapping, accounts ?? []) ? 'mapped' : 'none';
     },
+    setupKey: async () => JSON.stringify(await startupStore.getAccountMapping()),
     runSync: () => runSync(ctx, startupStore, { catchUp: true }),
   });
   holdingsCatchUp.start();

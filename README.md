@@ -264,9 +264,10 @@ Investment positions (holdings snapshots) are written by the add-on only; the
 companion cannot. So while Wealthfolio is open, the add-on also syncs on its own
 when it has not written them for 20 hours and an investment account is mapped.
 With its schedule off it does so only while a companion is syncing (one that
-synced in the last two days); without one, Off means you sync by hand. It counts as an automatic SimpleFin download (an
-hour after the newest one, within the automatic share of the day). Snapshots
-still need Wealthfolio open in a browser at least once a day.
+synced in the last two days); without one, Off means you sync by hand. It
+counts as an automatic SimpleFin download (an hour after the newest one, within
+the automatic share of the day). Snapshots still need Wealthfolio open in a
+browser at least once a day.
 
 Each run re-scans a two-week overlap rather than only new transactions, because
 card purchases often post days later with a backdated timestamp. Transactions

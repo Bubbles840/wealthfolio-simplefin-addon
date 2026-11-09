@@ -96,6 +96,7 @@ describe('HoldingsCatchUp', () => {
     scheduleOn: async () => false,
     companionSyncing: async () => true,
     investmentAccounts: async () => 'mapped' as const,
+    setupKey: async () => '{"sfin-a":"wf-a"}',
     now: () => NOW,
     ...over,
     runSync: vi.fn(over.runSync ?? (async () => undefined)),
@@ -150,6 +151,65 @@ describe('HoldingsCatchUp', () => {
     now = new Date(NOW.getTime() + HOLDINGS_CATCHUP_QUIET_MS);
     await c.check();
     expect(hasInvestmentAccounts).toHaveBeenCalledTimes(2);
+  });
+
+  it('ends the quiet as soon as the mapping changes', async () => {
+    let key = '{"sfin-a":"wf-a"}';
+    let state: InvestmentAccounts = 'none';
+    const d = deps({ investmentAccounts: async () => state, setupKey: async () => key });
+    const c = new HoldingsCatchUp(d);
+    await c.check();
+    await c.check();
+    expect(d.runSync).not.toHaveBeenCalled();
+    // A brokerage account mapped minutes later.
+    key = '{"sfin-a":"wf-a","sfin-b":"wf-b"}';
+    state = 'mapped';
+    await c.check();
+    expect(d.runSync).toHaveBeenCalledTimes(1);
+  });
+
+  it('with the schedule off and no companion, goes quiet reading only those two', async () => {
+    let scheduleOn = false;
+    const getHoldingsPassAt = vi.fn(async () => ago(HOLDINGS_CATCHUP_AFTER_MS));
+    const getRequestLog = vi.fn(async () => log(ago(SIMPLEFIN_AUTO_GAP_MS)));
+    const d = deps({ scheduleOn: async () => scheduleOn, companionSyncing: async () => false, getHoldingsPassAt, getRequestLog });
+    const c = new HoldingsCatchUp(d);
+    await c.check();
+    await c.check();
+    await c.check();
+    expect(getHoldingsPassAt).toHaveBeenCalledTimes(1);
+    expect(getRequestLog).toHaveBeenCalledTimes(1);
+    expect(d.runSync).not.toHaveBeenCalled();
+    // The schedule turned on: caught at the next poll.
+    scheduleOn = true;
+    await c.check();
+    expect(d.runSync).toHaveBeenCalledTimes(1);
+  });
+
+  it('ends the schedule-off quiet when a companion starts syncing', async () => {
+    let companion = false;
+    const d = deps({ companionSyncing: async () => companion });
+    const c = new HoldingsCatchUp(d);
+    await c.check();
+    companion = true;
+    await c.check();
+    expect(d.runSync).toHaveBeenCalledTimes(1);
+  });
+
+  it('asks the companion check about the poll\'s own time', async () => {
+    const companionSyncing = vi.fn(async (_now: Date) => true);
+    await checkOnce(deps({ companionSyncing }));
+    expect(companionSyncing).toHaveBeenCalledWith(NOW);
+  });
+
+  it('stays quiet, without a sync, when the quiet check itself cannot read', async () => {
+    let fail = false;
+    const d = deps({ investmentAccounts: async () => 'none' as const, setupKey: async () => { if (fail) throw new Error('read failed'); return 'k'; } });
+    const c = new HoldingsCatchUp(d);
+    await c.check();
+    fail = true;
+    await expect(c.check()).resolves.toBeUndefined();
+    expect(d.runSync).not.toHaveBeenCalled();
   });
 
   it('runs with the schedule on even when no companion is syncing', async () => {
