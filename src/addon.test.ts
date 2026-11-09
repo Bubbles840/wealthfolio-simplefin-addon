@@ -193,7 +193,7 @@ describe('addon enable()', () => {
       ctx._triggerDisable();
     });
 
-    it('tries again at the next poll when the accounts are not listed yet, instead of going quiet', async () => {
+    it('ends the quiet at the next poll when the host lists the accounts late', async () => {
       vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
       try {
         vi.mocked(runSync).mockClear();
@@ -211,17 +211,42 @@ describe('addon enable()', () => {
       }
     });
 
+    it('stays quiet when the mapped accounts no longer exist, instead of asking every poll', async () => {
+      vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
+      try {
+        const ctx = investmentSetup();
+        ctx.api.accounts = { getAll: vi.fn(async () => []) };
+        const passReads = () => vi.mocked(ctx.api.secrets.get).mock.calls.filter((call: unknown[]) => call[0] === 'holdings_pass_at').length;
+        enable(ctx);
+        await new Promise((r) => setTimeout(r, 20));
+        await vi.advanceTimersByTimeAsync(SCHEDULER_POLL_MS * 3);
+        expect(passReads()).toBe(1);
+        ctx._triggerDisable();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('counts a companion whose clock runs a little ahead as syncing', async () => {
+      vi.mocked(runSync).mockClear();
+      const ctx = investmentSetup({ sync_health: JSON.stringify({ lastSuccessAt: new Date(Date.now() + 2 * 3_600_000).toISOString() }) });
+      enable(ctx);
+      await waitFor(() => expect(runSync).toHaveBeenCalledWith(expect.anything(), expect.anything(), { catchUp: true }));
+      ctx._triggerDisable();
+    });
+
     it('counts an install with only a loan linked as set up: quiet, not asked again every poll', async () => {
       vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
       try {
         vi.mocked(runSync).mockClear();
         const ctx = investmentSetup({ account_mapping: '{}', loan_links: JSON.stringify({ 'sfin-loan': 'LIAB-1' }) });
-        const urlReads = () => vi.mocked(ctx.api.secrets.get).mock.calls.filter((call: unknown[]) => call[0] === 'simplefin_access_url').length;
+        // Quiet: later polls re-read only the setup, not the whole rule.
+        const passReads = () => vi.mocked(ctx.api.secrets.get).mock.calls.filter((call: unknown[]) => call[0] === 'holdings_pass_at').length;
         enable(ctx);
         await new Promise((r) => setTimeout(r, 20));
-        const after = urlReads();
+        expect(passReads()).toBe(1);
         await vi.advanceTimersByTimeAsync(SCHEDULER_POLL_MS * 2);
-        expect(urlReads()).toBe(after);
+        expect(passReads()).toBe(1);
         expect(runSync).not.toHaveBeenCalledWith(expect.anything(), expect.anything(), { catchUp: true });
         ctx._triggerDisable();
       } finally {

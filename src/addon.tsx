@@ -140,12 +140,9 @@ const enable: AddonEnableFunction = (hostCtx) => {
     investmentAccounts: async () => {
       const [accessUrl, mapping, loanLinks] = await Promise.all([startupStore.getAccessUrl(), startupStore.getAccountMapping(), readLoanLinks(startupStore)]);
       if (!accessUrl || !hasAccounts(mapping, loanLinks)) return 'notSetUp';
-      const accounts = await ctx.api.accounts.getAll();
-      // Mapped accounts but none listed: the host has not loaded them yet. Unknown, not "none".
-      if (Object.keys(mapping ?? {}).length > 0 && (accounts ?? []).length === 0) throw new Error('accounts not listed yet');
-      return mapsInvestmentAccount(mapping, accounts ?? []) ? 'mapped' : 'none';
+      // Read on every quiet poll too: accounts the host lists late end the quiet.
+      return mapsInvestmentAccount(mapping, (await ctx.api.accounts.getAll()) ?? []) ? 'mapped' : 'none';
     },
-    setupKey: async () => JSON.stringify(await startupStore.getAccountMapping()),
     runSync: () => runSync(ctx, startupStore, { catchUp: true }),
   });
   holdingsCatchUp.start();
