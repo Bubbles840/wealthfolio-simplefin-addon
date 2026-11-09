@@ -26,6 +26,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Wealthfolio hide the account's gain. A money market fund (ticker ending in
   XX) that the feed values at $1 a share now gets $1 a share as its cost. It
   shows from the next day's snapshot; a day already saved is not rewritten.
+- **No holdings snapshots on cash accounts Wealthfolio tracks by transactions.**
+  A cash account whose feed lists a money market fund got imported snapshots
+  that duplicated the ones Wealthfolio builds from its activities. Investment
+  accounts keep their snapshots whatever their tracking mode.
+- **No starting balance on accounts valued from their positions** (tracking
+  mode Holdings, or an investment or crypto account whose feed lists
+  positions). After a re-link, such an account could get its whole value
+  booked as a cash credit, which then showed as that year's income. The
+  starting balance also waits for a run that can read the account list.
 
 ## [1.73.0] - 2026-11-05
 

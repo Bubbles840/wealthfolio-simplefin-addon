@@ -458,3 +458,13 @@ describe('RestSyncStore', () => {
     });
   });
 });
+
+describe('listAccounts reports the tracking mode', () => {
+  it('passes it through when set, and leaves the key out when not', async () => {
+    const host = new RestSyncHost({ getAccounts: async () => [{ id: 'wf-a', accountType: 'SECURITIES', name: 'Brokerage', trackingMode: 'TRANSACTIONS' }, { id: 'wf-b', accountType: 'SECURITIES', name: 'Retirement' }] } as any);
+    expect(await host.listAccounts()).toEqual([
+      { id: 'wf-a', accountType: 'SECURITIES', name: 'Brokerage', trackingMode: 'TRANSACTIONS' },
+      { id: 'wf-b', accountType: 'SECURITIES', name: 'Retirement' },
+    ]);
+  });
+});
