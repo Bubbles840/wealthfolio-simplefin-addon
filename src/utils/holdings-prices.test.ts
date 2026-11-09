@@ -408,7 +408,7 @@ describe('syncHoldingsWithFeedPrices', () => {
       expect(written(wf, NEXT).avgCost).toBe('50.00');
     });
 
-    it('asks when the held cost is in another currency, telling pence from pounds', async () => {
+    it('carries nothing, and does not ask, when the held cost is in another currency (pence is not pounds)', async () => {
       for (const held of ['CAD', 'USd']) {
         const wf = withTicker();
         const read = wf.pricing.getHoldings.getMockImplementation()!;
@@ -416,7 +416,8 @@ describe('syncHoldingsWithFeedPrices', () => {
           (await read(account)).map((h) => ({ ...h, localCurrency: held })));
         const r = await syncHoldingsWithFeedPrices(wf.io, wf.pricing, 'wf-a', snap('VOO', '10', NEXT), [], 'AAAA1111', undefined, NOW);
         expect(written(wf, NEXT).avgCost).toBeUndefined();
-        expect(r.costUnknown).toEqual(['VOO']);
+        // The mismatch stays: asking would repeat every day. Home lists it instead.
+        expect(r.costUnknown).toBeUndefined();
       }
     });
 

@@ -275,7 +275,7 @@ export function HomeTab({
         </div>
       )}
       {/* Holdings Wealthfolio has no cost for: the sync says so once, this stays. */}
-      <HoldingsWithoutCost ctx={ctx} mapping={mapping} syncing={syncing} />
+      <HoldingsWithoutCost ctx={ctx} mapping={mapping} syncing={syncing} refresh={balances} />
 
       {/* What the reconcile sweep deleted. A needs-to-be-seen notice rather than
           a collapsible detail: rows were removed from the user's ledger without

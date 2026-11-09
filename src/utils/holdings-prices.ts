@@ -285,6 +285,8 @@ export async function syncHoldingsWithFeedPrices(
       if (await sharedIsUnpriced(pricing, sharedId, now, h && { quoteMode: modeOf(h), price: h.price })) moving.add(key);
     }
   }
+  /** Holdings moving back to their shared asset today, which a market prices. */
+  const movedBack = new Set<string>();
   for (const key of [...moving]) {
     const feed = priced.get(key)!;
     const sharedId = ids.get(key);
@@ -297,7 +299,10 @@ export async function syncHoldingsWithFeedPrices(
     }
     if (!feed.fromDescription && scopedId && sharedId) {
       try {
-        if (hasMarketQuote(await pricing.getHistory(sharedId))) moving.delete(key);
+        if (hasMarketQuote(await pricing.getHistory(sharedId))) {
+          moving.delete(key);
+          movedBack.add(key);
+        }
       } catch {
         // Unknown: it stays where it is.
       }
@@ -308,14 +313,9 @@ export async function syncHoldingsWithFeedPrices(
   // A holding moving back to its shared asset today: the account does not hold
   // that asset, so its mode comes from one profile read. Only on that day.
   const backModes = new Map<string, string | undefined>();
-  if (tag) {
-    for (const p of snapshot.positions) {
-      const key = symbolKey(p.symbol);
-      const sharedId = ids.get(key);
-      if (p.avgCost || moving.has(key) || kept.has(key) || !sharedId || heldById.has(sharedId)) continue;
-      if (!held.has(symbolKey(scoped(p.symbol)))) continue;
-      backModes.set(key, await pricing.getProfile(sharedId).then((a) => a?.quoteMode ?? undefined, () => undefined));
-    }
+  for (const key of movedBack) {
+    const sharedId = ids.get(key)!;
+    backModes.set(key, await pricing.getProfile(sharedId).then((a) => a?.quoteMode ?? undefined, () => undefined));
   }
   const written: HoldingsSnapshot = {
     ...snapshot,
@@ -335,11 +335,10 @@ export async function syncHoldingsWithFeedPrices(
       // not report counts as hand-priced.
       const sharedMode = modeOf(heldById.get(ids.get(key) ?? '')) ?? backModes.get(key);
       if (!own && sharedMode?.toUpperCase() !== 'MARKET') return out;
-      // A cost in another currency cannot be added to: ask.
-      if (h.localCurrency && p.currency && !sameCurrency(h.localCurrency, p.currency)) {
-        costUnknown.push(p.symbol);
-        return out;
-      }
+      // A cost in another currency cannot be added to: carry nothing. Not an
+      // ask: the mismatch stays, so every new day would ask again and write
+      // over a cost entered by hand. Home lists the holding as without a cost.
+      if (h.localCurrency && p.currency && !sameCurrency(h.localCurrency, p.currency)) return out;
       const carried = carriedCost(p.quantity, { quantity: h.quantity, cost: h.costBasis?.local }, priced.get(key)?.price);
       if (carried.ask) costUnknown.push(p.symbol);
       return carried.avgCost ? { ...out, avgCost: carried.avgCost } : out;

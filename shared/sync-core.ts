@@ -654,7 +654,7 @@ export function badgeVerdict(bankBalance: number, wealthfolioFigure: number): { 
 }
 
 /** Wealthfolio account types valued from their positions (investment and crypto). */
-const INVESTMENT_ACCOUNT_TYPES: ReadonlySet<string> = new Set(['SECURITIES', 'CRYPTOCURRENCY']);
+export const INVESTMENT_ACCOUNT_TYPES: ReadonlySet<string> = new Set(['SECURITIES', 'CRYPTOCURRENCY']);
 
 /** Distinct marker so the UI can recognise an interval skip and offer to
  *  force, rather than treating it as a generic error. */
