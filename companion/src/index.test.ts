@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach, onTestFinished } from 'vitest';
-import { maskUrl, publishLiveReports, validateStartupEnv, startupWarnings, runCompanionSync, resolvePassword, sendDailyTelegramReport, sendWeeklyTelegramReport, sendMonthlyTelegramReport, previousYearMonth, sendImportNotice, readBudgetSnapshot, composeDailyDigestMessage, composeDailyDigest, composeWeeklyReportMessage, composeMonthlyWrapUpMessage, runCompanionSyncExclusive, markNotTransferExclusive, FIX_SYNC_RUNNING, syncStatus, wealthfolioDbPath, verifyProfileDatabase, createWealthfolioClient, resetProfileDbPinForTest, profileDbFile, buildTelegramCommandHandler, applyTelegramDismissal, undoTelegramDismissal, formatDismissedReply, buildTelegramListenerDeps, buildCategorizeController, buildCategorizeDeps, rememberImportScope, sendUnmappedAccountsNotice, updateCheckDeps, buildAskSessions, cubeBuildDeps } from './index.js';
+import { maskUrl, publishLiveReports, validateStartupEnv, startupWarnings, runCompanionSync, resolvePassword, sendDailyTelegramReport, sendWeeklyTelegramReport, sendMonthlyTelegramReport, previousYearMonth, sendImportNotice, readBudgetSnapshot, composeDailyDigestMessage, composeDailyDigest, composeWeeklyReportMessage, composeMonthlyWrapUpMessage, runCompanionSyncExclusive, markNotTransferExclusive, FIX_SYNC_RUNNING, syncStatus, wealthfolioDbPath, verifyProfileDatabase, createWealthfolioClient, resetProfileDbPinForTest, profileDbFile, buildTelegramCommandHandler, applyTelegramDismissal, undoTelegramDismissal, formatDismissedReply, buildTelegramListenerDeps, buildCategorizeController, buildCategorizeDeps, rememberImportScope, sendUnmappedAccountsNotice, updateCheckDeps, buildAskSessions, cubeBuildDeps, haIoFor, signInWealthfolio, wealthfolioSession } from './index.js';
 import { findingHandle } from '../../shared/findings.js';
 import { whyRunHandle } from './why-menu.js';
 import { formatHelpReply, parseCommand } from '../../shared/telegram-commands.js';
@@ -7002,5 +7002,108 @@ describe('M-2: the report cube reads the spending series strictly', () => {
     expect(getNativeUncategorizedByMonthAccount).toHaveBeenLastCalledWith('/db/wealthfolio.db', '2026-09-01', '2026-10-01', true);
     deps.spendDaily('2026-09-01', '2026-10-01');
     expect(getNativeSpendDailyTotals).toHaveBeenLastCalledWith('/db/wealthfolio.db', '2026-09-01', '2026-10-01', true);
+  });
+});
+
+describe('wealthfolioSession', () => {
+  afterEach(() => { vi.unstubAllEnvs(); });
+
+  it('signs in once per max age, and again at once after expire', async () => {
+    vi.stubEnv('WEALTHFOLIO_API_KEY', '');
+    vi.stubEnv('WEALTHFOLIO_PASSWORD', 'pw');
+    const login = vi.fn(async () => {});
+    const session = wealthfolioSession({ login } as never, 60_000, 'no password');
+    await session.ensure();
+    await session.ensure();
+    expect(login).toHaveBeenCalledTimes(1);
+    session.expire();
+    await session.ensure();
+    expect(login).toHaveBeenCalledTimes(2);
+  });
+
+  it('uses the API key without signing in, and says when there is no credential', async () => {
+    vi.stubEnv('WEALTHFOLIO_API_KEY', 'key-1');
+    const client = { login: vi.fn(), token: '' };
+    await wealthfolioSession(client as never, 60_000, 'no password').ensure();
+    expect(client.token).toBe('key-1');
+    expect(client.login).not.toHaveBeenCalled();
+    vi.stubEnv('WEALTHFOLIO_API_KEY', '');
+    vi.stubEnv('WEALTHFOLIO_PASSWORD', '');
+    vi.stubEnv('WEALTHFOLIO_PASSWORD_FILE', '');
+    await expect(wealthfolioSession(client as never, 60_000, 'no password').ensure()).rejects.toThrow('no password');
+  });
+});
+
+describe('signInWealthfolio', () => {
+  afterEach(() => { vi.unstubAllEnvs(); });
+
+  it('uses the key, else the password, else nothing (a server without sign-in)', async () => {
+    vi.stubEnv('WEALTHFOLIO_API_KEY', 'key-1');
+    const client = { login: vi.fn(async () => {}), token: '' };
+    expect(await signInWealthfolio(client as never)).toBe('key');
+    expect(client.token).toBe('key-1');
+    vi.stubEnv('WEALTHFOLIO_API_KEY', '');
+    vi.stubEnv('WEALTHFOLIO_PASSWORD', 'pw');
+    expect(await signInWealthfolio(client as never)).toBe('password');
+    expect(client.login).toHaveBeenCalledWith('pw');
+    vi.stubEnv('WEALTHFOLIO_PASSWORD', '');
+    vi.stubEnv('WEALTHFOLIO_PASSWORD_FILE', '');
+    expect(await signInWealthfolio(client as never)).toBe('none');
+    expect(client.login).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('haIoFor', () => {
+  afterEach(() => { vi.unstubAllEnvs(); });
+
+  it('two reads refused at the same moment share one sign-in, and both go through', async () => {
+    vi.stubEnv('WEALTHFOLIO_API_KEY', '');
+    vi.stubEnv('WEALTHFOLIO_PASSWORD', 'pw');
+    let signedIn = false;
+    const client = {
+      login: vi.fn(async () => { await new Promise((r) => setTimeout(r, 5)); signedIn = true; }),
+      getAddonSecret: vi.fn(async () => {
+        if (!signedIn) throw Object.assign(new Error('getAddonSecret failed: 401'), { status: 401 });
+        return 'v';
+      }),
+      setAddonSecret: vi.fn(async () => {}),
+    };
+    const io = haIoFor(client as never);
+    expect(await Promise.all([io.get('a'), io.get('b')])).toEqual(['v', 'v']);
+    expect(client.login).toHaveBeenCalledTimes(1);
+  });
+
+  it('a read refused just after a sign-in that worked is retried, not turned away', async () => {
+    vi.stubEnv('WEALTHFOLIO_API_KEY', '');
+    vi.stubEnv('WEALTHFOLIO_PASSWORD', 'pw');
+    let calls = { a: 0, b: 0 };
+    const client = {
+      login: vi.fn(async () => {}),
+      getAddonSecret: vi.fn(async (_id: string, k: 'a' | 'b') => {
+        // Both were sent before the sign-in; B's refusal arrives after it finished.
+        if (++calls[k] === 1) {
+          if (k === 'b') await new Promise((r) => setTimeout(r, 10));
+          throw Object.assign(new Error('getAddonSecret failed: 401'), { status: 401 });
+        }
+        return 'v';
+      }),
+      setAddonSecret: vi.fn(async () => {}),
+    };
+    const io = haIoFor(client as never);
+    expect(await Promise.all([io.get('a'), io.get('b')])).toEqual(['v', 'v']);
+    expect(client.login).toHaveBeenCalledTimes(1);
+  });
+
+  it('a wrong password is tried at most once per 15 minutes', async () => {
+    vi.stubEnv('WEALTHFOLIO_API_KEY', '');
+    vi.stubEnv('WEALTHFOLIO_PASSWORD', 'wrong');
+    const refused = () => Object.assign(new Error('failed: 401'), { status: 401 });
+    const client = {
+      login: vi.fn(async () => { throw refused(); }),
+      getAddonSecret: vi.fn(async () => { throw refused(); }),
+      setAddonSecret: vi.fn(async () => {}),
+    };
+    for (let i = 0; i < 3; i++) await expect(haIoFor(client as never).get('k')).rejects.toMatchObject({ status: 401 });
+    expect(client.login).toHaveBeenCalledTimes(1);
   });
 });

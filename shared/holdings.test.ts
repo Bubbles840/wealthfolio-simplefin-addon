@@ -99,6 +99,44 @@ describe('toHoldingsSnapshot', () => {
     expect(snapshot?.positions.map((p) => p.avgCost)).toEqual(['101.25', undefined, undefined]);
   });
 
+  it('costs a money market fund at $1 a share when the feed sent no cost', () => {
+    const snapshot = toHoldingsSnapshot(account({ holdings: [
+      { symbol: 'ABCXX', shares: '100', market_value: '100.00', cost_basis: '0.00' },
+      { symbol: 'DEFXX', shares: '5', market_value: '5' },
+      // A cost the feed did send wins.
+      { symbol: 'GHIXX', shares: '10', market_value: '10.00', cost_basis: '9.50' },
+      // Not at $1: the cost stays unknown.
+      { symbol: 'JKLXX', shares: '10', market_value: '10.40', cost_basis: '0' },
+      // Not a money market ticker.
+      { symbol: 'ABC', shares: '1', market_value: '1.00', cost_basis: '0' },
+      // No market value to check against.
+      { symbol: 'MNOXX', shares: '5', cost_basis: '0' },
+    ] }));
+    expect(snapshot?.positions.map((p) => p.avgCost)).toEqual(['1', '1', '0.95', undefined, undefined, undefined]);
+  });
+
+  it.each([
+    ['12.345', '12.35', '1'], // value rounded to the cent
+    ['12.345', '12.34', '1'],
+    ['10', '10.01', '1'], // a cent either way
+    ['10', '9.99', '1'],
+    ['10', '10.02', undefined], // more than a cent
+    ['10', '9.98', undefined],
+    ['0', '0.00', undefined], // nothing held
+  ])('a money market line of %s shares worth %s gets cost %s', (shares, value, cost) => {
+    const snapshot = toHoldingsSnapshot(account({ holdings: [
+      { symbol: 'ABCXX', shares, market_value: value, cost_basis: '0' },
+    ] }));
+    expect(snapshot?.positions[0]?.avgCost).toBe(cost);
+  });
+
+  it('knows a money market ticker the feed sent in lower case', () => {
+    const snapshot = toHoldingsSnapshot(account({ holdings: [
+      { symbol: 'abcxx', shares: '5', market_value: '5.00', cost_basis: '0' },
+    ] }));
+    expect(snapshot?.positions[0]?.avgCost).toBe('1');
+  });
+
   it('dates the snapshot from the balance date, not from today', () => {
     const snapshot = toHoldingsSnapshot(
       account({ 'balance-date': 1735732800, holdings: [{ symbol: 'VTI', shares: '1' }] }),
@@ -370,7 +408,8 @@ describe('carriedCost', () => {
   });
 
   it('stays the same after a sale', () => {
-    expect(carriedCost('5', { quantity: 10, cost: 500 })).toEqual({ avgCost: '50' });
+    // Half sold, the value halved with it: a sale, not a reverse split.
+    expect(carriedCost('5', { quantity: 10, cost: 500, price: 60 }, '60')).toEqual({ avgCost: '50' });
   });
 
   it('adds new shares at the feed price that day (a contribution, a reinvested dividend)', () => {
@@ -379,14 +418,48 @@ describe('carriedCost', () => {
     expect(carriedCost('10.5', { quantity: 10, cost: 500 }, '52.5')).toEqual({ avgCost: '50.11904762' });
   });
 
+  describe('a split', () => {
+    it('keeps the total cost when the shares jump and the value stays (10-for-1)', () => {
+      // 100 shares at $100 cost $10,000; then 1,000 shares at $10.
+      expect(carriedCost('1000', { quantity: 100, cost: 10000, price: 100 }, '10')).toEqual({ avgCost: '10.00' });
+    });
+
+    it('keeps the total cost on a reverse split (1-for-10)', () => {
+      expect(carriedCost('10', { quantity: 100, cost: 1000, price: 9 }, '90')).toEqual({ avgCost: '100.00' });
+    });
+
+    it('allows the value to move up to 10% on the day', () => {
+      expect(carriedCost('200', { quantity: 100, cost: 5000, price: 100 }, '55')).toEqual({ avgCost: '25.00' });
+      // 11% off: not a split, so a purchase at the day's price.
+      expect(carriedCost('200', { quantity: 100, cost: 5000, price: 100 }, '55.5')).toEqual({ avgCost: '52.75' });
+    });
+
+    it('treats a jump whose value moved as a purchase or a sale (today\'s rules)', () => {
+      // Shares doubled and so did the value: 100 bought at $50.
+      expect(carriedCost('200', { quantity: 100, cost: 5000, price: 50 }, '50')).toEqual({ avgCost: '50.00' });
+      // Most sold: the average stays.
+      expect(carriedCost('10', { quantity: 100, cost: 5000, price: 50 }, '50')).toEqual({ avgCost: '50' });
+    });
+
+    it('asks when the shares jump and a price to compare is missing', () => {
+      expect(carriedCost('1000', { quantity: 100, cost: 10000 }, '10')).toEqual({ ask: true });
+      expect(carriedCost('10', { quantity: 100, cost: 1000, price: 9 })).toEqual({ ask: true });
+    });
+
+    it('does not look for a split under 1.5×', () => {
+      expect(carriedCost('149', { quantity: 100, cost: 5000 }, '50')).toEqual({ avgCost: '50.00' });
+      expect(carriedCost('67', { quantity: 100, cost: 5000 })).toEqual({ avgCost: '50' });
+    });
+  });
+
   it('ignores the price when the shares did not go up', () => {
     expect(carriedCost('10', { quantity: 10, cost: 500 }, '999')).toEqual({ avgCost: '50' });
   });
 
   it('carries nothing when the shares went up with no usable price, and says so', () => {
-    expect(carriedCost('11', { quantity: 10, cost: 500 })).toEqual({ sharesRose: true });
-    expect(carriedCost('11', { quantity: 10, cost: 500 }, '0')).toEqual({ sharesRose: true });
-    expect(carriedCost('11', { quantity: 10, cost: 500 }, 'n/a')).toEqual({ sharesRose: true });
+    expect(carriedCost('11', { quantity: 10, cost: 500 })).toEqual({ ask: true });
+    expect(carriedCost('11', { quantity: 10, cost: 500 }, '0')).toEqual({ ask: true });
+    expect(carriedCost('11', { quantity: 10, cost: 500 }, 'n/a')).toEqual({ ask: true });
   });
 
   it('carries nothing without a held cost or share count', () => {

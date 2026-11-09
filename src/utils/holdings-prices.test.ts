@@ -388,6 +388,36 @@ describe('syncHoldingsWithFeedPrices', () => {
       expect(written(wf, NEXT).avgCost).toBe('50');
     });
 
+    it('carries nothing when the held cost is in another currency', async () => {
+      const wf = withTicker();
+      const read = wf.pricing.getHoldings.getMockImplementation()!;
+      wf.pricing.getHoldings.mockImplementation(async (account: string) =>
+        (await read(account)).map((h) => ({ ...h, localCurrency: 'CAD' })));
+      await syncHoldingsWithFeedPrices(wf.io, wf.pricing, 'wf-a', snap('VOO', '10', NEXT), [], 'AAAA1111', undefined, NOW);
+
+      expect(written(wf, NEXT).avgCost).toBeUndefined();
+    });
+
+    it('carries it when the held cost is in the same currency', async () => {
+      const wf = withTicker();
+      const read = wf.pricing.getHoldings.getMockImplementation()!;
+      wf.pricing.getHoldings.mockImplementation(async (account: string) =>
+        (await read(account)).map((h) => ({ ...h, localCurrency: 'usd' })));
+      await syncHoldingsWithFeedPrices(wf.io, wf.pricing, 'wf-a', snap('VOO', '10', NEXT), [], 'AAAA1111', undefined, NOW);
+
+      expect(written(wf, NEXT).avgCost).toBe('50');
+    });
+
+    it('keeps the total cost through a split, from the held price', async () => {
+      const wf = withTicker();
+      wf.marketQuote(wf.assets.get('VOO')!.id, DAY, 60);
+      await syncHoldingsWithFeedPrices(wf.io, wf.pricing, 'wf-a', snap('VOO', '40', NEXT),
+        [{ symbol: 'VOO', price: '15', currency: 'USD' }], 'AAAA1111', undefined, NOW);
+
+      // 10 shares cost 500; 4-for-1 at about the same value: 40 shares, cost still 500.
+      expect(written(wf, NEXT).avgCost).toBe('12.50');
+    });
+
     it('carries nothing onto a shared asset whose pricing mode the read does not report', async () => {
       // It may be priced by hand, and the import would write the cost as its price.
       const wf = withTicker();
@@ -410,7 +440,8 @@ describe('syncHoldingsWithFeedPrices', () => {
 
     it('keeps it after a sale, which leaves the average cost as it was', async () => {
       const wf = withTicker();
-      await syncHoldingsWithFeedPrices(wf.io, wf.pricing, 'wf-a', snap('VOO', '4', NEXT), [], 'AAAA1111', undefined, NOW);
+      wf.marketQuote(wf.assets.get('VOO')!.id, DAY, 60);
+      await syncHoldingsWithFeedPrices(wf.io, wf.pricing, 'wf-a', snap('VOO', '4', NEXT), priceOf('VOO', '60'), 'AAAA1111', undefined, NOW);
 
       expect(written(wf, NEXT).avgCost).toBe('50');
     });

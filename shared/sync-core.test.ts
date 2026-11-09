@@ -3689,7 +3689,7 @@ describe('holdings snapshots for investment accounts', () => {
     const { host, store } = createFakeHost(seed);
     const result = await runSyncCore(host, store, { force: true });
     expect(result.errors).toEqual([
-      'No cost basis for VOO (Individual (ABCD)): its share count went up and SimpleFin sent no cost, and no single price to cost the new shares at. Enter the cost on the holding in Wealthfolio, or gains for the account stay unknown.',
+      'No cost basis for VOO (Individual (ABCD)): SimpleFin sent no cost, and its share count changed in a way the sync cannot cost (a purchase with no single price, or a large change it cannot confirm as a split). Enter the cost on the holding in Wealthfolio, or gains for the account stay unknown.',
     ]);
   });
 

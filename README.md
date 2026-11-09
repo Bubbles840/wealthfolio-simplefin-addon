@@ -326,10 +326,13 @@ like that keeps the cost Wealthfolio already has for it: the same average after
 a sale, and new shares (a contribution, a reinvested dividend, a buy) added at
 the feed's price that day. Synced daily, that is exact for a 401(k)
 contribution, which buys at the day's price; after a gap of several days, or
-for a brokerage buy that filled during the day, it is an estimate. A split or
-shares transferred in also raise the count without new money, so after one,
-correct the cost on the holding. With no price in the feed the sync asks you
-once to enter the cost; a holding with no cost in Wealthfolio stays unknown.
+for a brokerage buy that filled during the day, it is an estimate. A split is
+recognised when the share count changes by 1.5× or more while the position is
+worth about the same (within 10%): the total cost is kept. Shares transferred
+in raise the count without new money and are costed as a buy, so correct the
+cost on the holding after one. When the sync cannot cost a change (no price in
+the feed, or a large change it cannot confirm as a split) it asks you once to
+enter the cost; a holding with no cost in Wealthfolio stays unknown.
 
 ### Starting balances
 
@@ -449,6 +452,22 @@ Pin `:vX.Y.Z` instead of `:latest` if you would rather upgrade deliberately.
 The companion logs its version on startup (`Starting companion v…`), and the
 addon shows a banner when the tab, the installed addon and the companion
 are different versions, naming the fix (reload, upload the zip, or pull the image).
+
+#### Home Assistant alerts
+
+Under **Settings → Home Assistant**, the companion can also send alerts to Home
+Assistant, through its notify service (with a long-lived access token) or a
+webhook. Problem alerts are sent: sync failing, balance drift, unlinked
+transfers, large transactions, new accounts, refusals and duplicates removed. A
+notice for each import is off until you switch it on. Alerts the add-on raises
+wait for the companion's next pass, within 5 minutes.
+
+A rejected token, a wrong service or webhook, or a redirect pauses delivery
+until you change the address, token or service, or send a test, so a bad token
+is not retried (and counted as a failed login) every few minutes. While Home
+Assistant is down, the companion retries less and less often, up to every 4
+hours; changing the address, token or service ends that wait too. Alerts that wait
+more than a week are dropped, and the card says how many.
 
 #### Several Wealthfolio profiles
 

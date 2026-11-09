@@ -65,6 +65,8 @@ export interface HeldAsset {
   price?: number | null;
   quantity?: number | string | null;
   costBasis?: { local?: number | null } | null;
+  /** The currency `costBasis.local` and `price` are in. */
+  localCurrency?: string | null;
 }
 
 const modeOf = (h: HeldAsset | undefined) => h?.instrument?.pricingMode ?? undefined;
@@ -310,8 +312,10 @@ export async function syncHoldingsWithFeedPrices(
       // the cost as the day's price of a hand-priced one. A mode the read does
       // not report counts as hand-priced.
       if (!own && modeOf(heldById.get(ids.get(key) ?? ''))?.toUpperCase() !== 'MARKET') return out;
-      const carried = carriedCost(p.quantity, { quantity: h.quantity, cost: h.costBasis?.local }, priced.get(key)?.price);
-      if (carried.sharesRose) costUnknown.push(p.symbol);
+      // A cost in another currency cannot be added to: carry nothing.
+      if (h.localCurrency && p.currency && h.localCurrency.toUpperCase() !== p.currency.toUpperCase()) return out;
+      const carried = carriedCost(p.quantity, { quantity: h.quantity, cost: h.costBasis?.local, price: h.price }, priced.get(key)?.price);
+      if (carried.ask) costUnknown.push(p.symbol);
       return carried.avgCost ? { ...out, avgCost: carried.avgCost } : out;
     }),
   };

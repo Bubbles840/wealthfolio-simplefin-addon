@@ -7,7 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Alerts to Home Assistant (#60).** Under Settings → Home Assistant, the
+  companion sends alerts through Home Assistant's notify service or a webhook,
+  with tap-to-open links. Import notices are off until you switch them on.
+  Needs this release's companion.
+- **Send an Amazon label to a subcategory (#65).** The Amazon card now lists
+  subcategories as `Parent / Child`, and a label mapped to one is filed under
+  exactly that one, even when another subcategory has the same name. Needs
+  this release's companion; with an older one the card lists top-level
+  categories only. One mapping can move: a label set to a name that is both a
+  top-level category and a subcategory now files under the top-level one,
+  which is the one the card offered. Before, it could land in the subcategory.
+
 ### Fixed
+- **Gains show on holdings accounts with a money market fund (#64).** Brokerages send
+  the cash sweep fund with no cost, and one position with unknown cost makes
+  Wealthfolio hide the account's gain. A money market fund (ticker ending in
+  XX) that the feed values at $1 a share now gets $1 a share as its cost. It
+  shows from the next day's snapshot; a day already saved is not rewritten.
 - **Holdings keep their cost when the feed sends none** (common for 401(k)
   plans). The cost Wealthfolio already has is carried to the new snapshot;
   shares added since (a contribution, a reinvested dividend, a buy) are costed

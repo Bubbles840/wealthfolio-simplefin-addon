@@ -157,17 +157,27 @@ function averageCost(
   return price && price.n > 0n ? String(purchasePrice).trim() : undefined;
 }
 
+/** A share count that changes by this factor or more, either way, may be a split. */
+const SPLIT_FACTOR_PERCENT = 150n;
+/** A split leaves the position's value about where it was: within this many percent. */
+const SPLIT_VALUE_PERCENT = 10n;
+
 /**
  * The per-share cost to carry onto a position the feed sent without one, from
- * what Wealthfolio already holds for it (its total cost and shares).
+ * what Wealthfolio already holds for it (its total cost, shares and last price).
  *
- * - Shares the same or fewer: the same average cost (a sale keeps it).
+ * - Shares changed by 1.5× or more, either way, and the position worth within
+ *   10% of what it was (the feed's price now against the held price): a split.
+ *   The total cost stays; only the shares change.
+ * - Shares changed that much and the value cannot be compared (a price is
+ *   missing): `ask`. A split read as a purchase or a sale writes a confident
+ *   wrong cost; unknown is better.
+ * - Otherwise, shares the same or fewer: the same average cost (a sale keeps it).
  * - Shares up: the old total cost plus the new shares at `price`, the feed's
  *   price that day (market value ÷ shares). Exact for a 401(k) contribution or
  *   a reinvested dividend, which buy at that day's price; close for a
- *   brokerage buy, which filled at some price during the day.
- * - Shares up and no usable price: `sharesRose`, so the caller can ask for the
- *   cost instead of making one up.
+ *   brokerage buy, which filled at some price during the day. With no usable
+ *   price: `ask`.
  *
  * The held figures come from the host's holdings read, which gives numbers:
  * they are read as decimal strings, and anything else (an exponent, zero,
@@ -175,20 +185,54 @@ function averageCost(
  */
 export function carriedCost(
   shares: string,
-  held: { quantity?: number | string | null; cost?: number | string | null },
+  held: { quantity?: number | string | null; cost?: number | string | null; price?: number | string | null },
   price?: string | null,
-): { avgCost?: string; sharesRose?: true } {
+): { avgCost?: string; ask?: true } {
   const now = parseScaled(shares);
   const before = parseScaled(held.quantity ?? null);
   const cost = parseScaled(held.cost ?? null);
   if (now === null || before === null || before === 0n || cost === null || cost === 0n) return {};
+  const perShare = parseScaled(price ?? null);
+  const heldPrice = parseScaled(held.price ?? null);
+  const big = now * 100n >= before * SPLIT_FACTOR_PERCENT || before * 100n >= now * SPLIT_FACTOR_PERCENT;
+  if (big) {
+    if (!perShare || !heldPrice) return { ask: true };
+    const valueNow = now * perShare;
+    const valueBefore = before * heldPrice;
+    const gap = valueNow > valueBefore ? valueNow - valueBefore : valueBefore - valueNow;
+    if (gap * 100n <= valueBefore * SPLIT_VALUE_PERCENT) return { avgCost: divideScaled(cost, now) };
+  }
   if (now <= before) {
     const avgCost = averageCost(String(held.cost), null, String(held.quantity));
     return avgCost ? { avgCost } : {};
   }
-  const perShare = parseScaled(price ?? null);
-  if (perShare === null || perShare === 0n) return { sharesRose: true };
+  if (!perShare) return { ask: true };
   return { avgCost: divideScaled(cost + ((now - before) * perShare) / PRICE_SCALE, now) };
+}
+
+/** A US money market fund's ticker: five letters ending in XX (e.g. ABCXX). */
+const MONEY_MARKET_TICKER = /^[A-Z]{3}XX$/;
+/** How far a money market line's value may sit from its share count: a cent. */
+const MONEY_MARKET_TOLERANCE = 10000n;
+
+/**
+ * `'1'` for a money market fund SimpleFin sent without a cost, else `undefined`.
+ *
+ * Brokerages report the cash sweep fund with a zero cost
+ * basis. Unknown cost on any position makes Wealthfolio drop the account's gain
+ * for every period, so the account shows no gain at all. A money market fund is
+ * held at $1 a share, so its cost is its share count. Only when the feed agrees:
+ * the market value must equal the shares to the cent, so a fund that is not at
+ * $1 keeps its cost unknown.
+ */
+function moneyMarketCost(symbol: string, shares: string, marketValue: string | null | undefined): string | undefined {
+  if (!MONEY_MARKET_TICKER.test(symbol.toUpperCase())) return undefined;
+  const value = parseMicros(marketValue);
+  const count = parseMicros(shares);
+  // No shares: nothing held, so no cost (as `averageCost`).
+  if (value === null || count === null || count <= 0n) return undefined;
+  const diff = value - count;
+  return diff <= MONEY_MARKET_TOLERANCE && diff >= -MONEY_MARKET_TOLERANCE ? '1' : undefined;
 }
 
 function formatMicros(micros: bigint): string {
@@ -310,7 +354,8 @@ export function toHoldingsSnapshot(
     positions.push({
       symbol,
       quantity: shares,
-      avgCost: averageCost(holding.cost_basis, holding.purchase_price, shares),
+      avgCost: averageCost(holding.cost_basis, holding.purchase_price, shares)
+        ?? moneyMarketCost(symbol, shares, holding.market_value),
       // SimpleFin omits a holding's currency when it matches the account's,
       // which is the overwhelmingly common case. Some providers send `""`
       // instead, which means the same thing.

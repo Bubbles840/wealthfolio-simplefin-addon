@@ -16,6 +16,7 @@ import { shortDate } from '../../shared/telegram';
 import type { SemesterPoolConfig } from '../../shared/pool';
 import { NotificationsTab, type TelegramDraftState } from './NotificationsTab';
 import { ReceiptReaderConnect } from '../components/ReceiptReaderConnect';
+import { HomeAssistantConnect } from '../components/HomeAssistantConnect';
 import { fetchAccounts } from '../utils/simplefin';
 import type { SecretsStore, CategoryCatalogEntry, AccountBalanceInfo } from '../utils/secrets';
 import type { Scheduler } from '../utils/scheduler';
@@ -616,6 +617,8 @@ export function SettingsTab({
       />
       <ReceiptReaderConnect store={store} isOpen={isOpen} toggleCard={toggleCard} />
 
+      <HomeAssistantConnect store={store} isOpen={isOpen} toggleCard={toggleCard} />
+
       <h3 className="sfin-settings-group">Sync</h3>
 
       <CollapsibleCard
@@ -747,6 +750,7 @@ export function SettingsTab({
         onToggle={() => toggleCard(CARD.amazon)}
         onToggleGuide={() => toggleCard(CARD.amazonGuide)}
         categories={categories}
+        companionVersion={companionVersion}
       />
 
       {/* The card's own open state replaces the old "Edit"/"Done" toggle: this
