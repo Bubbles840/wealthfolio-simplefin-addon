@@ -26,6 +26,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Wealthfolio hide the account's gain. A money market fund (ticker ending in
   XX) that the feed values at $1 a share now gets $1 a share as its cost. It
   shows from the next day's snapshot; a day already saved is not rewritten.
+- **A holding on its own per-account asset stays there on Wealthfolio 3.12.**
+  For a symbol with no asset of exactly that code, 3.12's import check searches
+  asset codes, so it could return the account's own `SYMBOL (TAG)` asset for
+  the bare symbol. The add-on then wrote the holding under the bare symbol,
+  onto a new asset nothing priced, and the account showed $0. An account
+  already hit stays on that empty asset until it has gone 3 days without a
+  quote, then moves back to its own asset; days already written stay at $0
+  unless repaired by hand.
 
 ## [1.73.0] - 2026-11-05
 
