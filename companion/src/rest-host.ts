@@ -155,13 +155,14 @@ export class RestSyncHost implements SyncHost {
     return fetchAccountsNode(accessUrl, since);
   }
 
-  async listAccounts(): Promise<Array<{ id: string; accountType: string; name?: string; currency?: string }>> {
+  async listAccounts(): Promise<Array<{ id: string; accountType: string; name?: string; currency?: string; trackingMode?: string }>> {
     const accounts = await this.client.getAccounts();
     return accounts.map((a: any) => ({
       id: a.id,
       accountType: String(a.accountType ?? ''),
       name: a.name,
       ...(a.currency ? { currency: String(a.currency) } : {}),
+      ...(a.trackingMode ? { trackingMode: String(a.trackingMode) } : {}),
     }));
   }
 

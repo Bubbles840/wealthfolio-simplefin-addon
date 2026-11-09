@@ -112,3 +112,13 @@ describe('AddonSyncHost totals a card from its whole history on a manual run (1.
     expect(log).toHaveBeenCalledWith(expect.stringContaining('offline'));
   });
 });
+
+describe('listAccounts reports the tracking mode', () => {
+  it('passes it through when set, and leaves the key out when not', async () => {
+    const host = new AddonSyncHost({ api: { accounts: { getAll: async () => [{ id: 'wf-a', accountType: 'SECURITIES', name: 'Brokerage', trackingMode: 'TRANSACTIONS' }, { id: 'wf-b', accountType: 'SECURITIES', name: 'Retirement' }] } } } as any);
+    expect(await host.listAccounts()).toEqual([
+      { id: 'wf-a', accountType: 'SECURITIES', name: 'Brokerage', trackingMode: 'TRANSACTIONS' },
+      { id: 'wf-b', accountType: 'SECURITIES', name: 'Retirement' },
+    ]);
+  });
+});

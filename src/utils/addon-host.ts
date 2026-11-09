@@ -138,13 +138,14 @@ export class AddonSyncHost implements SyncHost {
     return fetchAccounts(accessUrl, since, this.ctx.api.network, authKey ?? undefined);
   }
 
-  async listAccounts(): Promise<Array<{ id: string; accountType: string; name?: string; currency?: string }>> {
+  async listAccounts(): Promise<Array<{ id: string; accountType: string; name?: string; currency?: string; trackingMode?: string }>> {
     const accounts = await this.ctx.api.accounts.getAll();
     return accounts.map((a) => ({
       id: a.id,
       accountType: String(a.accountType ?? ''),
       name: a.name,
       ...(a.currency ? { currency: String(a.currency) } : {}),
+      ...(a.trackingMode ? { trackingMode: String(a.trackingMode) } : {}),
     }));
   }
 
