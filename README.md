@@ -262,8 +262,9 @@ a cooldown, so reloading the page is a cheap no-op.
 
 Investment positions (holdings snapshots) are written by the add-on only; the
 companion cannot. So while Wealthfolio is open, the add-on also syncs on its own
-when it has not written them for 20 hours and an investment account is mapped,
-even with its schedule off. It counts as an automatic SimpleFin download (an
+when it has not written them for 20 hours and an investment account is mapped.
+With its schedule off it does so only while a companion is syncing (one that
+synced in the last two days); without one, Off means you sync by hand. It counts as an automatic SimpleFin download (an
 hour after the newest one, within the automatic share of the day). Snapshots
 still need Wealthfolio open in a browser at least once a day.
 
@@ -444,6 +445,22 @@ Pin `:vX.Y.Z` instead of `:latest` if you would rather upgrade deliberately.
 The companion logs its version on startup (`Starting companion v…`), and the
 addon shows a banner when the tab, the installed addon and the companion
 are different versions, naming the fix (reload, upload the zip, or pull the image).
+
+#### Home Assistant alerts
+
+Under **Settings → Home Assistant**, the companion can also send alerts to Home
+Assistant, through its notify service (with a long-lived access token) or a
+webhook. Problem alerts are sent: sync failing, balance drift, unlinked
+transfers, large transactions, new accounts, refusals and duplicates removed. A
+notice for each import is off until you switch it on. Alerts the add-on raises
+wait for the companion's next pass, within 5 minutes.
+
+A rejected token, a wrong service or webhook, or a redirect pauses delivery
+until you change the address, token or service, or send a test, so a bad token
+is not retried (and counted as a failed login) every few minutes. While Home
+Assistant is down, the companion retries less and less often, up to every 4
+hours; changing the address, token or service ends that wait too. Alerts that wait
+more than a week are dropped, and the card says how many.
 
 #### Several Wealthfolio profiles
 

@@ -21,13 +21,17 @@ import { SCHEDULER_POLL_MS } from './scheduler';
  *  2. the SimpleFin budget would let an automatic run download now (the hour
  *     since the newest request and the 16 a day, `decideSimplefinRequest`),
  *     so a wait never starts a sync that is then refused;
- *  3. a mapped Wealthfolio account holds investments (SECURITIES,
- *     CRYPTOCURRENCY, or tracking mode HOLDINGS). Without one there is nothing
- *     to catch up, and it stays quiet for HOLDINGS_CATCHUP_QUIET_MS before
- *     asking again, so an install without investments costs a few reads an hour.
+ *  3. the add-on's schedule is on, or a companion synced in the last two days.
+ *     Someone with no companion who set the schedule to Off chose to sync by
+ *     hand; the problem this solves is a companion syncing first;
+ *  4. a mapped Wealthfolio account holds investments (SECURITIES,
+ *     CRYPTOCURRENCY, or tracking mode HOLDINGS). Set up without one, there is
+ *     nothing to catch up, and it stays quiet for HOLDINGS_CATCHUP_QUIET_MS
+ *     before asking again, so such an install costs a few reads an hour. Not
+ *     set up yet: no quiet, so a setup finished minutes later is caught.
  * Then it runs an ordinary scheduled sync past the one-hour interval
  * (`catchUp`: the usual download window, and the budget still applies inside
- * it). It runs whether or not the add-on's own schedule is on.
+ * it).
  *
  * A run that fails before the holdings step leaves the pass time alone; the
  * request it recorded keeps the next try an hour away, so a failing feed is
@@ -69,11 +73,18 @@ export function mapsInvestmentAccount(
     && (INVESTMENT_ACCOUNT_TYPES.has(String(a.accountType ?? '')) || a.trackingMode === 'HOLDINGS'));
 }
 
+/** `notSetUp`: no access URL or mapping yet. `none`: set up, no investment
+ *  account mapped. `mapped`: at least one. */
+export type InvestmentAccounts = 'notSetUp' | 'none' | 'mapped';
+
 export interface HoldingsCatchUpDeps {
   getHoldingsPassAt(): Promise<Date | null>;
   getRequestLog(): Promise<string | null>;
-  /** Setup done and an investment account mapped. */
-  hasInvestmentAccounts(): Promise<boolean>;
+  /** The add-on's own schedule is on (an interval above zero). */
+  scheduleOn(): Promise<boolean>;
+  /** A companion's last successful sync is under two days old. */
+  companionSyncing(): Promise<boolean>;
+  investmentAccounts(): Promise<InvestmentAccounts>;
   /** Starts the sync; resolves when it is over. */
   runSync(): Promise<unknown>;
   now?: () => Date;
@@ -117,10 +128,10 @@ export class HoldingsCatchUp {
       if (now.getTime() < this.quietUntil) return;
       if (!holdingsCatchUpDue(await deps.getHoldingsPassAt(), now)) return;
       if (!automaticDownloadAllowed(await deps.getRequestLog(), now)) return;
-      if (!(await deps.hasInvestmentAccounts())) {
-        this.quietUntil = now.getTime() + HOLDINGS_CATCHUP_QUIET_MS;
-        return;
-      }
+      if (!(await deps.scheduleOn()) && !(await deps.companionSyncing())) return;
+      const accounts = await deps.investmentAccounts();
+      if (accounts === 'none') this.quietUntil = now.getTime() + HOLDINGS_CATCHUP_QUIET_MS;
+      if (accounts !== 'mapped') return;
       if (this.stopped) return;
       await deps.runSync();
     } catch {

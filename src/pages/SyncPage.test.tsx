@@ -277,6 +277,23 @@ describe('SyncPage', () => {
     expect(screen.getByRole('tab', { name: 'Reports' }).getAttribute('aria-selected')).toBe('true');
   });
 
+  it('opens the tab an alert linked to, over the remembered tab', async () => {
+    const props = makeProps();
+    props.store.getUiState = vi.fn(async () => ({ activeTab: 'reports' }) as any);
+    render(<SyncPage {...props} initialSearch="?tab=settings" />);
+    await waitFor(() => expect(
+      screen.getByRole('tab', { name: /settings/i }).getAttribute('aria-selected'),
+    ).toBe('true'));
+    await new Promise((r) => setTimeout(r, 20));
+    expect(screen.getByRole('tab', { name: /settings/i }).getAttribute('aria-selected')).toBe('true');
+  });
+
+  it('opens Home on the transaction an alert linked to', async () => {
+    const props = makeProps();
+    render(<SyncPage {...props} initialSearch="?tab=home&story=act-9" />);
+    expect(await screen.findByText('From your alert')).toBeInTheDocument();
+  });
+
   it('remembers the tab without forgetting the dismissed checklist', async () => {
     // Read-modify-write both ways: `ui_state` is one blob, so switching tabs
     // must not resurrect a checklist the user dismissed.

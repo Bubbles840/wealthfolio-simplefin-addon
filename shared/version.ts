@@ -211,6 +211,20 @@ export function addonUnderstandsDividends(installedAddonVersion: string | null):
   return installedAddonVersion !== null && isAtLeastVersion(installedAddonVersion.trim(), DIVIDEND_SECURITIES_SINCE);
 }
 
+/**
+ * The first companion that drains the Home Assistant outbox
+ * (shared/home-assistant.ts). Only the companion can reach Home Assistant, so
+ * the add-on offers the setting only once one this new is running. Raise to the
+ * release that ships this.
+ */
+export const HOME_ASSISTANT_SINCE = '1.74.0';
+
+/** True when `companionVersion` drains the outbox. No companion at all (null)
+ *  is false: nothing would ever send what is queued. */
+export function companionSendsToHomeAssistant(companionVersion: string | null): boolean {
+  return companionVersion !== null && isAtLeastVersion(companionVersion.trim(), HOME_ASSISTANT_SINCE);
+}
+
 /** The companion's half: an installed add-on that reads `asReimbursement`.
  *  Unknown (null — the companion cannot see the addons directory) is false. */
 export function addonUnderstandsPaybacks(installedAddonVersion: string | null): boolean {
@@ -277,4 +291,20 @@ export const RECEIPTS_SINCE = '1.72.0';
 /** No companion (null) is false: nothing else would read the photos. */
 export function companionReadsReceipts(companionVersion: string | null): boolean {
   return companionVersion !== null && isAtLeastVersion(companionVersion.trim(), RECEIPTS_SINCE);
+}
+
+/**
+ * The first release whose companion files an Amazon label under a
+ * subcategory (`findAmazonCategory`, shared/amazon-config.ts). An older one
+ * looks a stored `Parent / Child` up as a plain name, finds nothing and files
+ * nothing, so the Amazon card offers subcategories only with a companion this
+ * new. Raise to the release that ships this.
+ */
+export const AMAZON_SUBCATEGORIES_SINCE = '1.74.0';
+
+/** True when `companionVersion` files Amazon labels under subcategories.
+ *  Null (no companion, or its version not read yet) is false: only the
+ *  companion files Amazon charges, and an unknown one may be older. */
+export function companionFilesAmazonSubcategories(companionVersion: string | null): boolean {
+  return companionVersion !== null && isAtLeastVersion(companionVersion.trim(), AMAZON_SUBCATEGORIES_SINCE);
 }

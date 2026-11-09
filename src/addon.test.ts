@@ -15,9 +15,11 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 vi.mock('./pages/SetupPage', () => ({ SetupPage: vi.fn(() => React.createElement('div', null, 'SetupPage')) }));
 vi.mock('./pages/SyncPage', () => ({ SyncPage: vi.fn(() => React.createElement('div', null, 'SyncPage')) }));
-vi.mock('./utils/sync', () => ({
+vi.mock('./utils/sync', async () => ({
   runSync: vi.fn(async () => ({ imported: 0, skipped: 0, errors: [] })),
   MIN_SYNC_INTERVAL_MS: 3_600_000,
+  // The real check: the holdings catch-up reads the companion's sync health.
+  companionSyncedRecently: (await vi.importActual<typeof import('./utils/sync')>('./utils/sync')).companionSyncedRecently,
 }));
 
 import enable, { SimplefinSyncView } from './addon';
@@ -143,7 +145,6 @@ describe('addon enable()', () => {
     ctx.api.accounts = { getAll: vi.fn(async () => [{ id: 'wf-a', accountType: 'CASH', trackingMode: 'TRANSACTIONS' }]) };
     enable(ctx);
     await new Promise((r) => setTimeout(r, 20));
-    expect(ctx.api.accounts.getAll).toHaveBeenCalled();
     expect(runSync).not.toHaveBeenCalled();
   });
 
@@ -154,6 +155,9 @@ describe('addon enable()', () => {
         simplefin_access_url: 'https://u:p@bridge.simplefin.org/simplefin',
         account_mapping: JSON.stringify({ 'sfin-1': 'wf-a' }),
         sync_schedule_hours: '0',
+        // A companion that synced an hour ago: the catch-up's reason to run
+        // with the schedule off.
+        sync_health: JSON.stringify({ lastSuccessAt: new Date(Date.now() - 3_600_000).toISOString() }),
         ...extra,
       };
       ctx.api.secrets.get = vi.fn(async (k: string) => values[k] ?? null);
@@ -166,6 +170,16 @@ describe('addon enable()', () => {
       const ctx = investmentSetup();
       enable(ctx);
       await waitFor(() => expect(runSync).toHaveBeenCalledWith(expect.anything(), expect.anything(), { catchUp: true }));
+      ctx._triggerDisable();
+    });
+
+    it('does not sync with the schedule off when no companion is syncing', async () => {
+      // Someone without a companion who set Auto-sync to Off syncs by hand.
+      vi.mocked(runSync).mockClear();
+      const ctx = investmentSetup({ sync_health: JSON.stringify({ lastSuccessAt: new Date(Date.now() - 3 * 86_400_000).toISOString() }) });
+      enable(ctx);
+      await new Promise((r) => setTimeout(r, 20));
+      expect(runSync).not.toHaveBeenCalled();
       ctx._triggerDisable();
     });
 

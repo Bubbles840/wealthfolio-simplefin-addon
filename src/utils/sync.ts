@@ -19,6 +19,7 @@ import {
 } from '../../shared/telegram';
 import { visibleUncategorized } from '../../shared/uncategorized';
 import { parseAnnouncedRefusals, unannouncedRefusals, withAnnouncedRefusals } from '../../shared/refused-alerts';
+import { queueHaEntries, syncAlertEntries } from '../../shared/home-assistant';
 import type { PendingLargeTxAlert, SecretsStore } from './secrets';
 import type { AddonContext } from '@wealthfolio/addon-sdk';
 import { hostTakesCardTransferOut } from '../../shared/version';
@@ -96,6 +97,13 @@ export function runSync(
       // cannot turn a successful sync into a failed one; a core that throws skips
       // delivery entirely, which is correct — it produced no alerts to deliver.
       await deliverAddonAlerts(ctx, store, result);
+      // Home Assistant, independently of Telegram: queued here, sent by the
+      // companion (an add-on cannot reach a Home Assistant address). Never rejects.
+      const haIo = store.homeAssistantIo?.();
+      if (haIo) {
+        const now = new Date();
+        await queueHaEntries(haIo, 'addon', (known, config) => syncAlertEntries(result, now, known, config), now);
+      }
       return result;
     } finally {
       release();
@@ -135,7 +143,7 @@ interface TelegramTarget {
  *  running — the same two days after which Budget calls its data stale. */
 const COMPANION_ALIVE_MS = 2 * 24 * 60 * 60 * 1000;
 
-async function companionSyncedRecently(store: Partial<Pick<SecretsStore, 'getSyncHealth'>>): Promise<boolean> {
+export async function companionSyncedRecently(store: Partial<Pick<SecretsStore, 'getSyncHealth'>>): Promise<boolean> {
   // Optional-called: a store built before 1.57 has no such method.
   const health = await store.getSyncHealth?.().catch(() => null);
   const at = health?.lastSuccessAt ? Date.parse(health.lastSuccessAt) : NaN;

@@ -7,6 +7,7 @@ import {
   holdingsCatchUpDue,
   mapsInvestmentAccount,
   type HoldingsCatchUpDeps,
+  type InvestmentAccounts,
 } from './holdings-catchup';
 import { SIMPLEFIN_AUTO_GAP_MS, SIMPLEFIN_AUTO_LIMIT, SIMPLEFIN_FUTURE_TOLERANCE_MS } from '../../shared/simplefin-budget';
 import { SCHEDULER_POLL_MS } from './scheduler';
@@ -92,7 +93,9 @@ describe('HoldingsCatchUp', () => {
   const deps = (over: Partial<HoldingsCatchUpDeps> = {}): HoldingsCatchUpDeps & { runSync: ReturnType<typeof vi.fn> } => ({
     getHoldingsPassAt: async () => ago(HOLDINGS_CATCHUP_AFTER_MS),
     getRequestLog: async () => log(ago(SIMPLEFIN_AUTO_GAP_MS)),
-    hasInvestmentAccounts: async () => true,
+    scheduleOn: async () => false,
+    companionSyncing: async () => true,
+    investmentAccounts: async () => 'mapped' as const,
     now: () => NOW,
     ...over,
     runSync: vi.fn(over.runSync ?? (async () => undefined)),
@@ -114,7 +117,9 @@ describe('HoldingsCatchUp', () => {
     ['not due yet', { getHoldingsPassAt: async () => ago(60_000) }],
     ['the budget says wait', { getRequestLog: async () => log(ago(60_000)) }],
     ['the budget record is unreadable', { getRequestLog: async () => { throw new Error('secret read failed'); } }],
-    ['no investment account is mapped', { hasInvestmentAccounts: async () => false }],
+    ['no investment account is mapped', { investmentAccounts: async () => 'none' as const }],
+    ['setup is not finished', { investmentAccounts: async () => 'notSetUp' as const }],
+    ['the schedule is off and no companion is syncing', { scheduleOn: async () => false, companionSyncing: async () => false }],
   ] as Array<[string, Partial<HoldingsCatchUpDeps>]>)('does not run when %s', async (_why, over) => {
     const d = deps(over);
     await checkOnce(d);
@@ -122,22 +127,21 @@ describe('HoldingsCatchUp', () => {
   });
 
   it('starts no sync once stopped, even from a check already under way', async () => {
-    let release: (v: boolean) => void = () => {};
-    const d = deps({ hasInvestmentAccounts: () => new Promise<boolean>((r) => { release = r; }) });
+    let release: ((v: InvestmentAccounts) => void) | null = null;
+    const d = deps({ investmentAccounts: () => new Promise<InvestmentAccounts>((r) => { release = r; }) });
     const c = new HoldingsCatchUp(d);
     const pending = c.check();
-    await vi.waitFor(() => expect(release).not.toBe(undefined));
-    await Promise.resolve();
+    await vi.waitFor(() => expect(release).not.toBeNull());
     c.stop();
-    release(true);
+    release!('mapped');
     await pending;
     expect(d.runSync).not.toHaveBeenCalled();
   });
 
   it('stays quiet for a while after finding no investment account, then asks again', async () => {
     let now = NOW;
-    const hasInvestmentAccounts = vi.fn(async () => false);
-    const d = deps({ hasInvestmentAccounts, now: () => now });
+    const hasInvestmentAccounts = vi.fn(async (): Promise<InvestmentAccounts> => 'none');
+    const d = deps({ investmentAccounts: hasInvestmentAccounts, now: () => now });
     const c = new HoldingsCatchUp(d);
     await c.check();
     now = new Date(NOW.getTime() + HOLDINGS_CATCHUP_QUIET_MS - 1);
@@ -148,9 +152,26 @@ describe('HoldingsCatchUp', () => {
     expect(hasInvestmentAccounts).toHaveBeenCalledTimes(2);
   });
 
+  it('runs with the schedule on even when no companion is syncing', async () => {
+    const d = deps({ scheduleOn: async () => true, companionSyncing: async () => false });
+    await checkOnce(d);
+    expect(d.runSync).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not go quiet before setup is finished, so a setup minutes later is caught', async () => {
+    let state: InvestmentAccounts = 'notSetUp';
+    const d = deps({ investmentAccounts: async () => state });
+    const c = new HoldingsCatchUp(d);
+    await c.check();
+    expect(d.runSync).not.toHaveBeenCalled();
+    state = 'mapped';
+    await c.check();
+    expect(d.runSync).toHaveBeenCalledTimes(1);
+  });
+
   it('checks the budget before reading accounts, so a wait costs no account read', async () => {
-    const hasInvestmentAccounts = vi.fn(async () => true);
-    await checkOnce(deps({ getRequestLog: async () => log(ago(60_000)), hasInvestmentAccounts }));
+    const hasInvestmentAccounts = vi.fn(async (): Promise<InvestmentAccounts> => 'mapped');
+    await checkOnce(deps({ getRequestLog: async () => log(ago(60_000)), investmentAccounts: hasInvestmentAccounts }));
     expect(hasInvestmentAccounts).not.toHaveBeenCalled();
   });
 

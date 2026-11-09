@@ -7,7 +7,7 @@ import { SecretsStore } from './utils/secrets';
 import { withChunkedSecrets } from './utils/chunked-secrets';
 import { Scheduler } from './utils/scheduler';
 import { HoldingsCatchUp, mapsInvestmentAccount } from './utils/holdings-catchup';
-import { runSync } from './utils/sync';
+import { companionSyncedRecently, runSync } from './utils/sync';
 import { ThemeStyles } from './components/ui';
 
 // ── Module-level singletons set by enable() ───────────────────────────────────
@@ -135,10 +135,12 @@ const enable: AddonEnableFunction = (hostCtx) => {
   const holdingsCatchUp = new HoldingsCatchUp({
     getHoldingsPassAt: () => startupStore.getHoldingsPassAt(),
     getRequestLog: () => startupStore.getSimplefinRequests(),
-    hasInvestmentAccounts: async () => {
+    scheduleOn: async () => ((await startupStore.getSyncScheduleHours()) ?? 0) > 0,
+    companionSyncing: () => companionSyncedRecently(startupStore),
+    investmentAccounts: async () => {
       const [accessUrl, mapping] = await Promise.all([startupStore.getAccessUrl(), startupStore.getAccountMapping()]);
-      if (!accessUrl || !mapping) return false;
-      return mapsInvestmentAccount(mapping, await ctx.api.accounts.getAll());
+      if (!accessUrl || !mapping || Object.keys(mapping).length === 0) return 'notSetUp';
+      return mapsInvestmentAccount(mapping, await ctx.api.accounts.getAll()) ? 'mapped' : 'none';
     },
     runSync: () => runSync(ctx, startupStore, { catchUp: true }),
   });
