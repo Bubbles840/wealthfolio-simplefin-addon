@@ -657,6 +657,9 @@ export function badgeVerdict(bankBalance: number, wealthfolioFigure: number): { 
   return { drift: Math.abs(d) > DRIFT_THRESHOLD_DOLLARS ? d : null, measured: true };
 }
 
+/** Wealthfolio account types valued from their positions (investment and crypto). */
+const INVESTMENT_ACCOUNT_TYPES: ReadonlySet<string> = new Set(['SECURITIES', 'CRYPTOCURRENCY']);
+
 /** Distinct marker so the UI can recognise an interval skip and offer to
  *  force, rather than treating it as a generic error. */
 export const INTERVAL_SKIP_MESSAGE =
@@ -2290,10 +2293,35 @@ async function runSyncPass(
   let skipped = 0;
   const balanceInitialized = await store.getBalanceInitialized();
   // Account types drive default typing (card refunds → CREDIT etc.)
-  const wfAccounts = await host.listAccounts().catch(() => []);
+  // `accountsRead` false = the list could not be read this run: the
+  // starting-balance step then waits for a run that can see each account's
+  // type and tracking mode (see `noStartingBalance`).
+  let accountsRead = true;
+  const wfAccounts = await host.listAccounts().catch(() => {
+    accountsRead = false;
+    return [] as Awaited<ReturnType<SyncHost['listAccounts']>>;
+  });
   const wfTypes = new Map<string, string>(
     wfAccounts.map((a): [string, string] => [a.id, String(a.accountType ?? '')]),
   );
+  // Wealthfolio's tracking mode per account (TRANSACTIONS, HOLDINGS, NOT_SET);
+  // absent when the host does not say.
+  const wfModes = new Map<string, string>(
+    wfAccounts.filter((a) => a.trackingMode).map((a): [string, string] => [a.id, String(a.trackingMode)]),
+  );
+  // An account whose value is its positions never gets a cash starting
+  // balance: Wealthfolio has no valuation row for it, the balance read falls
+  // back to its cash activities (about zero), and the whole account value was
+  // booked as a cash credit that showed as income (live, after a re-link).
+  // That is every HOLDINGS account, and any investment or crypto account whose
+  // feed lists positions whatever its mode (the add-on creates accounts as
+  // TRANSACTIONS).
+  const noStartingBalance = (wfAccountId: string, sfAccount: SimplefinAccount): boolean =>
+    wfModes.get(wfAccountId) === 'HOLDINGS'
+    || (INVESTMENT_ACCOUNT_TYPES.has(wfTypes.get(wfAccountId) ?? '')
+      // Positions the holdings step can write: holdings without a symbol or a
+      // share count make no snapshot, and then the cash line is all there is.
+      && toHoldingsSnapshot(sfAccount) !== null);
   // Names, for the alerts: `name` is optional on the SyncHost contract, so an
   // empty one falls back to the SimpleFin account name at the use site.
   const wfNames = new Map<string, string>(
@@ -4516,9 +4544,13 @@ async function runSyncPass(
     // the old id's: when the matcher misses an overlap row (the bank re-worded
     // it), the copy is imported, and only this baseline cancels it. With books
     // that already match the bank it nets to nothing, so none is booked.
+    // Skipped, and NOT marked done, while the account list is unreadable or the
+    // account is valued from its positions (`noStartingBalance`): a later run,
+    // or a later switch to TRANSACTIONS, decides it afresh.
+    const baselineSkipped = !accountsRead || noStartingBalance(wfAccountId, sfAccount);
     const baselineSet = balanceInitialized.includes(sfAccount.id);
     let alreadyCorrected = false;
-    if (canReadBalance && !baselineSet) {
+    if (canReadBalance && !baselineSet && !baselineSkipped) {
       try {
         alreadyCorrected = await hasExistingStartingBalance(host, wfAccountId, sfAccount.id);
       } catch {
@@ -4526,7 +4558,7 @@ async function runSyncPass(
         // the other syncer already corrected and balances are readable
       }
     }
-    if (canReadBalance && !alreadyCorrected && !baselineSet) {
+    if (canReadBalance && !alreadyCorrected && !baselineSet && !baselineSkipped) {
       const targetBalance = parseFloat(sfAccount.balance);
       // Pending rows are provisional and excluded from the delta — only rows we
       // are actually creating (not reconciling in place) and that have posted
@@ -4576,7 +4608,9 @@ async function runSyncPass(
 
     // Mark done only when the balance was readable for this account, so a
     // skipped correction retries on a later run
-    if (canReadBalance) {
+    if (baselineSkipped) {
+      // Nothing decided: see `baselineSkipped`.
+    } else if (canReadBalance) {
       await store.addBalanceInitialized(sfAccount.id);
     } else if (wfBalances !== null && !baselineSet) {
       // No valuation row yet (brand-new account) — queue for the same-run
@@ -4896,11 +4930,18 @@ async function runSyncPass(
   // problem, the account's transactions are already saved by this point, and
   // taking the run down over positions would cost the thing that matters to save
   // the thing that does not.
+  //
+  // A CASH account Wealthfolio tracks by transactions gets none (a cash
+  // account whose feed lists a money market fund): Wealthfolio builds its
+  // snapshots from its activities, and an imported one only duplicates them.
+  // Investment accounts keep theirs whatever their mode: the add-on creates
+  // every account as TRANSACTIONS. A mode or type the host cannot read: as before.
   const holdingsSnapshots = noHoldings();
   if (host.syncHoldings) {
     for (const sfAccount of accountSet.accounts) {
       const wfAccountId = mapping[sfAccount.id];
       if (!wfAccountId) continue;
+      if (wfModes.get(wfAccountId) === 'TRANSACTIONS' && wfTypes.get(wfAccountId) === 'CASH') continue;
       const snapshot = toHoldingsSnapshot(sfAccount);
       if (!snapshot) continue;
       try {

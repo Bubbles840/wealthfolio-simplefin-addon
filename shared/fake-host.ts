@@ -40,6 +40,8 @@ export interface FakeHostSeed {
    *  entries make `listAccounts` report no name, which is what a host that
    *  cannot supply one looks like. */
   accountNames?: Record<string, string>;
+  /** Wealthfolio tracking modes by account id; absent keys report none. */
+  trackingModes?: Record<string, string>;
   mappingRules?: MappingRule[];
   valuations?: Map<string, number>;
   autoHeal?: boolean;
@@ -342,6 +344,7 @@ export function createFakeHost(seed: FakeHostSeed = {}): FakeHost {
         // account looks exactly like one the real host reports no name for.
         ...(accountNames[id] !== undefined ? { name: accountNames[id] } : {}),
         ...(seed.accountCurrencies?.[id] !== undefined ? { currency: seed.accountCurrencies[id] } : {}),
+        ...(seed.trackingModes?.[id] !== undefined ? { trackingMode: seed.trackingModes[id] } : {}),
       }));
     },
 
