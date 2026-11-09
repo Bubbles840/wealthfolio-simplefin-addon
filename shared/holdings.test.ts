@@ -408,7 +408,7 @@ describe('carriedCost', () => {
   });
 
   it('stays the same after a sale', () => {
-    expect(carriedCost('8', { quantity: 10, cost: 500 }, '60')).toEqual({ avgCost: '50' });
+    expect(carriedCost('8', { quantity: 10, cost: 500 }, '60')).toEqual({ avgCost: '50.00' });
   });
 
   it('adds new shares at the feed price that day (a contribution, a reinvested dividend)', () => {
@@ -430,12 +430,16 @@ describe('carriedCost', () => {
 
     it('costs a change under 1.5× as before', () => {
       expect(carriedCost('149', { quantity: 100, cost: 5000 }, '50')).toEqual({ avgCost: '50.00' });
-      expect(carriedCost('67', { quantity: 100, cost: 5000 })).toEqual({ avgCost: '50' });
+      expect(carriedCost('67', { quantity: 100, cost: 5000 })).toEqual({ avgCost: '50.00' });
     });
   });
 
+  it('carries nothing, and does not ask, for a position sold out (0 shares)', () => {
+    expect(carriedCost('0', { quantity: 10, cost: 500 }, '60')).toEqual({});
+  });
+
   it('ignores the price when the shares did not go up', () => {
-    expect(carriedCost('10', { quantity: 10, cost: 500 }, '999')).toEqual({ avgCost: '50' });
+    expect(carriedCost('10', { quantity: 10, cost: 500 }, '999')).toEqual({ avgCost: '50.00' });
   });
 
   it('carries nothing when the shares went up with no usable price, and says so', () => {

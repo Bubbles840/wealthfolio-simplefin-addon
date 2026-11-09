@@ -375,7 +375,7 @@ describe('syncHoldingsWithFeedPrices', () => {
       const wf = withTicker();
       const r = await syncHoldingsWithFeedPrices(wf.io, wf.pricing, 'wf-a', snap('VOO', '10', NEXT), [], 'AAAA1111', undefined, NOW);
 
-      expect(written(wf, NEXT).avgCost).toBe('50');
+      expect(written(wf, NEXT).avgCost).toBe('50.00');
       expect(r).toEqual({ imported: 1, skipped: 0, unresolvedSymbols: [] });
     });
 
@@ -385,7 +385,7 @@ describe('syncHoldingsWithFeedPrices', () => {
       wf.snapshots.set(`wf-a|${DAY}`, snap('SHOP.TO', '10', DAY, '50'));
       await syncHoldingsWithFeedPrices(wf.io, wf.pricing, 'wf-a', snap('SHOP.TO', '10', NEXT), [], 'AAAA1111', undefined, NOW);
 
-      expect(written(wf, NEXT).avgCost).toBe('50');
+      expect(written(wf, NEXT).avgCost).toBe('50.00');
     });
 
     it('carries nothing when the held cost is in another currency', async () => {
@@ -405,18 +405,52 @@ describe('syncHoldingsWithFeedPrices', () => {
         (await read(account)).map((h) => ({ ...h, localCurrency: 'usd' })));
       await syncHoldingsWithFeedPrices(wf.io, wf.pricing, 'wf-a', snap('VOO', '10', NEXT), [], 'AAAA1111', undefined, NOW);
 
-      expect(written(wf, NEXT).avgCost).toBe('50');
+      expect(written(wf, NEXT).avgCost).toBe('50.00');
+    });
+
+    it('asks when the held cost is in another currency, telling pence from pounds', async () => {
+      for (const held of ['CAD', 'USd']) {
+        const wf = withTicker();
+        const read = wf.pricing.getHoldings.getMockImplementation()!;
+        wf.pricing.getHoldings.mockImplementation(async (account: string) =>
+          (await read(account)).map((h) => ({ ...h, localCurrency: held })));
+        const r = await syncHoldingsWithFeedPrices(wf.io, wf.pricing, 'wf-a', snap('VOO', '10', NEXT), [], 'AAAA1111', undefined, NOW);
+        expect(written(wf, NEXT).avgCost).toBeUndefined();
+        expect(r.costUnknown).toEqual(['VOO']);
+      }
+    });
+
+    it('carries the cost onto the shared asset on the day a holding moves back to it', async () => {
+      const wf = withBasket();
+      await syncHoldingsWithFeedPrices(wf.io, wf.pricing, 'wf-a', snap('MODEL BASKET', '400.5'), priceOf('MODEL BASKET', '124.84394507'), 'AAAA1111', undefined, NOW);
+      // The cost the person entered on its own asset; then the market prices the shared one.
+      wf.snapshots.set(`wf-a|${DAY}`, snap('MODEL BASKET (AAAA1111)', '400.5', DAY, '100'));
+      wf.marketQuote(wf.assets.get('MODEL BASKET')!.id, DAY, 126);
+
+      await syncHoldingsWithFeedPrices(wf.io, wf.pricing, 'wf-a', snap('MODEL BASKET', '400.5', NEXT), priceOf('MODEL BASKET', '125'), 'AAAA1111', undefined, NOW);
+      expect(written(wf, NEXT)).toMatchObject({ symbol: 'MODEL BASKET', avgCost: '100.00' });
+    });
+
+    it('carries nothing back onto a shared asset the person prices by hand', async () => {
+      const wf = withBasket();
+      await syncHoldingsWithFeedPrices(wf.io, wf.pricing, 'wf-a', snap('MODEL BASKET', '400.5'), priceOf('MODEL BASKET', '124.84394507'), 'AAAA1111', undefined, NOW);
+      wf.snapshots.set(`wf-a|${DAY}`, snap('MODEL BASKET (AAAA1111)', '400.5', DAY, '100'));
+      wf.marketQuote(wf.assets.get('MODEL BASKET')!.id, DAY, 126);
+      wf.assets.get('MODEL BASKET')!.quoteMode = 'MANUAL';
+
+      await syncHoldingsWithFeedPrices(wf.io, wf.pricing, 'wf-a', snap('MODEL BASKET', '400.5', NEXT), priceOf('MODEL BASKET', '125'), 'AAAA1111', undefined, NOW);
+      expect(written(wf, NEXT)).toMatchObject({ symbol: 'MODEL BASKET' });
+      expect(written(wf, NEXT).avgCost).toBeUndefined();
     });
 
     it('asks instead of guessing when the shares change by 1.5× or more (maybe a split)', async () => {
-      const wf = withTicker();
-      wf.marketQuote(wf.assets.get('VOO')!.id, DAY, 60);
-      const r = await syncHoldingsWithFeedPrices(wf.io, wf.pricing, 'wf-a', snap('VOO', '40', NEXT),
-        [{ symbol: 'VOO', price: '15', currency: 'USD' }], 'AAAA1111', undefined, NOW);
-
-      // 10 shares cost 500; 40 shares now, at about the same value: no cost written.
-      expect(written(wf, NEXT).avgCost).toBeUndefined();
-      expect(r.costUnknown).toEqual(['VOO']);
+      // Up 4× and down to a third: a split, or a large buy or sale. No cost written.
+      for (const [day, shares] of [[NEXT, '40'], ['2026-10-21', '3']] as const) {
+        const wf = withTicker();
+        const r = await syncHoldingsWithFeedPrices(wf.io, wf.pricing, 'wf-a', snap('VOO', shares, day), priceOf('VOO', '15'), 'AAAA1111', undefined, NOW);
+        expect(written(wf, day).avgCost).toBeUndefined();
+        expect(r.costUnknown).toEqual(['VOO']);
+      }
     });
 
     it('carries nothing onto a shared asset whose pricing mode the read does not report', async () => {
@@ -444,7 +478,7 @@ describe('syncHoldingsWithFeedPrices', () => {
       wf.marketQuote(wf.assets.get('VOO')!.id, DAY, 60);
       await syncHoldingsWithFeedPrices(wf.io, wf.pricing, 'wf-a', snap('VOO', '8', NEXT), priceOf('VOO', '60'), 'AAAA1111', undefined, NOW);
 
-      expect(written(wf, NEXT).avgCost).toBe('50');
+      expect(written(wf, NEXT).avgCost).toBe('50.00');
     });
 
     it('adds new shares at the feed price when the share count went up', async () => {
@@ -498,13 +532,13 @@ describe('syncHoldingsWithFeedPrices', () => {
       wf.snapshots.set(`wf-a|${DAY}`, snap('MODEL BASKET (AAAA1111)', '400.5', DAY, '100'));
 
       await syncHoldingsWithFeedPrices(wf.io, wf.pricing, 'wf-a', snap('MODEL BASKET', '400.5', NEXT), priceOf('MODEL BASKET', '125'), 'AAAA1111', undefined, NOW);
-      expect(written(wf, NEXT)).toMatchObject({ symbol: 'MODEL BASKET (AAAA1111)', avgCost: '100' });
+      expect(written(wf, NEXT)).toMatchObject({ symbol: 'MODEL BASKET (AAAA1111)', avgCost: '100.00' });
       expect(wf.value('wf-a', NEXT, 'MODEL BASKET').value).toBe(50062.5);
 
       // And on a day the feed sends no price: still the last price, not the cost.
       const later = '2026-10-21';
       await syncHoldingsWithFeedPrices(wf.io, wf.pricing, 'wf-a', snap('MODEL BASKET', '400.5', later), [], 'AAAA1111', undefined, NOW);
-      expect(written(wf, later).avgCost).toBe('100');
+      expect(written(wf, later).avgCost).toBe('100.00');
       expect(wf.value('wf-a', later, 'MODEL BASKET').value).toBe(50062.5);
     });
   });

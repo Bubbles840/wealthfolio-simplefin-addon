@@ -186,12 +186,10 @@ export function carriedCost(
   const now = parseScaled(shares);
   const before = parseScaled(held.quantity ?? null);
   const cost = parseScaled(held.cost ?? null);
-  if (now === null || before === null || before === 0n || cost === null || cost === 0n) return {};
+  // Sold out (the feed may still list it at 0 shares): nothing to cost.
+  if (now === null || now === 0n || before === null || before === 0n || cost === null || cost === 0n) return {};
   if (now * 100n >= before * SPLIT_FACTOR_PERCENT || before * 100n >= now * SPLIT_FACTOR_PERCENT) return { ask: true };
-  if (now <= before) {
-    const avgCost = averageCost(String(held.cost), null, String(held.quantity));
-    return avgCost ? { avgCost } : {};
-  }
+  if (now <= before) return { avgCost: divideScaled(cost, before) };
   const perShare = parseScaled(price ?? null);
   if (!perShare) return { ask: true };
   return { avgCost: divideScaled(cost + ((now - before) * perShare) / PRICE_SCALE, now) };

@@ -71,6 +71,16 @@ export interface HeldAsset {
 
 const modeOf = (h: HeldAsset | undefined) => h?.instrument?.pricingMode ?? undefined;
 
+/** Two currency codes for the same unit. Case is ignored, except in a code that
+ *  mixes it: a minor unit (GBp, pence; ZAc, cents) is not its major one. */
+export function sameCurrency(a: string, b: string): boolean {
+  const x = a.trim();
+  const y = b.trim();
+  if (x === y) return true;
+  const mixed = (c: string) => c !== c.toUpperCase() && c !== c.toLowerCase();
+  return !mixed(x) && !mixed(y) && x.toUpperCase() === y.toUpperCase();
+}
+
 /** The host calls this needs, as the SDK names them. */
 export interface PricingApi {
   getHoldings(wfAccountId: string): Promise<HeldAsset[]>;
@@ -295,6 +305,18 @@ export async function syncHoldingsWithFeedPrices(
   }
 
   const costUnknown: string[] = [];
+  // A holding moving back to its shared asset today: the account does not hold
+  // that asset, so its mode comes from one profile read. Only on that day.
+  const backModes = new Map<string, string | undefined>();
+  if (tag) {
+    for (const p of snapshot.positions) {
+      const key = symbolKey(p.symbol);
+      const sharedId = ids.get(key);
+      if (p.avgCost || moving.has(key) || kept.has(key) || !sharedId || heldById.has(sharedId)) continue;
+      if (!held.has(symbolKey(scoped(p.symbol)))) continue;
+      backModes.set(key, await pricing.getProfile(sharedId).then((a) => a?.quoteMode ?? undefined, () => undefined));
+    }
+  }
   const written: HoldingsSnapshot = {
     ...snapshot,
     positions: snapshot.positions.map((p) => {
@@ -311,9 +333,13 @@ export async function syncHoldingsWithFeedPrices(
       // Onto a shared asset only when the market prices it: the import writes
       // the cost as the day's price of a hand-priced one. A mode the read does
       // not report counts as hand-priced.
-      if (!own && modeOf(heldById.get(ids.get(key) ?? ''))?.toUpperCase() !== 'MARKET') return out;
-      // A cost in another currency cannot be added to: carry nothing.
-      if (h.localCurrency && p.currency && h.localCurrency.toUpperCase() !== p.currency.toUpperCase()) return out;
+      const sharedMode = modeOf(heldById.get(ids.get(key) ?? '')) ?? backModes.get(key);
+      if (!own && sharedMode?.toUpperCase() !== 'MARKET') return out;
+      // A cost in another currency cannot be added to: ask.
+      if (h.localCurrency && p.currency && !sameCurrency(h.localCurrency, p.currency)) {
+        costUnknown.push(p.symbol);
+        return out;
+      }
       const carried = carriedCost(p.quantity, { quantity: h.quantity, cost: h.costBasis?.local }, priced.get(key)?.price);
       if (carried.ask) costUnknown.push(p.symbol);
       return carried.avgCost ? { ...out, avgCost: carried.avgCost } : out;
