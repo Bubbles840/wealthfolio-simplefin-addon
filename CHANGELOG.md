@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.74.0] - 2026-11-10
+
+Update both halves. Update the add-on in the app as usual (no new
+permissions) and pull the companion image. Home Assistant alerts and Amazon
+subcategories need this release's companion; with an older one the add-on
+doesn't offer them. The new starting-balance rule is in both halves, so update
+the companion too: an older one can still book a starting balance the add-on
+now skips. From before 1.70.0, use **Install from File** with this zip, as
+1.70.0 says.
+
 ### Added
 - **Alerts to Home Assistant (#60).** Under Settings → Home Assistant, the
   companion sends alerts through Home Assistant's notify service or a webhook,
