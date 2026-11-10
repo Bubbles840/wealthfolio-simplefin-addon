@@ -40,6 +40,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   positions). After a re-link, such an account could get its whole value
   booked as a cash credit, which then showed as that year's income. The
   starting balance also waits for a run that can read the account list.
+- **A holding on its own per-account asset stays there on Wealthfolio 3.12 (#68).**
+  For a symbol with no asset of exactly that code, 3.12's import check searches
+  asset codes, so it could return the account's own `SYMBOL (TAG)` asset for
+  the bare symbol. The add-on then wrote the holding under the bare symbol,
+  onto a new asset nothing priced, and the account showed $0. An account
+  already hit stays on that empty asset until it has gone 3 days without a
+  quote, then moves back to its own asset; days already written stay at $0
+  unless repaired by hand.
 
 ## [1.73.0] - 2026-11-05
 

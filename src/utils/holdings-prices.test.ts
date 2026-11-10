@@ -361,3 +361,27 @@ describe('syncHoldingsWithFeedPrices', () => {
     expect(wf.pricing.getHoldings).not.toHaveBeenCalled();
   });
 });
+
+describe('syncHoldingsWithFeedPrices on a check that searches asset codes', () => {
+  it('keeps a holding on its own asset when the check finds that asset for the bare symbol', async () => {
+    // Wealthfolio 3.12 finds a bare symbol with no asset of its own by searching
+    // every asset's code for it, so "TARGET FUND" can come back as
+    // "TARGET FUND (AAAA1111)". There is no shared asset at all.
+    const wf = wealthfolio();
+    const own = wf.seedAsset('TARGET FUND (AAAA1111)', 'MANUAL', OLD);
+    wf.snapshots.set(`wf-a|${DAY}`, snap('TARGET FUND (AAAA1111)', '50'));
+    const check = vi.mocked(wf.io.checkImport);
+    const exact = check.getMockImplementation()!;
+    check.mockImplementation(async (account, snaps) => {
+      const r = await exact(account, snaps);
+      return { ...r, symbols: r.symbols.map((s) => (s.symbol === 'TARGET FUND' ? { ...s, found: true, assetId: own.id } : s)) };
+    });
+    const assetsBefore = wf.assets.size;
+
+    const next = '2026-10-20';
+    const r = await syncHoldingsWithFeedPrices(wf.io, wf.pricing, 'wf-a', snap('TARGET FUND', '50', next), priceOf('TARGET FUND', '20'), 'AAAA1111', undefined, NOW);
+    expect(wf.value('wf-a', next, 'TARGET FUND')).toEqual({ symbol: 'TARGET FUND (AAAA1111)', value: 1000 });
+    expect(r).toMatchObject({ pricedFromFeed: ['TARGET FUND (AAAA1111)'] });
+    expect(wf.assets.size).toBe(assetsBefore);
+  });
+});
