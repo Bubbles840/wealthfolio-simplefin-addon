@@ -3,7 +3,7 @@ import { bankFirstTransferOut, genericTransferNeedsCorroboration } from './bank-
 import { fillFeedCurrencies } from './feed-currency.js';
 import { activeRelinks, emptyRelinkDecisions, openRelinkQuestions, planRelinkAdoption, retiredIds } from './relink.js';
 import { learnedNameKeys, learnedTransferType } from './transfer-names.js';
-import { decideDividend, isDividendRow, NO_DIVIDEND_READS, SNAPSHOT_WINDOW_DAYS, type DividendReads, type HeldSecurity, type PastActivity, type SnapshotDay } from './dividends.js';
+import { decideDividend, isDividendRow, isInvestmentAccountType, NO_DIVIDEND_READS, SNAPSHOT_WINDOW_DAYS, type DividendReads, type HeldSecurity, type PastActivity, type SnapshotDay } from './dividends.js';
 import { mapTransactionWithSource, type MappedType } from './mapper.js';
 import { REIMBURSEMENT_SUBTYPE } from './cash-flow-bucket.js';
 import { accountTxKey, detectTransferPairs, TRANSFER_MATCH_WINDOW_SECONDS } from './transfers.js';
@@ -484,6 +484,10 @@ export interface SyncResult {
     currency: string;
     accountName: string;
     activityType: string;
+    /** On an investment account (`isInvestmentAccountType`, as for dividends,
+     *  or one Wealthfolio tracks by holdings): where a "Buy …" row is a trade.
+     *  False when the account list could not be read, so trades then show. */
+    investment?: boolean;
     pending: boolean;
     /** An unpaired transfer leg imported as a spending-neutral placeholder. */
     inTransit: boolean;
@@ -4335,6 +4339,7 @@ async function runSyncPass(
             currency: sfAccount.currency,
             accountName: wfNames.get(t.wfAccountId) || sfAccount.name,
             activityType: t.type,
+            investment: isInvestmentAccountType(wfTypes.get(t.wfAccountId)) || wfModes.get(t.wfAccountId) === 'HOLDINGS',
             pending: !!t.pending,
             inTransit: !!t.inTransit,
             direction: (signedByKey.get(accountTxKey(sfAccount.id, txId)) ?? 0) < 0 ? 'out' : 'in',

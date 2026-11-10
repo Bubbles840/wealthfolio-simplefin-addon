@@ -1243,6 +1243,22 @@ describe('runSyncCore', () => {
 
   // --- Imported-transactions list (the companion's import notice) ---
 
+  it('marks an imported row on an investment account, so the notice can tell a trade', async () => {
+    // SimpleFin sends a trade as cash ("Sell ABC"), booked as a deposit; only
+    // the account says it is a brokerage's.
+    const account = (id: string) => ({ id, name: id, currency: 'USD', balance: '100', 'balance-date': 1,
+      transactions: [{ id: `${id}-tx`, posted: 1700000000, amount: '9.30', description: 'Sell ABC' }] });
+    const { host, store } = createFakeHost({
+      accountSet: { errors: [], accounts: [account('sfin-1'), account('sfin-2'), account('sfin-3'), account('sfin-4')] },
+      mapping: { 'sfin-1': 'wf-sec', 'sfin-2': 'wf-crypto', 'sfin-3': 'wf-held', 'sfin-4': 'wf-cash' },
+      accountTypes: { 'wf-sec': 'SECURITIES', 'wf-crypto': 'CRYPTOCURRENCY', 'wf-held': 'CASH', 'wf-cash': 'CASH' },
+      trackingModes: { 'wf-held': 'HOLDINGS', 'wf-cash': 'TRANSACTIONS' },
+    });
+    const result = await runSyncCore(host, store, { force: true });
+    const byId = new Map(result.importedTransactions.map((t) => [t.sfAccountId, t.investment]));
+    expect(Object.fromEntries(byId)).toEqual({ 'sfin-1': true, 'sfin-2': true, 'sfin-3': true, 'sfin-4': false });
+  });
+
   it('reports each confirmed create on importedTransactions, and nothing on a no-op re-sync', async () => {
     const seed = (): FakeHostSeed => ({
       accountSet: { errors: [], accounts: [

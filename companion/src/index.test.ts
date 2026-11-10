@@ -945,8 +945,9 @@ describe('runCompanionSync import-notice visibility', () => {
     vi.mocked(runSyncCore).mockResolvedValueOnce({
       imported: 2, skipped: 0, errors: [], prunedDuplicates: [], unmappedAccounts: [], refusedCreates: [],
       importedTransactions: [
-        { ...importedTx, txId: 'tx-b', activityType: 'BUY' },
-        { ...importedTx, txId: 'tx-s', activityType: 'SELL' },
+        // As the feed sends them: cash on an investment account.
+        { ...importedTx, txId: 'tx-b', description: 'Buy ABC', activityType: 'WITHDRAWAL', investment: true },
+        { ...importedTx, txId: 'tx-s', description: 'Sell XYZ', activityType: 'DEPOSIT', investment: true },
       ],
       largeTransactionAlerts: [], balanceDriftAlerts: [], stuckTransferAlerts: [],
     });
@@ -972,7 +973,7 @@ describe('runCompanionSync import-notice visibility', () => {
     secrets.set('telegram_config', JSON.stringify({ botToken: 'tok', chatId: '1', enabled: true, notifyOnImportTrades: false }));
     vi.mocked(runSyncCore).mockResolvedValueOnce({
       imported: 2, skipped: 0, errors: [], prunedDuplicates: [], unmappedAccounts: [], refusedCreates: [],
-      importedTransactions: [importedTx, { ...importedTx, txId: 'tx-b', description: 'BOUGHT SHARES', activityType: 'BUY' }],
+      importedTransactions: [importedTx, { ...importedTx, txId: 'tx-b', description: 'YOU BOUGHT EXAMPLE FUND', activityType: 'WITHDRAWAL', investment: true }],
       largeTransactionAlerts: [], balanceDriftAlerts: [], stuckTransferAlerts: [],
     });
 

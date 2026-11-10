@@ -480,19 +480,45 @@ export interface ImportNoticeTx {
 /** Activity types the "Include investment buys and sells" setting governs. */
 const TRADE_ACTIVITY_TYPES = new Set(['BUY', 'SELL']);
 
+/** How brokerages word a trade in the feed: "Buy ABC", "Sell ABC", "YOU BOUGHT
+ *  …", "YOU SOLD …", "YOU PURCHASED …", "REINVESTMENT …"/"REINVESTED …" (a
+ *  dividend reinvested as shares), "REDEMPTION …"/"YOU REDEEMED …" (a fund sale). */
+const TRADE_WORDING = /^(?:you\s+)?(?:buy|sell|bought|sold|purchased|reinvest(?:ment|ed)?|redemption|redeemed)\b/i;
+/** A dividend or interest line ("Reinvest Dividend" is the income, not the
+ *  share purchase): never a trade, whatever its first word. */
+const INCOME_WORDING = /\b(?:dividend|interest)\b/i;
+/** The types a cash-booked trade gets. A row typed anything else (a dividend,
+ *  a transfer, a fee) was typed on purpose, so the wording does not override it. */
+const CASH_TRADE_TYPES = new Set(['DEPOSIT', 'WITHDRAWAL']);
+
 /**
- * The imported rows the notice announces: all of them, minus buys and sells when
- * the user switched those off (`notifyOnImportTrades: false`). Both writers call
+ * A buy or sell. SimpleFin sends a trade as cash, with no type, share count or
+ * price, so the sync books it as a deposit or withdrawal; it is known as a
+ * trade by its account (an investment one) and its wording. A real BUY/SELL
+ * activity counts too.
+ */
+export function isTradeRow(t: { activityType?: string; description?: string; investment?: boolean }): boolean {
+  return TRADE_ACTIVITY_TYPES.has(String(t.activityType ?? '').toUpperCase())
+    || (t.investment === true
+      && CASH_TRADE_TYPES.has(String(t.activityType ?? '').toUpperCase())
+      && TRADE_WORDING.test(String(t.description ?? '').trim())
+      && !INCOME_WORDING.test(String(t.description ?? '')));
+}
+
+/**
+ * The imported rows the notice announces: all of them, minus buys and sells
+ * (`isTradeRow`) when the user switched those off
+ * (`notifyOnImportTrades: false`). Both writers call
  * this, so the add-on's notice and the companion's list the same rows. When the
  * filter empties the list, the notice has nothing of its own to say and is not
  * sent; the needs-a-category sweep it would have carried comes with the next one.
  */
-export function importNoticeRows<T extends { activityType?: string }>(
+export function importNoticeRows<T extends { activityType?: string; description?: string; investment?: boolean }>(
   txs: T[],
   tg: { notifyOnImportTrades?: unknown },
 ): T[] {
   if (tg.notifyOnImportTrades !== false) return txs;
-  return txs.filter((t) => !TRADE_ACTIVITY_TYPES.has(String(t.activityType ?? '').toUpperCase()));
+  return txs.filter((t) => !isTradeRow(t));
 }
 
 /** One row of the needs-a-category sweep: any spending transaction from the

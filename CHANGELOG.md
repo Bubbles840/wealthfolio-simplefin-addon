@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **Unticking "Include investment buys and sells" now leaves trades out of the
+  import notice.** SimpleFin sends a trade as cash, so it is imported as a
+  deposit or withdrawal, and the setting only matched buy and sell activities,
+  which the sync never creates: it changed nothing. A trade is now told by its
+  account (an investment one, or one tracked by holdings), its type (deposit or
+  withdrawal) and its wording ("Buy …", "Sell …", "You bought …", "You sold …",
+  "Reinvestment …", "Redemption …"); a dividend or interest line always shows.
+  Each half filters its own syncs, so update both.
+
 ## [1.74.0] - 2026-11-10
 
 Update both halves. Update the add-on in the app as usual (no new
