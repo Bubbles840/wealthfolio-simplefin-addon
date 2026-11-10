@@ -498,6 +498,18 @@ describe('uncategorized rows and dismissals', () => {
     expect(await store.getDismissals()).toEqual({});
   });
 
+  it('stores hidden no-cost holdings under its key, merged with what is stored, and Reset clears it', async () => {
+    const { ctx, data } = makeCtxWithData();
+    const store = new SecretsStore(ctx);
+    data['holdings_cost_hidden'] = JSON.stringify({ 'acc|OTHER': '2026-01-01T00:00:00.000Z' });
+    await store.editHiddenCostHoldings({}, { 'acc|VT': '2026-01-02T00:00:00.000Z' });
+    expect(Object.keys(await store.getHiddenCostHoldings()).sort()).toEqual(['acc|OTHER', 'acc|VT']);
+    data['holdings_cost_hidden'] = 'not json{';
+    expect(await store.getHiddenCostHoldings()).toEqual({});
+    await store.clearAll();
+    expect(data['holdings_cost_hidden']).toBeUndefined();
+  });
+
   it('clearAll deletes the dismissal ledger', async () => {
     // clearAll iterates the KEYS map; three secrets were previously absent from
     // it and survived a reset that claimed to clear everything.

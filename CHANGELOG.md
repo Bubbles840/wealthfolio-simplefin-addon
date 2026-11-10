@@ -14,7 +14,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   are costed at the feed's price that day. A share count that changes by 1.5×
   or more either way (a split, or a large buy or sale) asks for the cost
   instead; a cost held in another currency is not carried. Home lists every holding
-  Wealthfolio has no cost for until one is entered. Before, the snapshot was
+  Wealthfolio has no cost for until one is entered, or until you choose
+  **Don't show** on it. Before, the snapshot was
   stored at cost 0 and Wealthfolio showed no gain for the account.
 
 ## [1.74.0] - 2026-11-10

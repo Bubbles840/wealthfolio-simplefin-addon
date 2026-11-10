@@ -345,7 +345,10 @@ feed's is not carried (each day's snapshot is then written without one, so a
 cost entered by hand does not last for such a holding). A holding with no cost
 in Wealthfolio stays unknown, and Home lists it under
 "Wealthfolio has no cost for…" until you enter one (a new holding the feed
-sends without a cost shows there too). That list repeats no alert.
+sends without a cost shows there too). That list repeats no alert. If your
+provider never sends a cost and you don't track gains, **Don't show** hides a
+holding from it for good (in every browser, until Reset); a new holding
+without a cost still shows.
 
 ### Starting balances
 
