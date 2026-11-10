@@ -6,7 +6,8 @@ import { SyncPage } from './pages/SyncPage';
 import { SecretsStore } from './utils/secrets';
 import { withChunkedSecrets } from './utils/chunked-secrets';
 import { Scheduler } from './utils/scheduler';
-import { runSync } from './utils/sync';
+import { HoldingsCatchUp, mapsInvestmentAccount } from './utils/holdings-catchup';
+import { companionSyncedRecently, runSync } from './utils/sync';
 import { ThemeStyles } from './components/ui';
 
 // ── Module-level singletons set by enable() ───────────────────────────────────
@@ -128,6 +129,24 @@ const enable: AddonEnableFunction = (hostCtx) => {
     }
   })();
 
+  // Started whatever the setup state and schedule: every poll checks setup
+  // itself, so an install finished later in this session is covered too.
+  // Not kept in a module variable: nothing outside enable/disable touches it.
+  const holdingsCatchUp = new HoldingsCatchUp({
+    getHoldingsPassAt: () => startupStore.getHoldingsPassAt(),
+    getRequestLog: () => startupStore.getSimplefinRequests(),
+    scheduleOn: async () => ((await startupStore.getSyncScheduleHours()) ?? 0) > 0,
+    companionSyncing: (now) => companionSyncedRecently(startupStore, now),
+    investmentAccounts: async () => {
+      const [accessUrl, mapping, loanLinks] = await Promise.all([startupStore.getAccessUrl(), startupStore.getAccountMapping(), readLoanLinks(startupStore)]);
+      if (!accessUrl || !hasAccounts(mapping, loanLinks)) return 'notSetUp';
+      // Read on every quiet poll too: accounts the host lists late end the quiet.
+      return mapsInvestmentAccount(mapping, (await ctx.api.accounts.getAll()) ?? []) ? 'mapped' : 'none';
+    },
+    runSync: () => runSync(ctx, startupStore, { catchUp: true }),
+  });
+  holdingsCatchUp.start();
+
   const sidebarItem = ctx.sidebar.addItem({
     id: 'simplefin-sync',
     label: 'SimpleFin Sync',
@@ -155,6 +174,7 @@ const enable: AddonEnableFunction = (hostCtx) => {
 
   ctx.onDisable(() => {
     addonScheduler!.stop();
+    holdingsCatchUp.stop();
     root?.unmount();
     sidebarItem.remove();
     addonCtx = undefined;

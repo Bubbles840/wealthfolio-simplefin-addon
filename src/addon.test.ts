@@ -15,14 +15,17 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 vi.mock('./pages/SetupPage', () => ({ SetupPage: vi.fn(() => React.createElement('div', null, 'SetupPage')) }));
 vi.mock('./pages/SyncPage', () => ({ SyncPage: vi.fn(() => React.createElement('div', null, 'SyncPage')) }));
-vi.mock('./utils/sync', () => ({
+vi.mock('./utils/sync', async () => ({
   runSync: vi.fn(async () => ({ imported: 0, skipped: 0, errors: [] })),
   MIN_SYNC_INTERVAL_MS: 3_600_000,
+  // The real check: the holdings catch-up reads the companion's sync health.
+  companionSyncedRecently: (await vi.importActual<typeof import('./utils/sync')>('./utils/sync')).companionSyncedRecently,
 }));
 
 import enable, { SimplefinSyncView } from './addon';
 import { SIMPLEFIN_SYNC_VERSION } from '../shared/version';
 import { runSync } from './utils/sync';
+import { SCHEDULER_POLL_MS } from './utils/scheduler';
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -138,9 +141,146 @@ describe('addon enable()', () => {
       sync_schedule_hours: '0',
     };
     ctx.api.secrets.get = vi.fn(async (k: string) => values[k] ?? null);
+    // A cash account: the holdings catch-up has nothing to catch up either.
+    ctx.api.accounts = { getAll: vi.fn(async () => [{ id: 'wf-a', accountType: 'CASH', trackingMode: 'TRANSACTIONS' }]) };
     enable(ctx);
     await new Promise((r) => setTimeout(r, 20));
     expect(runSync).not.toHaveBeenCalled();
+  });
+
+  describe('holdings catch-up', () => {
+    const investmentSetup = (extra: Record<string, string> = {}) => {
+      const ctx = makeCtx();
+      const values: Record<string, string> = {
+        simplefin_access_url: 'https://u:p@bridge.simplefin.org/simplefin',
+        account_mapping: JSON.stringify({ 'sfin-1': 'wf-a' }),
+        sync_schedule_hours: '0',
+        // A companion that synced an hour ago: the catch-up's reason to run
+        // with the schedule off.
+        sync_health: JSON.stringify({ lastSuccessAt: new Date(Date.now() - 3_600_000).toISOString() }),
+        ...extra,
+      };
+      ctx.api.secrets.get = vi.fn(async (k: string) => values[k] ?? null);
+      ctx.api.accounts = { getAll: vi.fn(async () => [{ id: 'wf-a', accountType: 'SECURITIES', trackingMode: 'HOLDINGS' }]) };
+      return ctx;
+    };
+
+    it('syncs past the minimum interval, with the schedule off when an investment account is mapped', async () => {
+      vi.mocked(runSync).mockClear();
+      const ctx = investmentSetup();
+      enable(ctx);
+      await waitFor(() => expect(runSync).toHaveBeenCalledWith(expect.anything(), expect.anything(), { catchUp: true }));
+      ctx._triggerDisable();
+    });
+
+    it('does not sync with the schedule off when no companion is syncing', async () => {
+      // Someone without a companion who set Auto-sync to Off syncs by hand.
+      vi.mocked(runSync).mockClear();
+      const ctx = investmentSetup({ sync_health: JSON.stringify({ lastSuccessAt: new Date(Date.now() - 3 * 86_400_000).toISOString() }) });
+      enable(ctx);
+      await new Promise((r) => setTimeout(r, 20));
+      expect(runSync).not.toHaveBeenCalled();
+      ctx._triggerDisable();
+    });
+
+    it('does not count a companion stamp far in the future as syncing', async () => {
+      // A clock far ahead would read as "synced" until that date, after the companion stopped.
+      vi.mocked(runSync).mockClear();
+      const ctx = investmentSetup({ sync_health: JSON.stringify({ lastSuccessAt: new Date(Date.now() + 3 * 86_400_000).toISOString() }) });
+      enable(ctx);
+      await new Promise((r) => setTimeout(r, 20));
+      expect(runSync).not.toHaveBeenCalled();
+      ctx._triggerDisable();
+    });
+
+    it('ends the quiet at the next poll when the host lists the accounts late', async () => {
+      vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
+      try {
+        vi.mocked(runSync).mockClear();
+        const ctx = investmentSetup();
+        const list = [{ id: 'wf-a', accountType: 'SECURITIES', trackingMode: 'HOLDINGS' }];
+        ctx.api.accounts = { getAll: vi.fn().mockResolvedValueOnce([]).mockResolvedValue(list) };
+        enable(ctx);
+        await new Promise((r) => setTimeout(r, 20));
+        expect(runSync).not.toHaveBeenCalled();
+        await vi.advanceTimersByTimeAsync(SCHEDULER_POLL_MS);
+        await waitFor(() => expect(runSync).toHaveBeenCalledWith(expect.anything(), expect.anything(), { catchUp: true }));
+        ctx._triggerDisable();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('stays quiet when the mapped accounts no longer exist, instead of asking every poll', async () => {
+      vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
+      try {
+        const ctx = investmentSetup();
+        ctx.api.accounts = { getAll: vi.fn(async () => []) };
+        const passReads = () => vi.mocked(ctx.api.secrets.get).mock.calls.filter((call: unknown[]) => call[0] === 'holdings_pass_at').length;
+        enable(ctx);
+        await new Promise((r) => setTimeout(r, 20));
+        await vi.advanceTimersByTimeAsync(SCHEDULER_POLL_MS * 3);
+        expect(passReads()).toBe(1);
+        ctx._triggerDisable();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('counts a companion whose clock runs a little ahead as syncing', async () => {
+      vi.mocked(runSync).mockClear();
+      const ctx = investmentSetup({ sync_health: JSON.stringify({ lastSuccessAt: new Date(Date.now() + 2 * 3_600_000).toISOString() }) });
+      enable(ctx);
+      await waitFor(() => expect(runSync).toHaveBeenCalledWith(expect.anything(), expect.anything(), { catchUp: true }));
+      ctx._triggerDisable();
+    });
+
+    it('counts an install with only a loan linked as set up: quiet, not asked again every poll', async () => {
+      vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
+      try {
+        vi.mocked(runSync).mockClear();
+        const ctx = investmentSetup({ account_mapping: '{}', loan_links: JSON.stringify({ 'sfin-loan': 'LIAB-1' }) });
+        // Quiet: later polls re-read only the setup, not the whole rule.
+        const passReads = () => vi.mocked(ctx.api.secrets.get).mock.calls.filter((call: unknown[]) => call[0] === 'holdings_pass_at').length;
+        enable(ctx);
+        await new Promise((r) => setTimeout(r, 20));
+        expect(passReads()).toBe(1);
+        await vi.advanceTimersByTimeAsync(SCHEDULER_POLL_MS * 2);
+        expect(passReads()).toBe(1);
+        expect(runSync).not.toHaveBeenCalledWith(expect.anything(), expect.anything(), { catchUp: true });
+        ctx._triggerDisable();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('does not sync when the add-on wrote snapshots recently', async () => {
+      vi.mocked(runSync).mockClear();
+      const ctx = investmentSetup({ holdings_pass_at: new Date().toISOString() });
+      enable(ctx);
+      await new Promise((r) => setTimeout(r, 20));
+      expect(runSync).not.toHaveBeenCalled();
+      ctx._triggerDisable();
+    });
+
+    it('stops polling when the add-on is disabled', async () => {
+      vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
+      try {
+        const ctx = investmentSetup({ holdings_pass_at: new Date().toISOString() });
+        const passReads = () => vi.mocked(ctx.api.secrets.get).mock.calls.filter((call: unknown[]) => call[0] === 'holdings_pass_at').length;
+        enable(ctx);
+        // Only the interval is faked; a real timeout lets the first check finish.
+        await new Promise((r) => setTimeout(r, 20));
+        expect(passReads()).toBe(1);
+        await vi.advanceTimersByTimeAsync(SCHEDULER_POLL_MS);
+        expect(passReads()).toBe(2);
+        ctx._triggerDisable();
+        await vi.advanceTimersByTimeAsync(SCHEDULER_POLL_MS * 3);
+        expect(passReads()).toBe(2);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
   });
 
   it('does not sync on startup when not configured', async () => {

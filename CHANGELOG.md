@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **Holdings keep their cost when the feed sends none (#67)** (common for
+  401(k) plans). The cost Wealthfolio already has is carried to the new
+  snapshot; shares added since (a contribution, a reinvested dividend, a buy)
+  are costed at the feed's price that day. A share count that changes by 1.5×
+  or more either way (a split, or a large buy or sale) asks for the cost
+  instead; a cost held in another currency is not carried. Home lists every holding
+  Wealthfolio has no cost for until one is entered. Before, the snapshot was
+  stored at cost 0 and Wealthfolio showed no gain for the account.
+
+## [1.74.0] - 2026-11-10
+
+Update both halves. Update the add-on in the app as usual (no new
+permissions) and pull the companion image. Home Assistant alerts and Amazon
+subcategories need this release's companion; with an older one the add-on
+doesn't offer them. The new starting-balance rule is in both halves, so update
+the companion too: an older one can still book a starting balance the add-on
+now skips. From before 1.70.0, use **Install from File** with this zip, as
+1.70.0 says.
+
 ### Added
 - **Alerts to Home Assistant (#60).** Under Settings → Home Assistant, the
   companion sends alerts through Home Assistant's notify service or a webhook,
@@ -19,6 +39,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   categories only. One mapping can move: a label set to a name that is both a
   top-level category and a subcategory now files under the top-level one,
   which is the one the card offered. Before, it could land in the subcategory.
+- **Holdings catch-up (#66).** While Wealthfolio is open, the add-on syncs on its own
+  when it has not written investment positions for 20 hours and an investment
+  account is mapped. With its schedule off, only while a companion is syncing.
+  Only the add-on can write them, and a companion that synced first used to
+  leave them days old.
 
 ### Fixed
 - **Gains show on holdings accounts with a money market fund (#64).** Brokerages send
@@ -35,14 +60,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   positions). After a re-link, such an account could get its whole value
   booked as a cash credit, which then showed as that year's income. The
   starting balance also waits for a run that can read the account list.
-- **Holdings keep their cost when the feed sends none (#67)** (common for
-  401(k) plans). The cost Wealthfolio already has is carried to the new
-  snapshot; shares added since (a contribution, a reinvested dividend, a buy)
-  are costed at the feed's price that day. A share count that changes by 1.5×
-  or more either way (a split, or a large buy or sale) asks for the cost
-  instead; a cost held in another currency is not carried. Home lists every holding
-  Wealthfolio has no cost for until one is entered. Before, the snapshot was
-  stored at cost 0 and Wealthfolio showed no gain for the account.
+- **A holding on its own per-account asset stays there on Wealthfolio 3.12 (#68).**
+  For a symbol with no asset of exactly that code, 3.12's import check searches
+  asset codes, so it could return the account's own `SYMBOL (TAG)` asset for
+  the bare symbol. The add-on then wrote the holding under the bare symbol,
+  onto a new asset nothing priced, and the account showed $0. An account
+  already hit stays on that empty asset until it has gone 3 days without a
+  quote, then moves back to its own asset; days already written stay at $0
+  unless repaired by hand.
 
 ## [1.73.0] - 2026-11-05
 

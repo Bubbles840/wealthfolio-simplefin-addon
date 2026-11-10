@@ -267,6 +267,17 @@ export async function syncHoldingsWithFeedPrices(
   const ids = new Map(
     check.symbols.filter((s) => !!s.assetId).map((s): [string, string] => [symbolKey(s.symbol), s.assetId!]),
   );
+  // For a bare symbol with no asset of exactly that code, the check searches
+  // the assets' codes (Wealthfolio 3.12: any code that contains it), so it can
+  // hand back the per-account asset this account holds the holding on. That is
+  // not a shared asset: taken as one, the holding would be written under its
+  // bare symbol, onto a new asset nothing prices, and the account would be
+  // worth $0.
+  for (const p of snapshot.positions) {
+    const key = symbolKey(p.symbol);
+    const own = tag ? held.get(symbolKey(scoped(p.symbol)))?.instrument?.id : undefined;
+    if (own && ids.get(key) === own) ids.delete(key);
+  }
   // A holding the account does not hold yet, under either symbol, whose shared
   // asset already exists (another account's, or from before): judged from that
   // asset, so it does not spend a sync valued at $0 first. A holding whose
