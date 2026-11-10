@@ -19,6 +19,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   categories only. One mapping can move: a label set to a name that is both a
   top-level category and a subcategory now files under the top-level one,
   which is the one the card offered. Before, it could land in the subcategory.
+- **Holdings catch-up (#66).** While Wealthfolio is open, the add-on syncs on its own
+  when it has not written investment positions for 20 hours and an investment
+  account is mapped. With its schedule off, only while a companion is syncing.
+  Only the add-on can write them, and a companion that synced first used to
+  leave them days old.
 
 ### Fixed
 - **Gains show on holdings accounts with a money market fund (#64).** Brokerages send

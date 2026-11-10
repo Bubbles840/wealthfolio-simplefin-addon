@@ -612,6 +612,10 @@ export interface SyncResult {
 export interface SyncOptions {
   /** Bypass the 1-hour minimum interval (the "Sync anyway" button). */
   force?: boolean;
+  /** Bypass the 1-hour minimum interval only: unlike `force`, the download
+   *  keeps the usual window. The add-on's holdings catch-up, which checks the
+   *  SimpleFin budget itself before it asks. */
+  catchUp?: boolean;
   /** Heal/Reconcile: re-scan a wide 90-day window to recover transactions
    *  that never imported, and measure residual drift lag-free (accounting for
    *  what this run imports) so the Sync page can offer a balance adjustment for
@@ -2173,7 +2177,7 @@ async function runSyncPass(
   // person is governed by the 5-minute gap and the daily limit instead (below):
   // a Sync pressed 5-60 minutes after the last one used to check nothing at all.
   const lastSync = await store.getLastSyncAt();
-  if (!opts.manual && !opts.force && !heal && lastSync && Date.now() - lastSync.getTime() < MIN_SYNC_INTERVAL_MS) {
+  if (!opts.manual && !opts.force && !opts.catchUp && !heal && lastSync && Date.now() - lastSync.getTime() < MIN_SYNC_INTERVAL_MS) {
     return { imported: 0, skipped: 0, errors: [INTERVAL_SKIP_MESSAGE], stuckTransferAlerts: [], importedTransactions: [], largeTransactionAlerts: [], balanceDriftAlerts: [], prunedDuplicates: [], unmappedAccounts: null, refusedCreates: [], holdingsSnapshots: noHoldings() };
   }
 
@@ -4961,6 +4965,11 @@ async function runSyncPass(
         errors.push(`Holdings snapshot failed (${sfAccount.name}): ${e?.message ?? e}`);
       }
     }
+    // For the add-on's holdings catch-up (src/utils/holdings-catchup.ts): dated
+    // here, as soon as the step is over, so a later step that throws does not
+    // leave the catch-up asking again every hour. A failed write only costs one
+    // extra catch-up. A store without the method (the companion's) keeps none.
+    await store.setHoldingsPassAt?.(new Date()).catch(() => {});
   }
 
   // ── Loan balances (accounts linked to a liability) ───────────────────────

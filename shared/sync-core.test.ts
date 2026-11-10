@@ -3682,6 +3682,50 @@ describe('holdings snapshots for investment accounts', () => {
     expect(result.errors).toEqual([]);
   });
 
+  it('dates the holdings pass on a host that can write snapshots', async () => {
+    const { host, store } = createFakeHost(brokerageSeed());
+    const setHoldingsPassAt = vi.fn(async (_at: Date) => {});
+    Object.assign(store, { setHoldingsPassAt });
+    await runSyncCore(host, store, { force: true });
+    expect(setHoldingsPassAt).toHaveBeenCalledTimes(1);
+  });
+
+  it('dates the holdings pass even when a later step throws', async () => {
+    // Dated after the run instead, a run failing late kept the catch-up
+    // downloading every hour.
+    const { host, store } = createFakeHost(brokerageSeed());
+    const setHoldingsPassAt = vi.fn(async (_at: Date) => {});
+    Object.assign(store, {
+      setHoldingsPassAt,
+      setLastSyncAt: async () => { throw new Error('secret write failed'); },
+    });
+    await runSyncCore(host, store, { force: true }).catch(() => {});
+    expect(setHoldingsPassAt).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not date the holdings pass on a run the minimum interval stopped', async () => {
+    const { host, store } = createFakeHost(brokerageSeed());
+    const setHoldingsPassAt = vi.fn(async (_at: Date) => {});
+    Object.assign(store, { setHoldingsPassAt });
+    await store.setLastSyncAt(new Date());
+    await runSyncCore(host, store, {});
+    expect(setHoldingsPassAt).not.toHaveBeenCalled();
+  });
+
+  it('a catch-up run passes the minimum interval but keeps the usual download window', async () => {
+    const lastSync = new Date(Date.now() - 10 * 60_000);
+    const { host, store } = createFakeHost(brokerageSeed());
+    await store.setLastSyncAt(lastSync);
+    const since: Date[] = [];
+    const fetch = host.fetchSimplefin.bind(host);
+    host.fetchSimplefin = async (url, start, key) => { since.push(start); return fetch(url, start, key); };
+    await runSyncCore(host, store, { catchUp: true });
+    expect(since).toHaveLength(1);
+    // The overlap window behind the last sync, not the 30 days `force` asks for.
+    expect(since[0].getTime()).toBeGreaterThan(Date.now() - 20 * 24 * 60 * 60_000);
+    expect(since[0].getTime()).toBeLessThan(lastSync.getTime());
+  });
+
   const sbRows = (imported: ImportRow[][]) =>
     imported.flat().filter((r) => r.comment === 'Starting balance · sfin-b');
 
@@ -3821,6 +3865,16 @@ describe('holdings snapshots for investment accounts', () => {
     const result = await runSyncCore(host, store, { force: true });
     expect(result.holdingsSnapshots).toEqual({ imported: 0, skipped: 0, unresolvedSymbols: [] });
     expect(result.errors).toEqual([]);
+  });
+
+  it('does not date the holdings pass on a host that cannot write snapshots (the companion)', async () => {
+    const seed = brokerageSeed();
+    seed.noHoldingsSupport = true;
+    const { host, store } = createFakeHost(seed);
+    const setHoldingsPassAt = vi.fn(async (_at: Date) => {});
+    Object.assign(store, { setHoldingsPassAt });
+    await runSyncCore(host, store, { force: true });
+    expect(setHoldingsPassAt).not.toHaveBeenCalled();
   });
 
   it('a failing snapshot import is reported, and never stops the transaction sync', async () => {

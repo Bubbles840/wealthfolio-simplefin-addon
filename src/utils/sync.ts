@@ -142,12 +142,21 @@ interface TelegramTarget {
 /** How recent the companion's last successful sync must be to count as
  *  running — the same two days after which Budget calls its data stale. */
 const COMPANION_ALIVE_MS = 2 * 24 * 60 * 60 * 1000;
+/** How far ahead of this clock a companion's stamp may be and still count:
+ *  the two run on different machines. Further ahead, it is a wrong clock. */
+const COMPANION_CLOCK_TOLERANCE_MS = 24 * 60 * 60 * 1000;
 
-async function companionSyncedRecently(store: Partial<Pick<SecretsStore, 'getSyncHealth'>>): Promise<boolean> {
+export async function companionSyncedRecently(
+  store: Partial<Pick<SecretsStore, 'getSyncHealth'>>,
+  now: Date = new Date(),
+): Promise<boolean> {
   // Optional-called: a store built before 1.57 has no such method.
   const health = await store.getSyncHealth?.().catch(() => null);
   const at = health?.lastSuccessAt ? Date.parse(health.lastSuccessAt) : NaN;
-  return Number.isFinite(at) && Date.now() - at < COMPANION_ALIVE_MS;
+  const age = now.getTime() - at;
+  // A stamp further ahead than the clocks can disagree is not a sign of life:
+  // it would read as "synced" until that date, long after the companion stopped.
+  return Number.isFinite(at) && age < COMPANION_ALIVE_MS && age >= -COMPANION_CLOCK_TOLERANCE_MS;
 }
 
 async function telegramTarget(store: SecretsStore): Promise<TelegramTarget | null> {

@@ -286,6 +286,9 @@ export interface SyncStore {
   getBalanceInitialized(): Promise<string[]>;
   addBalanceInitialized(sfinAccountId: string): Promise<void>;
   getLastSyncAt(): Promise<Date | null>;
+  /** When a run last reached the holdings step (the add-on's holdings
+   *  catch-up). Optional: the companion's store keeps none. */
+  setHoldingsPassAt?(date: Date): Promise<void>;
   setLastSyncAt(date: Date): Promise<void>;
   /**
    * How many activities the last completed run imported, or `null` if none has.

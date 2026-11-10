@@ -111,9 +111,21 @@ describe('SecretsStore', () => {
     const s = new SecretsStore(ctx);
     await s.setAccessUrl('https://user:pass@bridge.simplefin.org/simplefin');
     await s.setSyncScheduleHours(6);
+    await s.setHoldingsPassAt(new Date('2024-06-01T12:00:00Z'));
     await s.clearAll();
     expect(await s.getAccessUrl()).toBeNull();
     expect(await s.getSyncScheduleHours()).toBeNull();
+    expect(await s.getHoldingsPassAt()).toBeNull();
+  });
+
+  it('roundtrips the holdings pass time, and reads a garbled one as never', async () => {
+    const ctx = makeCtx();
+    const s = new SecretsStore(ctx);
+    const at = new Date('2024-06-01T12:00:00Z');
+    await s.setHoldingsPassAt(at);
+    expect((await s.getHoldingsPassAt())?.toISOString()).toBe(at.toISOString());
+    await ctx.api.secrets.set('holdings_pass_at', 'not a date');
+    expect(await s.getHoldingsPassAt()).toBeNull();
   });
 
   it('clearAll deletes the companion-published uncategorized-status secret too', async () => {
