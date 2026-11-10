@@ -15,7 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   account (an investment one, or one tracked by holdings), its type (deposit or
   withdrawal) and its wording ("Buy …", "Sell …", "You bought …", "You sold …",
   "Reinvestment …", "Redemption …"); a dividend or interest line always shows.
-  Each half filters its own syncs, so update both.
+  Each half filters its own syncs, so update both (#70).
 
 ## [1.74.0] - 2026-11-10
 
