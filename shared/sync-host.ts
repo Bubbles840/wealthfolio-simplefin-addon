@@ -289,6 +289,11 @@ export interface SyncStore {
   /** When a run last reached the holdings step (the add-on's holdings
    *  catch-up). Optional: the companion's store keeps none. */
   setHoldingsPassAt?(date: Date): Promise<void>;
+  /** Per SimpleFin account, the days its balance was seen to be its total
+   *  value (`balanceShowsTotal`), and adding a day per account. Optional:
+   *  holdings snapshots are the add-on's, so the companion's store keeps none. */
+  getBalanceTotalDays?(): Promise<Record<string, string[]>>;
+  addBalanceTotalDays?(seen: Record<string, string>): Promise<void>;
   setLastSyncAt(date: Date): Promise<void>;
   /**
    * How many activities the last completed run imported, or `null` if none has.

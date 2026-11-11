@@ -30,6 +30,7 @@ import type { AccountMapping, MappingRule, UnmappedAccount } from '../../shared/
 import type { DismissalLedger, UncategorizedRow } from '../../shared/uncategorized';
 import type { DriftAlertEntry, TransferLinkFailureEntry } from '../../shared/sync-host';
 import type { SyncResult } from '../../shared/sync-core';
+import { BALANCE_TOTAL_DAYS } from '../../shared/holdings';
 import { LARGE_TX_OUTBOX_SECRET_KEY, SUBSCRIPTION_NEWS_SECRET_KEY } from '../../shared/telegram';
 import { ADDON_VERSION_SECRET_KEY, INSTALLED_ADDON_VERSION_SECRET_KEY, SIMPLEFIN_SYNC_VERSION, WEALTHFOLIO_VERSION_SECRET_KEY } from '../../shared/version';
 import { REFUSED_ALERTED_SECRET_KEY } from '../../shared/refused-alerts';
@@ -122,6 +123,8 @@ const KEYS = {
   accountMapping: 'account_mapping',
   accountNames: 'account_names',
   balanceInitialized: 'balance_initialized',
+  // SimpleFin accounts whose balance is their total value (holdings cash); cleared on Reset.
+  balanceTotalAccounts: 'holdings_balance_totals',
   mappingRules: 'mapping_rules',
   syncScheduleHours: 'sync_schedule_hours',
   lastSyncAt: 'last_sync_at',
@@ -337,6 +340,31 @@ export class SecretsStore {
   }
   async setAccountNames(names: Record<string, string>): Promise<void> {
     await this.ctx.api.secrets.set(KEYS.accountNames, JSON.stringify(names));
+  }
+
+  /** Per SimpleFin account, the days its balance was seen to be its total
+   *  value (`balanceShowsTotal`). A value that cannot be read is none. */
+  async getBalanceTotalDays(): Promise<Record<string, string[]>> {
+    try {
+      return parseBalanceTotalDays(await this.ctx.api.secrets.get(KEYS.balanceTotalAccounts));
+    } catch {
+      return {};
+    }
+  }
+  /** Adds one day per account, re-reading first so another run's days are
+   *  kept. A stored value that cannot be read is refused, not overwritten:
+   *  overwriting would forget accounts already learned. Keeps BALANCE_TOTAL_DAYS
+   *  days at most per account. */
+  async addBalanceTotalDays(seen: Record<string, string>): Promise<void> {
+    const days = parseBalanceTotalDays(await this.ctx.api.secrets.get(KEYS.balanceTotalAccounts));
+    let changed = false;
+    for (const [id, day] of Object.entries(seen)) {
+      const list = days[id] ?? [];
+      if (list.includes(day) || list.length >= BALANCE_TOTAL_DAYS) continue;
+      days[id] = [...list, day];
+      changed = true;
+    }
+    if (changed) await this.ctx.api.secrets.set(KEYS.balanceTotalAccounts, JSON.stringify(days));
   }
 
   /** SimpleFin account IDs that already received a starting-balance entry. */
@@ -1175,4 +1203,18 @@ export class SecretsStore {
     // before it are generated, since the secrets API cannot list keys.
     await Promise.all([...Object.values(KEYS), ...changeLogResetKeys(new Date())].map((k) => this.ctx.api.secrets.delete(k)));
   }
+}
+
+/** `holdings_balance_totals`: account id → days. Empty when absent; throws
+ *  when present but not that shape. */
+function parseBalanceTotalDays(raw: string | null | undefined): Record<string, string[]> {
+  if (!raw) return {};
+  const parsed = JSON.parse(raw);
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('holdings_balance_totals is not readable');
+  const out: Record<string, string[]> = {};
+  for (const [id, days] of Object.entries(parsed)) {
+    if (!Array.isArray(days) || !days.every((d) => typeof d === 'string')) throw new Error('holdings_balance_totals is not readable');
+    out[id] = days as string[];
+  }
+  return out;
 }
