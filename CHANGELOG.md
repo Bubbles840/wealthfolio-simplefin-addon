@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 - **A holdings account no longer doubles when the feed's balance lags its
-  positions.** A brokerage can list a new purchase among the holdings before
+  positions (#71).** A brokerage can list a new purchase among the holdings before
   its balance counts it. The balance, then below the holdings' value, was read
   as cash alone, and the whole account value was written as cash on top of the
   positions. Once an account's balance has matched its holdings on three
