@@ -26,6 +26,8 @@ import type {
 } from './sync-host.js';
 
 export interface FakeHostSeed {
+  /** Per account, days its balance was seen to be its total value. */
+  balanceTotalDays?: Record<string, string[]>;
   /** Stored SimpleFin access URL. Defaults to a configured-looking placeholder
    *  so a seeded run reaches the import path; pass `null` to exercise the
    *  "not configured" branch. `fetchSimplefin` ignores it and returns
@@ -327,6 +329,7 @@ export function createFakeHost(seed: FakeHostSeed = {}): FakeHost {
   let venmoLedger: VenmoLedger = seed.venmoLedger ?? {};
   let accountBalances: Record<string, unknown> = {};
   let balanceInitialized: string[] = [];
+  let balanceTotalDays: Record<string, string[]> = { ...(seed.balanceTotalDays ?? {}) };
   let lastSyncAt: Date | null = null;
   let lastSyncImported: number | null = null;
 
@@ -573,6 +576,17 @@ export function createFakeHost(seed: FakeHostSeed = {}): FakeHost {
     },
     async getBalanceInitialized() {
       return balanceInitialized;
+    },
+    async getBalanceTotalDays() {
+      return balanceTotalDays;
+    },
+    async addBalanceTotalDays(seen: Record<string, string>) {
+      const next = { ...balanceTotalDays };
+      for (const [id, day] of Object.entries(seen)) {
+        const list = next[id] ?? [];
+        if (!list.includes(day)) next[id] = [...list, day];
+      }
+      balanceTotalDays = next;
     },
     async addBalanceInitialized(sfinAccountId: string) {
       if (!balanceInitialized.includes(sfinAccountId)) {

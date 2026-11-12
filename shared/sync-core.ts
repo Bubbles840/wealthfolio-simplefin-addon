@@ -10,7 +10,7 @@ import { accountTxKey, detectTransferPairs, TRANSFER_MATCH_WINDOW_SECONDS } from
 import type { TransferCandidate } from './transfers.js';
 import { planReconciliation, IN_TRANSIT_COMMENT_PREFIX, isSecurityAsset } from './reconcile.js';
 import { isSimplefinNotice } from './simplefin-payload.js';
-import { accountTag, feedPrices, toHoldingsSnapshot } from './holdings.js';
+import { accountTag, BALANCE_TOTAL_DAYS, balanceShowsTotal, feedPrices, toHoldingsSnapshot } from './holdings.js';
 import { loanBalanceOf, type LinkedLoan, type LoanLinks } from './loan-balances.js';
 import type { FeedTx, ExistingRow } from './reconcile.js';
 /** Re-exported from reconcile.ts (which defines it, so `changed()` can recognise
@@ -4938,12 +4938,19 @@ async function runSyncPass(
   // every account as TRANSACTIONS. A mode or type the host cannot read: as before.
   const holdingsSnapshots = noHoldings();
   if (host.syncHoldings) {
+    // Accounts whose balance has matched their holdings on BALANCE_TOTAL_DAYS
+    // days: a lower balance later is a total that lags them, not cash. Never
+    // on one day's match. Unreadable: none known, as before.
+    const totalDays: Record<string, string[]> = await (store.getBalanceTotalDays?.() ?? Promise.resolve({})).catch(() => ({}));
+    const seenTotal: Record<string, string> = {};
     for (const sfAccount of accountSet.accounts) {
       const wfAccountId = mapping[sfAccount.id];
       if (!wfAccountId) continue;
       if (wfModes.get(wfAccountId) === 'TRANSACTIONS' && wfTypes.get(wfAccountId) === 'CASH') continue;
-      const snapshot = toHoldingsSnapshot(sfAccount);
+      const known = (totalDays[sfAccount.id]?.length ?? 0) >= BALANCE_TOTAL_DAYS;
+      const snapshot = toHoldingsSnapshot(sfAccount, { balanceIsTotal: known });
       if (!snapshot) continue;
+      if (!known && balanceShowsTotal(sfAccount)) seenTotal[sfAccount.id] = snapshot.date;
       try {
         const outcome = await host.syncHoldings(wfAccountId, snapshot, feedPrices(sfAccount), { tag: accountTag(wfAccountId) });
         holdingsSnapshots.imported += outcome.imported;
@@ -4975,6 +4982,8 @@ async function runSyncPass(
     // leave the catch-up asking again every hour. A failed write only costs one
     // extra catch-up. A store without the method (the companion's) keeps none.
     await store.setHoldingsPassAt?.(new Date()).catch(() => {});
+    // A failed or refused write only means learning it again on later matches.
+    if (Object.keys(seenTotal).length > 0) await store.addBalanceTotalDays?.(seenTotal).catch(() => {});
   }
 
   // ── Loan balances (accounts linked to a liability) ───────────────────────

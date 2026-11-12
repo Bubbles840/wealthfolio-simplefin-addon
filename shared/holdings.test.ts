@@ -1,5 +1,5 @@
 import { afterEach, describe, it, expect, vi } from 'vitest';
-import { accountTag, carriedCost, feedPrices, holdingsWithoutCost, holdingSymbol, scopedSymbol, toHoldingsSnapshot } from './holdings.js';
+import { accountTag, balanceShowsTotal, carriedCost, feedPrices, holdingsWithoutCost, holdingSymbol, scopedSymbol, toHoldingsSnapshot } from './holdings.js';
 import type { SimplefinAccount } from './types.js';
 
 const account = (over: Partial<SimplefinAccount> = {}): SimplefinAccount => ({
@@ -229,6 +229,19 @@ describe('toHoldingsSnapshot', () => {
         { symbol: 'VTI', shares: '40', market_value: '10000.00' },
       ]);
       expect(snapshot?.cashBalances).toEqual({ USD: '512.34' });
+    });
+
+    it('is zero for a balance below the holdings on an account known to report its total', () => {
+      // A purchase listed among the holdings before the balance counts it.
+      const holdings = [{ symbol: 'VTI', shares: '40', market_value: '9900.00' }, { symbol: 'ABCXX', shares: '100', market_value: '100.00' }];
+      expect(toHoldingsSnapshot(account({ balance: '9850.00', holdings }), { balanceIsTotal: true })?.cashBalances).toEqual({ USD: '0' });
+      expect(toHoldingsSnapshot(account({ balance: '9850.00', holdings }))?.cashBalances).toEqual({ USD: '9850.00' });
+    });
+
+    it('compares market values written with thousands separators', () => {
+      // Unparsed, the comparison gave up and wrote the whole balance as cash.
+      const snapshot = fidelity('10000.00', [{ symbol: 'VTI', shares: '40', market_value: '10,000.00' }]);
+      expect(snapshot?.cashBalances).toEqual({ USD: '0' });
     });
 
     it('keeps the balance when a holding has no market value to compare with', () => {
@@ -469,5 +482,38 @@ describe('holdingsWithoutCost', () => {
       { holdingType: 'cash', instrument: { symbol: '$CASH-USD' }, quantity: 100, costBasis: { local: 0 } },
       { holdingType: 'security', instrument: null, quantity: 5, costBasis: null },
     ])).toEqual(['NO COST', 'NULL COST']);
+  });
+});
+
+describe('balanceShowsTotal', () => {
+  const acct = (balance: string, holdings: NonNullable<SimplefinAccount['holdings']>) =>
+    ({ id: 'a', name: 'Brokerage', currency: 'USD', balance, 'balance-date': 1789214400, transactions: [], holdings }) as SimplefinAccount;
+  const two = [{ symbol: 'VTI', shares: '2', market_value: '600.00' }, { symbol: 'ABCXX', shares: '400', market_value: '400.00' }];
+
+  it('is true only when the balance equals the holdings, within a dollar', () => {
+    expect(balanceShowsTotal(acct('1000.00', two))).toBe(true);
+    expect(balanceShowsTotal(acct('1000.99', two))).toBe(true);
+    expect(balanceShowsTotal(acct('999.01', two))).toBe(true);
+    expect(balanceShowsTotal(acct('1001.01', two))).toBe(false);
+    expect(balanceShowsTotal(acct('998.99', two))).toBe(false);
+  });
+
+  it('is false when the holdings are worth too little for a match to mean anything', () => {
+    expect(balanceShowsTotal(acct('0.00', [{ symbol: 'VTI', shares: '2', market_value: '0.00' }]))).toBe(false);
+    expect(balanceShowsTotal(acct('99.99', [{ symbol: 'VTI', shares: '2', market_value: '99.99' }]))).toBe(false);
+    expect(balanceShowsTotal(acct('100.00', [{ symbol: 'VTI', shares: '2', market_value: '100.00' }]))).toBe(true);
+  });
+
+  it('reads thousands separators, but not a decimal comma', () => {
+    expect(balanceShowsTotal(acct('1,000.00', [{ symbol: 'VTI', shares: '2', market_value: '1,000.00' }]))).toBe(true);
+    expect(balanceShowsTotal(acct('9900.50', [{ symbol: 'VTI', shares: '2', market_value: '9900,50' }]))).toBe(false);
+    expect(balanceShowsTotal(acct('123.00', [{ symbol: 'VTI', shares: '2', market_value: '1,2,3' }]))).toBe(false);
+  });
+
+  it('is false when there is nothing to compare', () => {
+    expect(balanceShowsTotal(acct('1000.00', []))).toBe(false);
+    expect(balanceShowsTotal(acct('600.00', [{ symbol: 'VTI', shares: '2' }]))).toBe(false);
+    expect(balanceShowsTotal(acct('600.00', [{ symbol: 'SHOP', shares: '2', market_value: '600.00', currency: 'CAD' }]))).toBe(false);
+    expect(balanceShowsTotal(acct('n/a', two))).toBe(false);
   });
 });
