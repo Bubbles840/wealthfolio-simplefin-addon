@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.75.0] - 2026-11-12
+
+Update both halves. Update the add-on in the app as usual (no new
+permissions) and pull the companion image: both changes are in the add-on and
+the companion behaves as before, but the two versions must match, or the daily
+report flags them. From before 1.70.0, use **Install from File** with this
+zip, as 1.70.0 says.
+
 ### Fixed
 - **Holdings keep their cost when the feed sends none (#67)** (common for
   401(k) plans). The cost Wealthfolio already has is carried to the new
