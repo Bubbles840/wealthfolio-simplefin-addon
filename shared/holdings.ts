@@ -157,6 +157,63 @@ function averageCost(
   return price && price.n > 0n ? String(purchasePrice).trim() : undefined;
 }
 
+/** A share count that changes by this factor or more, either way, may be a split. */
+const SPLIT_FACTOR_PERCENT = 150n;
+
+/**
+ * The per-share cost to carry onto a position the feed sent without one, from
+ * what Wealthfolio already holds for it (its total cost and shares).
+ *
+ * - Shares changed by 1.5× or more, either way: `ask`. That may be a split,
+ *   which keeps the total cost, or a large buy or sale, which does not; read
+ *   the wrong way it writes a confident wrong cost, and unknown is better.
+ * - Otherwise, shares the same or fewer: the same average cost (a sale keeps it).
+ * - Shares up: the old total cost plus the new shares at `price`, the feed's
+ *   price that day (market value ÷ shares). Exact for a 401(k) contribution or
+ *   a reinvested dividend, which buy at that day's price; close for a
+ *   brokerage buy, which filled at some price during the day. With no usable
+ *   price: `ask`.
+ *
+ * The held figures come from the host's holdings read, which gives numbers:
+ * they are read as decimal strings, and anything else (an exponent, zero,
+ * nothing) carries nothing.
+ */
+export function carriedCost(
+  shares: string,
+  held: { quantity?: number | string | null; cost?: number | string | null },
+  price?: string | null,
+): { avgCost?: string; ask?: true } {
+  const now = parseScaled(shares);
+  const before = parseScaled(held.quantity ?? null);
+  const cost = parseScaled(held.cost ?? null);
+  // Sold out (the feed may still list it at 0 shares): nothing to cost.
+  if (now === null || now === 0n || before === null || before === 0n || cost === null || cost === 0n) return {};
+  if (now * 100n >= before * SPLIT_FACTOR_PERCENT || before * 100n >= now * SPLIT_FACTOR_PERCENT) return { ask: true };
+  if (now <= before) return { avgCost: divideScaled(cost, before) };
+  const perShare = parseScaled(price ?? null);
+  if (!perShare) return { ask: true };
+  return { avgCost: divideScaled(cost + ((now - before) * perShare) / PRICE_SCALE, now) };
+}
+
+/**
+ * The holdings Wealthfolio has no cost for: shares held, and a total cost of 0
+ * or none. The account's gain stays hidden while any is listed. Cash lines and
+ * holdings without an instrument are not positions and are left out.
+ */
+export function holdingsWithoutCost(
+  holdings: ReadonlyArray<{
+    holdingType?: string | null;
+    instrument?: { symbol?: string | null } | null;
+    quantity?: number | string | null;
+    costBasis?: { local?: number | string | null } | null;
+  }>,
+): string[] {
+  return holdings
+    .filter((h) => String(h.holdingType ?? '').toLowerCase() !== 'cash' && !!h.instrument?.symbol?.trim())
+    .filter((h) => Number(h.quantity) > 0 && !(Number(h.costBasis?.local) > 0))
+    .map((h) => h.instrument!.symbol!.trim());
+}
+
 /** A US money market fund's ticker: five letters ending in XX (e.g. ABCXX). */
 const MONEY_MARKET_TICKER = /^[A-Z]{3}XX$/;
 /** How far a money market line's value may sit from its share count: a cent. */

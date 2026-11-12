@@ -658,7 +658,7 @@ export function badgeVerdict(bankBalance: number, wealthfolioFigure: number): { 
 }
 
 /** Wealthfolio account types valued from their positions (investment and crypto). */
-const INVESTMENT_ACCOUNT_TYPES: ReadonlySet<string> = new Set(['SECURITIES', 'CRYPTOCURRENCY']);
+export const INVESTMENT_ACCOUNT_TYPES: ReadonlySet<string> = new Set(['SECURITIES', 'CRYPTOCURRENCY']);
 
 /** Distinct marker so the UI can recognise an interval skip and offer to
  *  force, rather than treating it as a generic error. */
@@ -4953,6 +4953,11 @@ async function runSyncPass(
         }
         if (outcome.pricedFromFeed?.length) {
           console.log(`[simplefin-sync] priced ${outcome.pricedFromFeed.join(', ')} (${sfAccount.name}) from SimpleFin's market value`);
+        }
+        // A cost nobody sent cannot be made up here: the person has it, on
+        // their provider's positions page.
+        for (const symbol of outcome.costUnknown ?? []) {
+          errors.push(`No cost basis for ${symbol} (${sfAccount.name}): SimpleFin sent no cost, and its share count changed in a way the sync cannot cost (a purchase with no single price, or a change of 1.5× or more either way, which may be a split). Enter the cost on the holding in Wealthfolio, or gains for the account stay unknown.`);
         }
         for (const symbol of outcome.unresolvedSymbols) {
           // Deduped across accounts: the same unresolvable ticker in two

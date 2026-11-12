@@ -328,6 +328,28 @@ add-on and the companion are both on 1.69.0 or later. To add your bank's
 wording, add an entry to `DIVIDEND_PATTERNS` in `shared/dividends.ts` with its
 real text in the test.
 
+### Cost of investment positions
+
+Some providers (often 401(k) plans) send positions without a cost. A position
+like that keeps the cost Wealthfolio already has for it: the same average after
+a sale, and new shares (a contribution, a reinvested dividend, a buy) added at
+the feed's price that day. Synced daily, that is exact for a 401(k)
+contribution, which buys at the day's price; after a gap of several days, or
+for a brokerage buy that filled during the day, it is an estimate. Shares
+transferred in raise the count without new money and are costed as a buy, so
+correct the cost on the holding after one. When the share count changes by
+1.5× or more either way (a split, or a large buy or sale) the sync does not
+guess: it asks you once to enter the cost, as it does when the feed has no
+price for new shares. A cost Wealthfolio holds in another currency than the
+feed's is not carried (each day's snapshot is then written without one, so a
+cost entered by hand does not last for such a holding). A holding with no cost
+in Wealthfolio stays unknown, and Home lists it under
+"Wealthfolio has no cost for…" until you enter one (a new holding the feed
+sends without a cost shows there too). That list repeats no alert. If your
+provider never sends a cost and you don't track gains, **Don't show** hides a
+holding from it for good (in every browser, until Reset); a new holding
+without a cost still shows.
+
 ### Starting balances
 
 On an account's first sync the addon reads its current balance from

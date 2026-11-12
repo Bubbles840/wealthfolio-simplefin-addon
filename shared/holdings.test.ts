@@ -1,5 +1,5 @@
 import { afterEach, describe, it, expect, vi } from 'vitest';
-import { accountTag, feedPrices, holdingSymbol, scopedSymbol, toHoldingsSnapshot } from './holdings.js';
+import { accountTag, carriedCost, feedPrices, holdingsWithoutCost, holdingSymbol, scopedSymbol, toHoldingsSnapshot } from './holdings.js';
 import type { SimplefinAccount } from './types.js';
 
 const account = (over: Partial<SimplefinAccount> = {}): SimplefinAccount => ({
@@ -400,4 +400,74 @@ describe('a holding SimpleFin sends without a symbol', () => {
     ]);
   });
 
+});
+
+describe('carriedCost', () => {
+  it('is the held total cost over the held shares', () => {
+    expect(carriedCost('300.5', { quantity: 300.5, cost: 4000.25 })).toEqual({ avgCost: '13.31198003' });
+  });
+
+  it('stays the same after a sale', () => {
+    expect(carriedCost('8', { quantity: 10, cost: 500 }, '60')).toEqual({ avgCost: '50.00' });
+  });
+
+  it('adds new shares at the feed price that day (a contribution, a reinvested dividend)', () => {
+    // (500 + 2 × 60) ÷ 12
+    expect(carriedCost('12', { quantity: 10, cost: 500 }, '60')).toEqual({ avgCost: '51.66666667' });
+    expect(carriedCost('10.5', { quantity: 10, cost: 500 }, '52.5')).toEqual({ avgCost: '50.11904762' });
+  });
+
+  describe('a share count that changes by 1.5× or more', () => {
+    it('asks, whether it went up or down, and whatever the price (a split, a large buy or sale)', () => {
+      // 10-for-1 split, same value.
+      expect(carriedCost('1000', { quantity: 100, cost: 10000 }, '10')).toEqual({ ask: true });
+      // 1-for-10 reverse split.
+      expect(carriedCost('10', { quantity: 100, cost: 1000 }, '90')).toEqual({ ask: true });
+      // Exactly 1.5× either way.
+      expect(carriedCost('150', { quantity: 100, cost: 5000 }, '50')).toEqual({ ask: true });
+      expect(carriedCost('100', { quantity: 150, cost: 5000 })).toEqual({ ask: true });
+    });
+
+    it('costs a change under 1.5× as before', () => {
+      expect(carriedCost('149', { quantity: 100, cost: 5000 }, '50')).toEqual({ avgCost: '50.00' });
+      expect(carriedCost('67', { quantity: 100, cost: 5000 })).toEqual({ avgCost: '50.00' });
+    });
+  });
+
+  it('carries nothing, and does not ask, for a position sold out (0 shares)', () => {
+    expect(carriedCost('0', { quantity: 10, cost: 500 }, '60')).toEqual({});
+  });
+
+  it('ignores the price when the shares did not go up', () => {
+    expect(carriedCost('10', { quantity: 10, cost: 500 }, '999')).toEqual({ avgCost: '50.00' });
+  });
+
+  it('carries nothing when the shares went up with no usable price, and says so', () => {
+    expect(carriedCost('11', { quantity: 10, cost: 500 })).toEqual({ ask: true });
+    expect(carriedCost('11', { quantity: 10, cost: 500 }, '0')).toEqual({ ask: true });
+    expect(carriedCost('11', { quantity: 10, cost: 500 }, 'n/a')).toEqual({ ask: true });
+  });
+
+  it('carries nothing without a held cost or share count', () => {
+    expect(carriedCost('10', { quantity: 10, cost: 0 })).toEqual({});
+    // Zero is unknown: the new shares alone would understate the cost.
+    expect(carriedCost('12', { quantity: 10, cost: 0 }, '60')).toEqual({});
+    expect(carriedCost('10', { quantity: 10 })).toEqual({});
+    expect(carriedCost('10', { quantity: 0, cost: 500 })).toEqual({});
+    expect(carriedCost('10', {})).toEqual({});
+    expect(carriedCost('10', { quantity: 1e-7, cost: 500 })).toEqual({});
+  });
+});
+
+describe('holdingsWithoutCost', () => {
+  it('is a holding with shares and a cost of 0 or none; not cash, not sold out, not one with a cost', () => {
+    expect(holdingsWithoutCost([
+      { holdingType: 'security', instrument: { symbol: 'NO COST' }, quantity: 5, costBasis: { local: 0 } },
+      { holdingType: 'security', instrument: { symbol: 'NULL COST' }, quantity: '2.5', costBasis: null },
+      { holdingType: 'security', instrument: { symbol: 'HAS COST' }, quantity: 5, costBasis: { local: 100 } },
+      { holdingType: 'security', instrument: { symbol: 'SOLD' }, quantity: 0, costBasis: { local: 0 } },
+      { holdingType: 'cash', instrument: { symbol: '$CASH-USD' }, quantity: 100, costBasis: { local: 0 } },
+      { holdingType: 'security', instrument: null, quantity: 5, costBasis: null },
+    ])).toEqual(['NO COST', 'NULL COST']);
+  });
 });

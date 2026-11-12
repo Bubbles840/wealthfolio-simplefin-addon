@@ -27,7 +27,7 @@ import type { BudgetLayout } from '../../shared/budget-layout';
 import type { AmazonLabelCatalog, AmazonMailConfig } from '../../shared/amazon-config';
 import type { AmazonLedger } from '../../shared/amazon-ledger';
 import type { AccountMapping, MappingRule, UnmappedAccount } from '../../shared/types';
-import type { DismissalLedger, UncategorizedRow } from '../../shared/uncategorized';
+import { mergeDismissals, type DismissalLedger, type UncategorizedRow } from '../../shared/uncategorized';
 import type { DriftAlertEntry, TransferLinkFailureEntry } from '../../shared/sync-host';
 import type { SyncResult } from '../../shared/sync-core';
 import { LARGE_TX_OUTBOX_SECRET_KEY, SUBSCRIPTION_NEWS_SECRET_KEY } from '../../shared/telegram';
@@ -171,6 +171,8 @@ const KEYS = {
   customReports: 'custom_reports',
   budgetLayout: 'budget_layout',
   openCards: 'ui_open_cards',
+  // Holdings the user hid from Home's no-cost list (#67): add-on only, cleared on Reset.
+  hiddenCostHoldings: 'holdings_cost_hidden',
   uiState: 'ui_state',
   pendingLargeTxAlerts: LARGE_TX_OUTBOX_SECRET_KEY,
   // Home Assistant: the access token and both queues (the companion's also holds
@@ -840,6 +842,33 @@ export class SecretsStore {
     );
   }
 
+  /** Holdings hidden from Home's no-cost list ("account id|symbol" → when).
+   *  Cosmetic, so a value that cannot be read is an empty list (everything shows). */
+  async getHiddenCostHoldings(): Promise<DismissalLedger> {
+    return this.readLedger(KEYS.hiddenCostHoldings);
+  }
+  /** A ledger of id → ISO time; a value that cannot be read is empty. */
+  private async readLedger(key: string): Promise<DismissalLedger> {
+    const raw = await this.ctx.api.secrets.get(key);
+    if (!raw) return {};
+    try {
+      const parsed = JSON.parse(raw);
+      return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
+    } catch {
+      return {};
+    }
+  }
+  /** Writes the change from `base` to `next` onto what is stored now, so a
+   *  second browser's hide made in between is kept. Returns what was written.
+   *  A stored value that cannot be read is replaced rather than refused: it
+   *  only hides rows, so the cost is that they show again, while refusing
+   *  would leave Don't show broken until a Reset. */
+  async editHiddenCostHoldings(base: DismissalLedger, next: DismissalLedger): Promise<DismissalLedger> {
+    const merged = mergeDismissals(await this.getHiddenCostHoldings(), base, next);
+    await this.ctx.api.secrets.set(KEYS.hiddenCostHoldings, JSON.stringify(merged));
+    return merged;
+  }
+
   /** Which collapsible config cards the user left open, keyed by card id.
    *  Purely cosmetic, so a malformed value degrades to "everything closed"
    *  rather than surfacing an error — but it is worth storing: the account
@@ -962,14 +991,7 @@ export class SecretsStore {
    *  the Telegram dismiss buttons write and the companion sweep filters on —
    *  two ledgers answering one question is the defect this shares it to avoid. */
   async getDismissals(): Promise<DismissalLedger> {
-    const raw = await this.ctx.api.secrets.get(KEYS.dismissals);
-    if (!raw) return {};
-    try {
-      const parsed = JSON.parse(raw);
-      return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
-    } catch {
-      return {};
-    }
+    return this.readLedger(KEYS.dismissals);
   }
   async setDismissals(ledger: DismissalLedger): Promise<void> {
     await this.ctx.api.secrets.set(KEYS.dismissals, JSON.stringify(ledger));

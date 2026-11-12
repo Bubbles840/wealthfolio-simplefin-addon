@@ -482,8 +482,10 @@ describe('SyncPage', () => {
   // unconditionally when it landed.
   it('keeps the tab the user picked before the mount load resolved', async () => {
     const props = makeProps();
-    let release: (v: any) => void = () => {};
-    props.ctx.api.accounts.getAll = vi.fn(() => new Promise((res) => { release = res; }));
+    // Every caller waits on the same load (the page, and Home's holdings list).
+    const waiting: Array<(v: any) => void> = [];
+    const release = (v: any) => waiting.splice(0).forEach((res) => res(v));
+    props.ctx.api.accounts.getAll = vi.fn(() => new Promise((res) => { waiting.push(res); }));
     // Storage says Notifications, the user says Advanced, and the user is the one
     // who is right.
     props.store.getUiState = vi.fn(async () => ({ activeTab: 'settings' })) as any;
@@ -507,8 +509,10 @@ describe('SyncPage', () => {
     // `checklistDismissed`, so a dropped dismissal brings the checklist back on
     // every future session, permanently.
     const props = makeProps();
-    let release: (v: any) => void = () => {};
-    props.ctx.api.accounts.getAll = vi.fn(() => new Promise((res) => { release = res; }));
+    // Every caller waits on the same load (the page, and Home's holdings list).
+    const waiting: Array<(v: any) => void> = [];
+    const release = (v: any) => waiting.splice(0).forEach((res) => res(v));
+    props.ctx.api.accounts.getAll = vi.fn(() => new Promise((res) => { waiting.push(res); }));
     props.store.getUiState = vi.fn(async () => ({})) as any;
     props.store.getLastSyncImported = vi.fn(async () => 7) as any;
 
@@ -530,8 +534,10 @@ describe('SyncPage', () => {
 
   it('keeps a card the user opened before the mount load resolved', async () => {
     const props = makeProps();
-    let release: (v: any) => void = () => {};
-    props.ctx.api.accounts.getAll = vi.fn(() => new Promise((res) => { release = res; }));
+    // Every caller waits on the same load (the page, and Home's holdings list).
+    const waiting: Array<(v: any) => void> = [];
+    const release = (v: any) => waiting.splice(0).forEach((res) => res(v));
+    props.ctx.api.accounts.getAll = vi.fn(() => new Promise((res) => { waiting.push(res); }));
     // Stored state that opens a DIFFERENT card, so a blind assignment is visible.
     props.store.getOpenCards = vi.fn(async () => ({ docker: true })) as any;
     props.store.getLastSyncImported = vi.fn(async () => 7) as any;

@@ -165,6 +165,11 @@ export interface HoldingsSyncOutcome {
    *  price of its own for them (src/utils/holdings-prices.ts). Absent on a host
    *  that does not price. */
   pricedFromFeed?: string[];
+  /** Holdings written without a cost: the feed sent none and the share count
+   *  changed in a way that cannot be costed (a rise with no feed price, or a
+   *  change of 1.5× or more either way, which may be a split). Absent on a host that
+   *  does not carry costs. */
+  costUnknown?: string[];
 }
 
 export interface SyncHost {
