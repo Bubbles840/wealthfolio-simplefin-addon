@@ -2278,6 +2278,8 @@ describe('importNoticeRows: trades as the feed sends them', () => {
       row('Selling fee rebate', true),
       // Income, even worded like a trade.
       row('Reinvest Dividend', true),
+      row('REINVEST DIVIDENDS EXAMPLE FUND', true),
+      row('YOU REINVESTED DIVIDENDS', true),
       row('REINVESTMENT INTEREST EXAMPLE FUND', true),
       // Typed on purpose (a rule, the dividends step): the wording does not override it.
       row('Sell ABC', true, 'TRANSFER_IN'),

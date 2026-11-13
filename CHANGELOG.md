@@ -15,8 +15,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   account (an investment one, or one tracked by holdings), its type (deposit or
   withdrawal) and its wording ("Buy …", "Sell …", "You bought …", "You sold …",
   "Reinvestment …", "Redemption …"), also for a fund named for dividends;
-  a reinvested dividend or interest line ("Reinvest Dividend") always shows.
-  Each half filters its own syncs, so update both (#70).
+  a reinvested dividend or interest line ("Reinvest Dividend",
+  "Reinvest Dividends") always shows. Each half filters its own syncs, so
+  update both (#70).
 - **Windows: large records save again on Wealthfolio 3.13 (#58).** Since 3.13,
   Wealthfolio reports every Credential Manager failure as "The operation could
   not be completed." without the reason, so the add-on no longer recognised
