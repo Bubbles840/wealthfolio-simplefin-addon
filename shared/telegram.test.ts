@@ -2252,3 +2252,43 @@ describe('importNoticeRows', () => {
     expect(importNoticeRows(untyped, { notifyOnImportTrades: false })).toHaveLength(1);
   });
 });
+
+describe('importNoticeRows: trades as the feed sends them', () => {
+  const off = { notifyOnImportTrades: false };
+  const row = (description: string, investment: boolean, activityType = 'DEPOSIT') => ({ description, investment, activityType });
+
+  it('leaves out a buy or sell that SimpleFin sent as cash on an investment account', () => {
+    const trades = ['Sell ABC', 'Buy XYZ', 'YOU BOUGHT EXAMPLE INDEX FUND', 'YOU SOLD EXAMPLE CORP', 'REINVESTMENT EXAMPLE FUND', '  sold 3 ABC',
+      'Reinvest Shares', 'REINVESTED EXAMPLE FUND', 'YOU PURCHASED EXAMPLE FUND', 'REDEMPTION EXAMPLE FUND', 'YOU REDEEMED EXAMPLE FUND',
+      // Funds named for dividends or interest: still trades.
+      'YOU BOUGHT SCHWAB US DIVIDEND EQUITY ETF', 'Buy Vanguard Dividend Appreciation ETF', 'YOU SOLD VANGUARD HIGH DIVIDEND YIELD ETF',
+      'Buy iShares Interest Rate Hedged Corporate Bond ETF', 'REINVESTMENT SCHWAB US DIVIDEND EQUITY ETF']
+      .map((d) => row(d, true, 'WITHDRAWAL'));
+    expect(importNoticeRows(trades, off)).toEqual([]);
+  });
+
+  it('keeps the same wording on an account that is not an investment one, and other investment rows', () => {
+    const kept = [
+      row('Sell ABC', false),
+      row('Buy XYZ', false, 'WITHDRAWAL'),
+      row('Sell ABC', undefined as unknown as boolean),
+      row('DIVIDEND EXAMPLE CORP', true, 'DIVIDEND'),
+      row('Electronic funds transfer received', true),
+      row('Buyer protection refund', true),
+      row('Selling fee rebate', true),
+      // Income, even worded like a trade.
+      row('Reinvest Dividend', true),
+      row('REINVESTMENT INTEREST EXAMPLE FUND', true),
+      // Typed on purpose (a rule, the dividends step): the wording does not override it.
+      row('Sell ABC', true, 'TRANSFER_IN'),
+      row('Reinvestment EXAMPLE FUND', true, 'DIVIDEND'),
+      row('Buy ABC', true, 'FEE'),
+    ];
+    expect(importNoticeRows(kept, off)).toEqual(kept);
+  });
+
+  it('keeps every trade while the setting is on', () => {
+    const rows = [row('Sell ABC', true)];
+    expect(importNoticeRows(rows, {})).toBe(rows);
+  });
+});

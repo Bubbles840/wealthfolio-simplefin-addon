@@ -1484,7 +1484,8 @@ describe('deliverAddonAlerts', () => {
         botToken: 'tok', chatId: '42', enabled: true, notifyOnImportTrades: false,
       })),
     });
-    const trade = importedTx({ txId: 'TRN-2', description: 'Bought shares', activityType: 'BUY' });
+    // As the feed sends one: cash on an investment account, typed as a deposit.
+    const trade = importedTx({ txId: 'TRN-2', description: 'Sell ABC', activityType: 'DEPOSIT', investment: true });
 
     await deliverAddonAlerts(alertCtx(request), store as any, emptyResult({
       imported: 2, importedTransactions: [importedTx(), trade],
@@ -1502,7 +1503,7 @@ describe('deliverAddonAlerts', () => {
     });
 
     await deliverAddonAlerts(alertCtx(request), store as any, emptyResult({
-      imported: 1, importedTransactions: [importedTx({ activityType: 'SELL' })],
+      imported: 1, importedTransactions: [importedTx({ description: 'Buy ABC', activityType: 'WITHDRAWAL', investment: true })],
     }));
 
     expect(request).not.toHaveBeenCalled();
