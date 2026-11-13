@@ -484,9 +484,11 @@ const TRADE_ACTIVITY_TYPES = new Set(['BUY', 'SELL']);
  *  …", "YOU SOLD …", "YOU PURCHASED …", "REINVESTMENT …"/"REINVESTED …" (a
  *  dividend reinvested as shares), "REDEMPTION …"/"YOU REDEEMED …" (a fund sale). */
 const TRADE_WORDING = /^(?:you\s+)?(?:buy|sell|bought|sold|purchased|reinvest(?:ment|ed)?|redemption|redeemed)\b/i;
-/** A dividend or interest line ("Reinvest Dividend" is the income, not the
- *  share purchase): never a trade, whatever its first word. */
-const INCOME_WORDING = /\b(?:dividend|interest)\b/i;
+/** A reinvest line that is the income, not the share purchase ("Reinvest
+ *  Dividend", "REINVESTMENT INTEREST …"): never a trade. Only right after the
+ *  reinvest word: a fund NAMED for dividends or interest ("YOU BOUGHT … US
+ *  DIVIDEND EQUITY ETF", "REINVESTMENT … DIVIDEND EQUITY ETF") is a trade. */
+const INCOME_WORDING = /^(?:you\s+)?reinvest\w*\s+(?:dividend|interest)\b/i;
 /** The types a cash-booked trade gets. A row typed anything else (a dividend,
  *  a transfer, a fee) was typed on purpose, so the wording does not override it. */
 const CASH_TRADE_TYPES = new Set(['DEPOSIT', 'WITHDRAWAL']);
@@ -502,7 +504,7 @@ export function isTradeRow(t: { activityType?: string; description?: string; inv
     || (t.investment === true
       && CASH_TRADE_TYPES.has(String(t.activityType ?? '').toUpperCase())
       && TRADE_WORDING.test(String(t.description ?? '').trim())
-      && !INCOME_WORDING.test(String(t.description ?? '')));
+      && !INCOME_WORDING.test(String(t.description ?? '').trim()));
 }
 
 /**

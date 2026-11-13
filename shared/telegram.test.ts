@@ -2259,7 +2259,10 @@ describe('importNoticeRows: trades as the feed sends them', () => {
 
   it('leaves out a buy or sell that SimpleFin sent as cash on an investment account', () => {
     const trades = ['Sell ABC', 'Buy XYZ', 'YOU BOUGHT EXAMPLE INDEX FUND', 'YOU SOLD EXAMPLE CORP', 'REINVESTMENT EXAMPLE FUND', '  sold 3 ABC',
-      'Reinvest Shares', 'REINVESTED EXAMPLE FUND', 'YOU PURCHASED EXAMPLE FUND', 'REDEMPTION EXAMPLE FUND', 'YOU REDEEMED EXAMPLE FUND']
+      'Reinvest Shares', 'REINVESTED EXAMPLE FUND', 'YOU PURCHASED EXAMPLE FUND', 'REDEMPTION EXAMPLE FUND', 'YOU REDEEMED EXAMPLE FUND',
+      // Funds named for dividends or interest: still trades.
+      'YOU BOUGHT SCHWAB US DIVIDEND EQUITY ETF', 'Buy Vanguard Dividend Appreciation ETF', 'YOU SOLD VANGUARD HIGH DIVIDEND YIELD ETF',
+      'Buy iShares Interest Rate Hedged Corporate Bond ETF', 'REINVESTMENT SCHWAB US DIVIDEND EQUITY ETF']
       .map((d) => row(d, true, 'WITHDRAWAL'));
     expect(importNoticeRows(trades, off)).toEqual([]);
   });
