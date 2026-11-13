@@ -8,7 +8,9 @@
  *
  * This layer sits between the add-on and `ctx.api.secrets`. A value that fits
  * is stored as it is. Only when the host refuses a value for its size is it
- * stored in parts:
+ * stored in parts. Up to Wealthfolio 3.12 the refusal said so; from 3.13 every
+ * keyring failure reads "The operation could not be completed.", so a refused
+ * large value is followed by a test of the store itself (`refusesOnlyForSize`):
  *
  *   key                 → `sfin-chunked-v1 {"g":gen,"n":parts,"len":…,"h":…}`
  *   key.part-<gen>-<i>  → the i-th slice, each well under the limit
@@ -37,9 +39,12 @@ const HEADER_PREFIX = 'sfin-chunked-v1 ';
 /** Wealthfolio's addon secret keys: ASCII letters, digits, '.', '_', '-'; at most 128. */
 const MAX_KEY_LENGTH = 128;
 /** The keyring's own wording ("…is longer than the platform limit of 2560
- *  chars"). Narrow on purpose: any other failure, such as a timeout that "took
- *  longer than 30000ms", must not turn into parts, which the companion cannot read. */
+ *  chars"), up to Wealthfolio 3.12. Narrow on purpose: any other failure, such
+ *  as a timeout that "took longer than 30000ms", must not turn into parts, which
+ *  the companion cannot read. */
 const SIZE_REFUSAL = /longer than the platform limit/i;
+/** Written and deleted while testing whether the store has the size limit. */
+const PROBE_KEY = 'secret_store_probe';
 const READ_ATTEMPTS = 3;
 
 interface Header {
@@ -132,6 +137,30 @@ export function chunkedSecrets(inner: SecretsApi): SecretsApi {
     return run;
   };
 
+  /** Whether the store refuses values only for their size. Wealthfolio 3.13
+   *  reports every keyring failure as "The operation could not be completed.",
+   *  so a refusal no longer says why; the store itself can. True only when a
+   *  small value saves and one just over the limit doesn't: false on the
+   *  server's file store (no limit) and on a store that refuses everything,
+   *  where the original error stands. */
+  const refusesOnlyForSize = async (): Promise<boolean> => {
+    try {
+      try {
+        await inner.set(PROBE_KEY, '1');
+      } catch {
+        return false;
+      }
+      try {
+        await inner.set(PROBE_KEY, 'x'.repeat(SECRET_PLATFORM_LIMIT_CHARS + 1));
+        return false;
+      } catch {
+        return true;
+      }
+    } finally {
+      await inner.delete(PROBE_KEY).catch(() => {});
+    }
+  };
+
   const deleteParts = async (key: string, header: Header) => {
     await Promise.allSettled(Array.from({ length: header.n }, (_, i) => inner.delete(partKey(key, header.g, i))));
   };
@@ -198,7 +227,8 @@ export function chunkedSecrets(inner: SecretsApi): SecretsApi {
         try {
           await inner.set(key, value);
         } catch (err) {
-          if (value.length <= SECRET_PLATFORM_LIMIT_CHARS || !isSizeRefusal(err)) throw err;
+          if (value.length <= SECRET_PLATFORM_LIMIT_CHARS) throw err;
+          if (!isSizeRefusal(err) && !(await refusesOnlyForSize())) throw err;
           await markLimited();
           await writeParts(key, value, old);
           return;
