@@ -498,6 +498,46 @@ describe('uncategorized rows and dismissals', () => {
     expect(await store.getDismissals()).toEqual({});
   });
 
+  it('stores hidden no-cost holdings under its key, merged with what is stored, and Reset clears it', async () => {
+    const { ctx, data } = makeCtxWithData();
+    const store = new SecretsStore(ctx);
+    data['holdings_cost_hidden'] = JSON.stringify({ 'acc|OTHER': '2026-01-01T00:00:00.000Z' });
+    await store.editHiddenCostHoldings({}, { 'acc|VT': '2026-01-02T00:00:00.000Z' });
+    expect(Object.keys(await store.getHiddenCostHoldings()).sort()).toEqual(['acc|OTHER', 'acc|VT']);
+    data['holdings_cost_hidden'] = 'not json{';
+    expect(await store.getHiddenCostHoldings()).toEqual({});
+    await store.clearAll();
+    expect(data['holdings_cost_hidden']).toBeUndefined();
+  });
+
+  it('keeps the days each account\'s balance matched its holdings, merged, capped, and cleared by Reset', async () => {
+    const { ctx, data } = makeCtxWithData();
+    const store = new SecretsStore(ctx);
+    expect(await store.getBalanceTotalDays()).toEqual({});
+    data['holdings_balance_totals'] = JSON.stringify({ 'sfin-a': ['2026-01-01'] });
+    await store.addBalanceTotalDays({ 'sfin-a': '2026-01-02', 'sfin-b': '2026-01-02' });
+    await store.addBalanceTotalDays({ 'sfin-a': '2026-01-02' }); // same day again: nothing new
+    await store.addBalanceTotalDays({ 'sfin-a': '2026-01-03' });
+    await store.addBalanceTotalDays({ 'sfin-a': '2026-01-04' }); // already learned: capped
+    expect(JSON.parse(data['holdings_balance_totals'])).toEqual({
+      'sfin-a': ['2026-01-01', '2026-01-02', '2026-01-03'],
+      'sfin-b': ['2026-01-02'],
+    });
+    await store.clearAll();
+    expect(data['holdings_balance_totals']).toBeUndefined();
+  });
+
+  it('reads a corrupt record of balance days as none, and refuses to overwrite it', async () => {
+    const { ctx, data } = makeCtxWithData();
+    const store = new SecretsStore(ctx);
+    data['holdings_balance_totals'] = 'not json{';
+    expect(await store.getBalanceTotalDays()).toEqual({});
+    await expect(store.addBalanceTotalDays({ 'sfin-c': '2026-01-01' })).rejects.toThrow();
+    expect(data['holdings_balance_totals']).toBe('not json{');
+    data['holdings_balance_totals'] = JSON.stringify({ 'sfin-a': 'not a list' });
+    await expect(store.addBalanceTotalDays({ 'sfin-c': '2026-01-01' })).rejects.toThrow();
+  });
+
   it('clearAll deletes the dismissal ledger', async () => {
     // clearAll iterates the KEYS map; three secrets were previously absent from
     // it and survived a reset that claimed to clear everything.

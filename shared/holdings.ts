@@ -67,7 +67,9 @@ export interface FeedPrice {
   fromDescription?: true;
 }
 
-/** Options for `toHoldingsSnapshot`. Both exist for determinism, not tuning. */
+/** Options for `toHoldingsSnapshot`. `timeZone` and `now` exist for
+ *  determinism; `balanceIsTotal` changes the cash line, so pass what the sync
+ *  learned. */
 export interface HoldingsSnapshotOptions {
   /** IANA zone that names the snapshot's calendar day (Wealthfolio's own
    *  timezone setting, when the caller has it). Omitted, the runtime's zone is
@@ -75,6 +77,10 @@ export interface HoldingsSnapshotOptions {
   timeZone?: string | null;
   /** "Now", for the future-date clamp. Injectable so tests need no fake clock. */
   now?: Date;
+  /** This account's balance has been seen to be its total value
+   *  (`balanceShowsTotal`), so a balance below the holdings is a total that
+   *  lags them, not cash alone (`cashFor`). */
+  balanceIsTotal?: boolean;
 }
 
 /** `YYYY-MM-DD` for an instant, read on the calendar of `timeZone`. */
@@ -157,6 +163,63 @@ function averageCost(
   return price && price.n > 0n ? String(purchasePrice).trim() : undefined;
 }
 
+/** A share count that changes by this factor or more, either way, may be a split. */
+const SPLIT_FACTOR_PERCENT = 150n;
+
+/**
+ * The per-share cost to carry onto a position the feed sent without one, from
+ * what Wealthfolio already holds for it (its total cost and shares).
+ *
+ * - Shares changed by 1.5× or more, either way: `ask`. That may be a split,
+ *   which keeps the total cost, or a large buy or sale, which does not; read
+ *   the wrong way it writes a confident wrong cost, and unknown is better.
+ * - Otherwise, shares the same or fewer: the same average cost (a sale keeps it).
+ * - Shares up: the old total cost plus the new shares at `price`, the feed's
+ *   price that day (market value ÷ shares). Exact for a 401(k) contribution or
+ *   a reinvested dividend, which buy at that day's price; close for a
+ *   brokerage buy, which filled at some price during the day. With no usable
+ *   price: `ask`.
+ *
+ * The held figures come from the host's holdings read, which gives numbers:
+ * they are read as decimal strings, and anything else (an exponent, zero,
+ * nothing) carries nothing.
+ */
+export function carriedCost(
+  shares: string,
+  held: { quantity?: number | string | null; cost?: number | string | null },
+  price?: string | null,
+): { avgCost?: string; ask?: true } {
+  const now = parseScaled(shares);
+  const before = parseScaled(held.quantity ?? null);
+  const cost = parseScaled(held.cost ?? null);
+  // Sold out (the feed may still list it at 0 shares): nothing to cost.
+  if (now === null || now === 0n || before === null || before === 0n || cost === null || cost === 0n) return {};
+  if (now * 100n >= before * SPLIT_FACTOR_PERCENT || before * 100n >= now * SPLIT_FACTOR_PERCENT) return { ask: true };
+  if (now <= before) return { avgCost: divideScaled(cost, before) };
+  const perShare = parseScaled(price ?? null);
+  if (!perShare) return { ask: true };
+  return { avgCost: divideScaled(cost + ((now - before) * perShare) / PRICE_SCALE, now) };
+}
+
+/**
+ * The holdings Wealthfolio has no cost for: shares held, and a total cost of 0
+ * or none. The account's gain stays hidden while any is listed. Cash lines and
+ * holdings without an instrument are not positions and are left out.
+ */
+export function holdingsWithoutCost(
+  holdings: ReadonlyArray<{
+    holdingType?: string | null;
+    instrument?: { symbol?: string | null } | null;
+    quantity?: number | string | null;
+    costBasis?: { local?: number | string | null } | null;
+  }>,
+): string[] {
+  return holdings
+    .filter((h) => String(h.holdingType ?? '').toLowerCase() !== 'cash' && !!h.instrument?.symbol?.trim())
+    .filter((h) => Number(h.quantity) > 0 && !(Number(h.costBasis?.local) > 0))
+    .map((h) => h.instrument!.symbol!.trim());
+}
+
 /** A US money market fund's ticker: five letters ending in XX (e.g. ABCXX). */
 const MONEY_MARKET_TICKER = /^[A-Z]{3}XX$/;
 /** How far a money market line's value may sit from its share count: a cent. */
@@ -204,8 +267,15 @@ function formatMicros(micros: bigint): string {
  *
  *  - balance accounts for the holdings, within a dollar: balance IS the total,
  *    and the cash is whatever is left over, usually nothing.
- *  - balance is smaller than the holdings by more than that: it cannot be a
- *    total, so it is cash alone, and is written as before.
+ *  - balance is smaller than the holdings by more than that, on an account
+ *    whose balance has been seen to be its total (`balanceIsTotal`): a total
+ *    that lags the holdings (a purchase listed among them before the balance
+ *    counts it), so the cash is nothing. Read as cash alone, it doubled a
+ *    whole account. Remembered per account rather than guessed by size, so a
+ *    feed whose balance is cash never flips between the two. Margin debt on
+ *    such an account looks the same, and shows as no cash, not negative cash.
+ *  - balance is smaller than the holdings otherwise: it cannot be a total, so
+ *    it is cash alone, and is written as before.
  *  - balance exceeds the holdings by more than a dollar: the remainder is cash.
  *
  * Every holding counts toward the sum, including the ones the snapshot drops
@@ -219,22 +289,59 @@ function formatMicros(micros: bigint): string {
  * Not decidable from here: an account whose `balance` is cash alone, in an
  * amount larger than its holdings. It reads as a total with a cash remainder.
  */
-function cashFor(account: SimplefinAccount, holdings: NonNullable<SimplefinAccount['holdings']>): string {
-  const balance = parseMicros(account.balance);
-  if (balance === null) return account.balance;
-
-  let held = 0n;
-  for (const holding of holdings) {
-    if (holding.currency && holding.currency !== account.currency) return account.balance;
-    const marketValue = parseMicros(holding.market_value);
-    if (marketValue === null) return account.balance;
-    held += marketValue;
-  }
-
-  const remainder = balance - held;
-  if (remainder < -BALANCE_TOLERANCE) return account.balance;
+function cashFor(account: SimplefinAccount, holdings: NonNullable<SimplefinAccount['holdings']>, balanceIsTotal: boolean): string {
+  const compared = balanceOverHoldings(account, holdings);
+  if (compared === null) return account.balance;
+  const { remainder } = compared;
+  if (remainder < -BALANCE_TOLERANCE) return balanceIsTotal ? '0' : account.balance;
   if (remainder <= BALANCE_TOLERANCE) return '0';
   return formatMicros(remainder);
+}
+
+/** The balance minus the holdings' market values, or null when they cannot be
+ *  compared (a figure that is not a number, a holding with no market value or
+ *  in another currency). */
+function balanceOverHoldings(account: SimplefinAccount, holdings: NonNullable<SimplefinAccount['holdings']>): { remainder: bigint; held: bigint } | null {
+  const balance = parseAmount(account.balance);
+  if (balance === null) return null;
+  let held = 0n;
+  for (const holding of holdings) {
+    if (holding.currency && holding.currency !== account.currency) return null;
+    const marketValue = parseAmount(holding.market_value);
+    if (marketValue === null) return null;
+    held += marketValue;
+  }
+  return { remainder: balance - held, held };
+}
+
+/** `parseMicros`, also reading thousands separators written the usual way
+ *  ("9,900.00"). Any other comma (a decimal comma) is not a number here. */
+function parseAmount(value: string | number | null | undefined): bigint | null {
+  const text = String(value ?? '').trim();
+  return parseMicros(/^[+-]?\d{1,3}(?:,\d{3})+(?:\.\d*)?$/.test(text) ? text.replace(/,/g, '') : value);
+}
+
+/** Days on which an account's balance must equal its holdings before a lower
+ *  balance is read as a total that lags them (`balanceIsTotal`). */
+export const BALANCE_TOTAL_DAYS = 3;
+
+/** Below this, holdings and a balance that agree prove nothing ($0 against $0). */
+const TOTAL_MATCH_MIN_HELD = 100_000_000n; // $100 in micros
+
+/**
+ * The feed's balance is the account's total value today: it equals the
+ * holdings added up, within a dollar, and they are worth at least $100. The
+ * sync remembers it for the account once seen on `BALANCE_TOTAL_DAYS`
+ * different days, never on one. A balance above the
+ * holdings proves nothing (a cash-only balance can be larger), so only a
+ * match counts.
+ */
+export function balanceShowsTotal(account: SimplefinAccount): boolean {
+  const holdings = account.holdings;
+  if (!Array.isArray(holdings) || holdings.length === 0) return false;
+  const compared = balanceOverHoldings(account, holdings);
+  return compared !== null && compared.held >= TOTAL_MATCH_MIN_HELD
+    && compared.remainder >= -BALANCE_TOLERANCE && compared.remainder <= BALANCE_TOLERANCE;
 }
 
 /** Longest symbol made from a description: enough to tell funds apart. */
@@ -328,7 +435,7 @@ export function toHoldingsSnapshot(
   return {
     date: day > today ? today : day, // `YYYY-MM-DD` strings order lexically
     positions: mergePositions(positions),
-    cashBalances: { [account.currency]: cashFor(account, holdings) },
+    cashBalances: { [account.currency]: cashFor(account, holdings, options.balanceIsTotal === true) },
   };
 }
 

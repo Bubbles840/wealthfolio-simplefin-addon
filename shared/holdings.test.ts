@@ -1,5 +1,5 @@
 import { afterEach, describe, it, expect, vi } from 'vitest';
-import { accountTag, feedPrices, holdingSymbol, scopedSymbol, toHoldingsSnapshot } from './holdings.js';
+import { accountTag, balanceShowsTotal, carriedCost, feedPrices, holdingsWithoutCost, holdingSymbol, scopedSymbol, toHoldingsSnapshot } from './holdings.js';
 import type { SimplefinAccount } from './types.js';
 
 const account = (over: Partial<SimplefinAccount> = {}): SimplefinAccount => ({
@@ -231,6 +231,19 @@ describe('toHoldingsSnapshot', () => {
       expect(snapshot?.cashBalances).toEqual({ USD: '512.34' });
     });
 
+    it('is zero for a balance below the holdings on an account known to report its total', () => {
+      // A purchase listed among the holdings before the balance counts it.
+      const holdings = [{ symbol: 'VTI', shares: '40', market_value: '9900.00' }, { symbol: 'ABCXX', shares: '100', market_value: '100.00' }];
+      expect(toHoldingsSnapshot(account({ balance: '9850.00', holdings }), { balanceIsTotal: true })?.cashBalances).toEqual({ USD: '0' });
+      expect(toHoldingsSnapshot(account({ balance: '9850.00', holdings }))?.cashBalances).toEqual({ USD: '9850.00' });
+    });
+
+    it('compares market values written with thousands separators', () => {
+      // Unparsed, the comparison gave up and wrote the whole balance as cash.
+      const snapshot = fidelity('10000.00', [{ symbol: 'VTI', shares: '40', market_value: '10,000.00' }]);
+      expect(snapshot?.cashBalances).toEqual({ USD: '0' });
+    });
+
     it('keeps the balance when a holding has no market value to compare with', () => {
       // Nothing to settle which convention this broker uses, so nothing is
       // invented: the line is written as it was before the comparison existed.
@@ -400,4 +413,107 @@ describe('a holding SimpleFin sends without a symbol', () => {
     ]);
   });
 
+});
+
+describe('carriedCost', () => {
+  it('is the held total cost over the held shares', () => {
+    expect(carriedCost('300.5', { quantity: 300.5, cost: 4000.25 })).toEqual({ avgCost: '13.31198003' });
+  });
+
+  it('stays the same after a sale', () => {
+    expect(carriedCost('8', { quantity: 10, cost: 500 }, '60')).toEqual({ avgCost: '50.00' });
+  });
+
+  it('adds new shares at the feed price that day (a contribution, a reinvested dividend)', () => {
+    // (500 + 2 × 60) ÷ 12
+    expect(carriedCost('12', { quantity: 10, cost: 500 }, '60')).toEqual({ avgCost: '51.66666667' });
+    expect(carriedCost('10.5', { quantity: 10, cost: 500 }, '52.5')).toEqual({ avgCost: '50.11904762' });
+  });
+
+  describe('a share count that changes by 1.5× or more', () => {
+    it('asks, whether it went up or down, and whatever the price (a split, a large buy or sale)', () => {
+      // 10-for-1 split, same value.
+      expect(carriedCost('1000', { quantity: 100, cost: 10000 }, '10')).toEqual({ ask: true });
+      // 1-for-10 reverse split.
+      expect(carriedCost('10', { quantity: 100, cost: 1000 }, '90')).toEqual({ ask: true });
+      // Exactly 1.5× either way.
+      expect(carriedCost('150', { quantity: 100, cost: 5000 }, '50')).toEqual({ ask: true });
+      expect(carriedCost('100', { quantity: 150, cost: 5000 })).toEqual({ ask: true });
+    });
+
+    it('costs a change under 1.5× as before', () => {
+      expect(carriedCost('149', { quantity: 100, cost: 5000 }, '50')).toEqual({ avgCost: '50.00' });
+      expect(carriedCost('67', { quantity: 100, cost: 5000 })).toEqual({ avgCost: '50.00' });
+    });
+  });
+
+  it('carries nothing, and does not ask, for a position sold out (0 shares)', () => {
+    expect(carriedCost('0', { quantity: 10, cost: 500 }, '60')).toEqual({});
+  });
+
+  it('ignores the price when the shares did not go up', () => {
+    expect(carriedCost('10', { quantity: 10, cost: 500 }, '999')).toEqual({ avgCost: '50.00' });
+  });
+
+  it('carries nothing when the shares went up with no usable price, and says so', () => {
+    expect(carriedCost('11', { quantity: 10, cost: 500 })).toEqual({ ask: true });
+    expect(carriedCost('11', { quantity: 10, cost: 500 }, '0')).toEqual({ ask: true });
+    expect(carriedCost('11', { quantity: 10, cost: 500 }, 'n/a')).toEqual({ ask: true });
+  });
+
+  it('carries nothing without a held cost or share count', () => {
+    expect(carriedCost('10', { quantity: 10, cost: 0 })).toEqual({});
+    // Zero is unknown: the new shares alone would understate the cost.
+    expect(carriedCost('12', { quantity: 10, cost: 0 }, '60')).toEqual({});
+    expect(carriedCost('10', { quantity: 10 })).toEqual({});
+    expect(carriedCost('10', { quantity: 0, cost: 500 })).toEqual({});
+    expect(carriedCost('10', {})).toEqual({});
+    expect(carriedCost('10', { quantity: 1e-7, cost: 500 })).toEqual({});
+  });
+});
+
+describe('holdingsWithoutCost', () => {
+  it('is a holding with shares and a cost of 0 or none; not cash, not sold out, not one with a cost', () => {
+    expect(holdingsWithoutCost([
+      { holdingType: 'security', instrument: { symbol: 'NO COST' }, quantity: 5, costBasis: { local: 0 } },
+      { holdingType: 'security', instrument: { symbol: 'NULL COST' }, quantity: '2.5', costBasis: null },
+      { holdingType: 'security', instrument: { symbol: 'HAS COST' }, quantity: 5, costBasis: { local: 100 } },
+      { holdingType: 'security', instrument: { symbol: 'SOLD' }, quantity: 0, costBasis: { local: 0 } },
+      { holdingType: 'cash', instrument: { symbol: '$CASH-USD' }, quantity: 100, costBasis: { local: 0 } },
+      { holdingType: 'security', instrument: null, quantity: 5, costBasis: null },
+    ])).toEqual(['NO COST', 'NULL COST']);
+  });
+});
+
+describe('balanceShowsTotal', () => {
+  const acct = (balance: string, holdings: NonNullable<SimplefinAccount['holdings']>) =>
+    ({ id: 'a', name: 'Brokerage', currency: 'USD', balance, 'balance-date': 1789214400, transactions: [], holdings }) as SimplefinAccount;
+  const two = [{ symbol: 'VTI', shares: '2', market_value: '600.00' }, { symbol: 'ABCXX', shares: '400', market_value: '400.00' }];
+
+  it('is true only when the balance equals the holdings, within a dollar', () => {
+    expect(balanceShowsTotal(acct('1000.00', two))).toBe(true);
+    expect(balanceShowsTotal(acct('1000.99', two))).toBe(true);
+    expect(balanceShowsTotal(acct('999.01', two))).toBe(true);
+    expect(balanceShowsTotal(acct('1001.01', two))).toBe(false);
+    expect(balanceShowsTotal(acct('998.99', two))).toBe(false);
+  });
+
+  it('is false when the holdings are worth too little for a match to mean anything', () => {
+    expect(balanceShowsTotal(acct('0.00', [{ symbol: 'VTI', shares: '2', market_value: '0.00' }]))).toBe(false);
+    expect(balanceShowsTotal(acct('99.99', [{ symbol: 'VTI', shares: '2', market_value: '99.99' }]))).toBe(false);
+    expect(balanceShowsTotal(acct('100.00', [{ symbol: 'VTI', shares: '2', market_value: '100.00' }]))).toBe(true);
+  });
+
+  it('reads thousands separators, but not a decimal comma', () => {
+    expect(balanceShowsTotal(acct('1,000.00', [{ symbol: 'VTI', shares: '2', market_value: '1,000.00' }]))).toBe(true);
+    expect(balanceShowsTotal(acct('9900.50', [{ symbol: 'VTI', shares: '2', market_value: '9900,50' }]))).toBe(false);
+    expect(balanceShowsTotal(acct('123.00', [{ symbol: 'VTI', shares: '2', market_value: '1,2,3' }]))).toBe(false);
+  });
+
+  it('is false when there is nothing to compare', () => {
+    expect(balanceShowsTotal(acct('1000.00', []))).toBe(false);
+    expect(balanceShowsTotal(acct('600.00', [{ symbol: 'VTI', shares: '2' }]))).toBe(false);
+    expect(balanceShowsTotal(acct('600.00', [{ symbol: 'SHOP', shares: '2', market_value: '600.00', currency: 'CAD' }]))).toBe(false);
+    expect(balanceShowsTotal(acct('n/a', two))).toBe(false);
+  });
 });

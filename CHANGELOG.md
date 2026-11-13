@@ -14,8 +14,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   which the sync never creates: it changed nothing. A trade is now told by its
   account (an investment one, or one tracked by holdings), its type (deposit or
   withdrawal) and its wording ("Buy …", "Sell …", "You bought …", "You sold …",
-  "Reinvestment …", "Redemption …"); a dividend or interest line always shows.
+  "Reinvestment …", "Redemption …"), also for a fund named for dividends;
+  a reinvested dividend or interest line ("Reinvest Dividend") always shows.
   Each half filters its own syncs, so update both (#70).
+
+## [1.75.0] - 2026-11-12
+
+Update both halves. Update the add-on in the app as usual (no new
+permissions) and pull the companion image: both changes are in the add-on and
+the companion behaves as before, but the two versions must match, or the daily
+report flags them. From before 1.70.0, use **Install from File** with this
+zip, as 1.70.0 says.
+
+### Fixed
+- **Holdings keep their cost when the feed sends none (#67)** (common for
+  401(k) plans). The cost Wealthfolio already has is carried to the new
+  snapshot; shares added since (a contribution, a reinvested dividend, a buy)
+  are costed at the feed's price that day. A share count that changes by 1.5×
+  or more either way (a split, or a large buy or sale) asks for the cost
+  instead; a cost held in another currency is not carried. Home lists every holding
+  Wealthfolio has no cost for until one is entered, or until you choose
+  **Don't show** on it. Before, the snapshot was
+  stored at cost 0 and Wealthfolio showed no gain for the account.
+- **A holdings account no longer doubles when the feed's balance lags its
+  positions (#71).** A brokerage can list a new purchase among the holdings before
+  its balance counts it. The balance, then below the holdings' value, was read
+  as cash alone, and the whole account value was written as cash on top of the
+  positions. Once an account's balance has matched its holdings on three
+  different days (a balance that is the account's total), the add-on
+  remembers it, and a lower balance later is read as a total with no cash
+  (margin debt then shows as nothing, not as negative cash). An account never
+  seen matching keeps the old reading. Market values written with thousands
+  separators (9,900.00) are now compared too. Days already written with the extra cash keep it until
+  repaired by hand.
 
 ## [1.74.0] - 2026-11-10
 

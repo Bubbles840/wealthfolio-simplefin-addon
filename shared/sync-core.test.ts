@@ -3698,6 +3698,17 @@ describe('holdings snapshots for investment accounts', () => {
     expect(result.errors).toEqual([]);
   });
 
+  it('asks for the cost of a holding whose shares went up with none sent', async () => {
+    const seed = brokerageSeed();
+    seed.accountSet!.accounts[0].name = 'Individual (ABCD)';
+    seed.holdingsOutcome = { imported: 1, skipped: 0, unresolvedSymbols: [], costUnknown: ['VOO'] };
+    const { host, store } = createFakeHost(seed);
+    const result = await runSyncCore(host, store, { force: true });
+    expect(result.errors).toEqual([
+      'No cost basis for VOO (Individual (ABCD)): SimpleFin sent no cost, and its share count changed in a way the sync cannot cost (a purchase with no single price, or a change of 1.5× or more either way, which may be a split). Enter the cost on the holding in Wealthfolio, or gains for the account stay unknown.',
+    ]);
+  });
+
   it('dates the holdings pass on a host that can write snapshots', async () => {
     const { host, store } = createFakeHost(brokerageSeed());
     const setHoldingsPassAt = vi.fn(async (_at: Date) => {});
@@ -4167,5 +4178,82 @@ describe('planAmazonLateLabels', () => {
   it('ignores rows no order matched', () => {
     expect(planAmazonLateLabels([row({ txId: 'tx-other', comment: 'AMAZON.COM*X · tx-other' })], labelled, 'USD'))
       .toEqual([]);
+  });
+});
+
+describe('holdings cash: a balance that lags the holdings', () => {
+  // Live: a brokerage listed a new purchase among the holdings before its
+  // balance counted it. The balance, now under the holdings, was read as cash
+  // alone and the whole account value was written as cash: the account doubled.
+  const DAY = 86400;
+  const seed = (balance: string, days: Record<string, string[]> = {}, at = 1789214400): FakeHostSeed => ({
+    accountSet: { errors: [], accounts: [{
+      id: 'sfin-b', name: 'Brokerage', currency: 'USD', balance, 'balance-date': at, transactions: [],
+      holdings: [
+        { symbol: 'VTI', shares: '40', market_value: '9900.00' },
+        { symbol: 'ABCXX', shares: '100', market_value: '100.00' },
+      ],
+    }] },
+    mapping: { 'sfin-b': 'wf-b' },
+    accountTypes: { 'wf-b': 'SECURITIES' },
+    balanceTotalDays: days,
+  });
+  const learned = { 'sfin-b': ['2026-09-01', '2026-09-02', '2026-09-03'] };
+
+  it('learns a total-reporting balance only after matching on three different days', async () => {
+    let days: Record<string, string[]> = {};
+    for (const [i, at] of [1789214400, 1789214400, 1789214400 + DAY, 1789214400 + 2 * DAY].entries()) {
+      const { host, store, holdings } = createFakeHost(seed('10000.00', days, at));
+      await runSyncCore(host, store, { force: true });
+      expect(holdings[0].snapshot.cashBalances).toEqual({ USD: '0' });
+      days = await store.getBalanceTotalDays!();
+      // Two runs on one day count once.
+      expect(days['sfin-b']).toHaveLength([1, 1, 2, 3][i]);
+    }
+    const lag = createFakeHost(seed('9850.00', days));
+    await runSyncCore(lag.host, lag.store, { force: true });
+    expect(lag.holdings[0].snapshot.cashBalances).toEqual({ USD: '0' });
+  });
+
+  it('two matching days are not enough: a lower balance is still cash', async () => {
+    const { host, store, holdings } = createFakeHost(seed('9850.00', { 'sfin-b': ['2026-09-01', '2026-09-02'] }));
+    await runSyncCore(host, store, { force: true });
+    expect(holdings[0].snapshot.cashBalances).toEqual({ USD: '9850.00' });
+  });
+
+  it('writes no cash for a lagging balance on a learned account', async () => {
+    const { host, store, holdings } = createFakeHost(seed('9850.00', learned));
+    await runSyncCore(host, store, { force: true });
+    expect(holdings[0].snapshot.cashBalances).toEqual({ USD: '0' });
+  });
+
+  it('keeps a lower balance as cash on an account never seen matching, and learns nothing', async () => {
+    const { host, store, holdings } = createFakeHost(seed('9850.00'));
+    await runSyncCore(host, store, { force: true });
+    expect(holdings[0].snapshot.cashBalances).toEqual({ USD: '9850.00' });
+    expect(await store.getBalanceTotalDays!()).toEqual({});
+  });
+
+  it('a balance above the holdings proves nothing', async () => {
+    const { host, store, holdings } = createFakeHost(seed('10250.00'));
+    await runSyncCore(host, store, { force: true });
+    expect(holdings[0].snapshot.cashBalances).toEqual({ USD: '250.00' });
+    expect(await store.getBalanceTotalDays!()).toEqual({});
+  });
+
+  it('a store that cannot read what it learned syncs as before', async () => {
+    const { host, store, holdings } = createFakeHost(seed('9850.00', learned));
+    store.getBalanceTotalDays = async () => { throw new Error('secret read failed'); };
+    const result = await runSyncCore(host, store, { force: true });
+    expect(holdings[0].snapshot.cashBalances).toEqual({ USD: '9850.00' });
+    expect(result.errors).toEqual([]);
+  });
+
+  it('a refused write of a match costs nothing else', async () => {
+    const { host, store, holdings } = createFakeHost(seed('10000.00'));
+    store.addBalanceTotalDays = async () => { throw new Error('refused'); };
+    const result = await runSyncCore(host, store, { force: true });
+    expect(holdings[0].snapshot.cashBalances).toEqual({ USD: '0' });
+    expect(result.errors).toEqual([]);
   });
 });

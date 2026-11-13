@@ -165,6 +165,11 @@ export interface HoldingsSyncOutcome {
    *  price of its own for them (src/utils/holdings-prices.ts). Absent on a host
    *  that does not price. */
   pricedFromFeed?: string[];
+  /** Holdings written without a cost: the feed sent none and the share count
+   *  changed in a way that cannot be costed (a rise with no feed price, or a
+   *  change of 1.5× or more either way, which may be a split). Absent on a host that
+   *  does not carry costs. */
+  costUnknown?: string[];
 }
 
 export interface SyncHost {
@@ -289,6 +294,11 @@ export interface SyncStore {
   /** When a run last reached the holdings step (the add-on's holdings
    *  catch-up). Optional: the companion's store keeps none. */
   setHoldingsPassAt?(date: Date): Promise<void>;
+  /** Per SimpleFin account, the days its balance was seen to be its total
+   *  value (`balanceShowsTotal`), and adding a day per account. Optional:
+   *  holdings snapshots are the add-on's, so the companion's store keeps none. */
+  getBalanceTotalDays?(): Promise<Record<string, string[]>>;
+  addBalanceTotalDays?(seen: Record<string, string>): Promise<void>;
   setLastSyncAt(date: Date): Promise<void>;
   /**
    * How many activities the last completed run imported, or `null` if none has.
