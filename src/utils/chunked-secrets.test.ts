@@ -8,14 +8,18 @@ import {
 const WINDOWS_REFUSAL =
   "Secret store error: Value of 'password encoded as UTF-16' is longer than the platform limit of 2560 chars";
 
+/** Wealthfolio 3.13's text for every keyring failure: the reason is gone. */
+const GENERIC_REFUSAL = 'The operation could not be completed.';
+
 /** A secret store backed by a Map. `limit` mimics Windows Credential Manager:
- *  2,560 bytes of UTF-16, i.e. 1,280 JS chars. No limit is the server's file store. */
-function fakeStore(opts: { limit?: number } = {}) {
+ *  2,560 bytes of UTF-16, i.e. 1,280 JS chars. No limit is the server's file store.
+ *  `refusal` is the text a refused value comes back with (3.12's by default). */
+function fakeStore(opts: { limit?: number; refusal?: string } = {}) {
   const data = new Map<string, string>();
   const api: SecretsApi = {
     get: vi.fn(async (k: string) => data.get(k) ?? null),
     set: vi.fn(async (k: string, v: string) => {
-      if (opts.limit !== undefined && v.length > opts.limit) throw new Error(WINDOWS_REFUSAL);
+      if (opts.limit !== undefined && v.length > opts.limit) throw new Error(opts.refusal ?? WINDOWS_REFUSAL);
       data.set(k, v);
     }),
     delete: vi.fn(async (k: string) => { data.delete(k); }),
@@ -226,6 +230,49 @@ describe('chunkedSecrets on Windows (issue #58)', () => {
     await expect(secrets.set('linked_groups', bigValue(5000))).rejects.toThrow(/access denied/);
     expect(await secrets.get('linked_groups')).toBe('{}');
     expect([...data.keys()].filter((k) => k.startsWith('linked_groups.'))).toEqual([]);
+  });
+});
+
+describe('chunkedSecrets on Wealthfolio 3.13, which no longer says why a value was refused', () => {
+  const windows313 = () => fakeStore({ limit: SECRET_PLATFORM_LIMIT_CHARS, refusal: GENERIC_REFUSAL });
+  const onlyValueAndParts = (data: Map<string, string>, key: string) =>
+    [...data.keys()].every((k) => k === CHUNKED_MARKER_KEY || k === key || k.startsWith(`${key}.part-`));
+
+  it('still stores a value over the limit in parts, and reads it back whole', async () => {
+    const { api, data } = windows313();
+    const secrets = chunkedSecrets(api);
+    const v = bigValue(5000);
+    await secrets.set('linked_groups', v);
+    for (const stored of data.values()) expect(stored.length).toBeLessThanOrEqual(SECRET_PLATFORM_LIMIT_CHARS);
+    expect(data.get(CHUNKED_MARKER_KEY)).toBe('1');
+    expect(onlyValueAndParts(data, 'linked_groups')).toBe(true);
+    expect(await secrets.get('linked_groups')).toBe(v);
+  });
+
+  it('rethrows the refusal on a store with no size limit, and stores nothing for it', async () => {
+    // The server's file store: one write fails for some other reason, with the same text.
+    const { api, data } = fakeStore();
+    const realSet = api.set;
+    api.set = vi.fn(async (k: string, v: string) => {
+      if (k === 'linked_groups') throw new Error(GENERIC_REFUSAL);
+      return realSet(k, v);
+    });
+    await expect(chunkedSecrets(api).set('linked_groups', bigValue(5000))).rejects.toThrow(GENERIC_REFUSAL);
+    expect([...data.keys()]).toEqual([]);
+  });
+
+  it('rethrows the refusal on a store that refuses every write, small ones too', async () => {
+    const { api, data } = fakeStore();
+    api.set = vi.fn(async () => { throw new Error(GENERIC_REFUSAL); });
+    await expect(chunkedSecrets(api).set('linked_groups', bigValue(5000))).rejects.toThrow(GENERIC_REFUSAL);
+    expect([...data.keys()]).toEqual([]);
+  });
+
+  it('rethrows the refusal of a value within the limit without testing the store', async () => {
+    const { api } = fakeStore();
+    api.set = vi.fn(async () => { throw new Error(GENERIC_REFUSAL); });
+    await expect(chunkedSecrets(api).set('linked_groups', '{}')).rejects.toThrow(GENERIC_REFUSAL);
+    expect(api.set).toHaveBeenCalledTimes(1);
   });
 });
 

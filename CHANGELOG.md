@@ -17,6 +17,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   "Reinvestment …", "Redemption …"), also for a fund named for dividends;
   a reinvested dividend or interest line ("Reinvest Dividend") always shows.
   Each half filters its own syncs, so update both (#70).
+- **Windows: large records save again on Wealthfolio 3.13 (#58).** Since 3.13,
+  Wealthfolio reports every Credential Manager failure as "The operation could
+  not be completed." without the reason, so the add-on no longer recognised
+  the size refusal that 1.73.0 answers by storing a record in parts, and once
+  a few accounts were linked every sync failed again. When a large record is
+  refused, the add-on now tests the store itself: a small value saves and one
+  just over the Windows limit doesn't. Only then does it store the record in
+  parts. Any other failure is reported as before. Add-on only.
 
 ## [1.75.0] - 2026-11-12
 
