@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.76.0] - 2026-11-14
+
+Update both halves. Update the add-on in the app as usual (no new
+permissions) and pull the companion image: the companion sends its own import
+notices, so it needs the #70 change too, and the two versions must match, or
+the daily report flags them. On Windows with Wealthfolio 3.13, this is the
+release that lets the add-on save its records again (#58). From before 1.70.0,
+use **Install from File** with this zip, as 1.70.0 says.
+
 ### Fixed
 - **Unticking "Include investment buys and sells" now leaves trades out of the
   import notice.** SimpleFin sends a trade as cash, so it is imported as a
@@ -21,11 +30,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Windows: large records save again on Wealthfolio 3.13 (#58).** Since 3.13,
   Wealthfolio reports every Credential Manager failure as "The operation could
   not be completed." without the reason, so the add-on no longer recognised
-  the size refusal that 1.73.0 answers by storing a record in parts, and once
-  a few accounts were linked every sync failed again. When a large record is
-  refused, the add-on now tests the store itself: a small value saves and one
-  just over the Windows limit doesn't. Only then does it store the record in
-  parts. Any other failure is reported as before. Add-on only.
+  the size refusal that 1.73.0 answers by storing a record in parts. With
+  enough accounts, setup failed when the token was added, and syncs failed
+  too. When a large record is refused, the add-on now tests the store itself:
+  a small value saves and one just over the Windows limit doesn't. Only then
+  does it store the record in parts. Any other failure is reported as before.
+  Wealthfolio has also fixed this on its side (wealthfolio/wealthfolio#2676,
+  in a release after 3.13.0), by storing large values itself, and the add-on
+  works with either. Add-on only.
 
 ## [1.75.0] - 2026-11-12
 
