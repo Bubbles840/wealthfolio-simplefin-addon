@@ -50,3 +50,45 @@ export function fillFeedCurrencies(
   });
   return { accounts: filled, unresolved };
 }
+
+/** A currency as a 3-letter code ("cad " → "CAD"), or null when it isn't one. */
+export function currencyCode(c: string | null | undefined): string | null {
+  const up = (c ?? '').trim().toUpperCase();
+  return /^[A-Z]{3}$/.test(up) ? up : null;
+}
+
+/** The code `values` name most often, the first seen winning a tie; null for none. */
+function mostCommon(values: readonly (string | null | undefined)[]): string | null {
+  const counts = new Map<string, number>();
+  for (const v of values) {
+    const c = currencyCode(v);
+    if (c) counts.set(c, (counts.get(c) ?? 0) + 1);
+  }
+  let best: string | null = null;
+  for (const [c, n] of counts) if (best === null || n > counts.get(best)!) best = c;
+  return best;
+}
+
+/**
+ * The currency offered when a Wealthfolio account is created for a feed
+ * account with none (#76): Wealthfolio refuses an account without one. Only a
+ * suggestion, shown and changeable before anything is created, so it may end
+ * in USD where `fillFeedCurrencies` never guesses:
+ *  1. its holdings', when they all name one;
+ *  2. the one most of the other feed accounts carry;
+ *  3. the one most Wealthfolio accounts are in;
+ *  4. USD.
+ */
+export function suggestCurrency(
+  account: SimplefinAccount,
+  feed: readonly SimplefinAccount[],
+  wfCurrencies: readonly (string | null | undefined)[],
+): string {
+  const held = new Set(
+    (account.holdings ?? []).map((h) => currencyCode(h.currency)).filter((c): c is string => !!c),
+  );
+  if (held.size === 1) return [...held][0];
+  return mostCommon(feed.filter((a) => a.id !== account.id).map((a) => a.currency))
+    ?? mostCommon(wfCurrencies)
+    ?? 'USD';
+}
