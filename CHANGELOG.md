@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.76.1] - 2026-11-15
+
+Update both halves. Update the add-on in the app as usual (no new
+permissions) and pull the companion image: the change is in the add-on and
+the companion behaves as before, but the two versions must match, or the daily
+report flags them.
+
 ### Fixed
 - **Creating an account for a SimpleFin account that has no currency works
   (#76).** Some providers send none, and Wealthfolio refuses an account
