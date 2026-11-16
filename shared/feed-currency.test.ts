@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from 'vitest';
-import { fillFeedCurrencies } from './feed-currency.js';
+import { fillFeedCurrencies, suggestCurrency } from './feed-currency.js';
 import { runSyncCore, VALUATION_POLL } from './sync-core.js';
 import { createFakeHost } from './fake-host.js';
 import { toHoldingsSnapshot } from './holdings.js';
@@ -108,5 +108,35 @@ describe('toHoldingsSnapshot with a blank holding currency', () => {
     }), { now: new Date(NOON * 1000) });
     expect(snap?.positions[0].currency).toBe('USD');
     expect(snap?.cashBalances).toEqual({ USD: '0' });
+  });
+});
+
+describe('suggestCurrency (creating an account the feed sent without one, #76)', () => {
+  const other = (id: string, currency: string) => account({ id, currency });
+
+  it("suggests the account's holdings' currency when they all name one", () => {
+    const held = account({ holdings: [{ currency: 'CAD' }, { currency: 'cad ' }] as any });
+    expect(suggestCurrency(held, [held, other('a', 'USD')], ['USD'])).toBe('CAD');
+  });
+
+  it('otherwise suggests the currency most of the other SimpleFin accounts use', () => {
+    const blank = account();
+    const feed = [blank, other('a', 'EUR'), other('b', 'EUR'), other('c', 'USD')];
+    expect(suggestCurrency(blank, feed, ['USD', 'USD', 'USD'])).toBe('EUR');
+  });
+
+  it('otherwise suggests the currency most Wealthfolio accounts use', () => {
+    const blank = account();
+    expect(suggestCurrency(blank, [blank], ['GBP', 'gbp', 'USD', null])).toBe('GBP');
+  });
+
+  it('suggests USD when nothing names a currency', () => {
+    const blank = account();
+    expect(suggestCurrency(blank, [blank, other('a', '  ')], [])).toBe('USD');
+  });
+
+  it('ignores a value that is not a 3-letter code', () => {
+    const blank = account({ holdings: [{ currency: 'US Dollar' }] as any });
+    expect(suggestCurrency(blank, [blank, other('a', '$'), other('b', 'JPY')], [])).toBe('JPY');
   });
 });

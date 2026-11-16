@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **Creating an account for a SimpleFin account that has no currency works
+  (#76).** Some providers send none, and Wealthfolio refuses an account
+  without one, so "Create new account" in the mapping list failed. For such an
+  account the add-on now shows a currency box next to "What kind of account?",
+  filled in with its best guess, so one click still creates it. The guess is
+  the account's holdings' currency, else the one most of your other SimpleFin
+  accounts use, else most of your Wealthfolio accounts, else USD. Change it
+  first if it's wrong. Add-on only.
+
 ## [1.76.0] - 2026-11-14
 
 Update both halves. Update the add-on in the app as usual (no new

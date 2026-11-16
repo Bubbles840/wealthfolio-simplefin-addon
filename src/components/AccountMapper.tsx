@@ -3,8 +3,9 @@ import type { AddonContext } from '@wealthfolio/addon-sdk';
 import type { SimplefinAccount, AccountMapping } from '../../shared/types';
 import type { LoanLinks } from '../../shared/loan-balances';
 import { companionUnderstandsLoanBalances, LOAN_BALANCES_SINCE } from '../../shared/version';
-import { Button, ErrorBox, Select } from './ui';
+import { Button, ErrorBox, Input, Select } from './ui';
 import { changeDayYear } from '../../shared/change-entries';
+import { currencyCode, suggestCurrency } from '../../shared/feed-currency';
 import {
   declineKey, emptyRelinkDecisions, openRelinkQuestions, withConfirmed, withDeclined, withoutConfirmed, withoutDeclined,
   type RelinkDecisions,
@@ -59,7 +60,7 @@ export function AccountMapper({
   const [decisionError, setDecisionError] = useState('');
   // Read after this mounts on the settings tab: follow it when it arrives.
   useEffect(() => { if (relinkDecisions) setDecisions(relinkDecisions); }, [relinkDecisions]);
-  const [wfAccounts, setWfAccounts] = useState<Array<{ id: string; name: string }>>([]);
+  const [wfAccounts, setWfAccounts] = useState<Array<{ id: string; name: string; currency?: string }>>([]);
   /** null until read, and when they could not be: a link is then never called
    *  gone, and never dropped. */
   const [loans, setLoans] = useState<Array<{ id: string; name: string }> | null>(null);
@@ -73,6 +74,12 @@ export function AccountMapper({
   const [creatingId, setCreatingId] = useState<string | null>(null);
   const [createErrors, setCreateErrors] = useState<Record<string, string>>({});
   const [pendingTypeChoice, setPendingTypeChoice] = useState<string | null>(null);
+  /** The currency typed for the account being created, when SimpleFin sent none (#76). */
+  const [newCurrency, setNewCurrency] = useState('');
+  /** SimpleFin sent no currency, and Wealthfolio refuses an account without one.
+   *  Blank only, as in `fillFeedCurrencies`: SimpleFin allows other codes
+   *  ("USDT", a URL), and an account created with one is as it always was. */
+  const needsCurrency = (sfin: SimplefinAccount) => !sfin.currency || sfin.currency.trim() === '';
 
   useEffect(() => {
     ctx.api.accounts.getAll()
@@ -87,8 +94,10 @@ export function AccountMapper({
 
   const handleSelect = (sfin: SimplefinAccount, value: string, confirmed = false) => {
     if (value === CREATE_NEW_VALUE) {
-      // Don't create yet — ask what kind of account this is first
+      // Don't create yet — ask what kind of account this is first, and its
+      // currency when SimpleFin sent none (suggested, so one click still does).
       setPendingTypeChoice(sfin.id);
+      setNewCurrency(needsCurrency(sfin) ? suggestCurrency(sfin, simplefinAccounts, wfAccounts.map((a) => a.currency)) : '');
       return;
     }
     setPendingTypeChoice(null);
@@ -106,6 +115,8 @@ export function AccountMapper({
   };
 
   const handleCreateAccount = async (sfin: SimplefinAccount, accountType: CreatableAccountType) => {
+    const currency = needsCurrency(sfin) ? currencyCode(newCurrency) : sfin.currency;
+    if (!currency) return;
     setPendingTypeChoice(null);
     setCreateErrors((prev) => ({ ...prev, [sfin.id]: '' }));
     setCreatingId(sfin.id);
@@ -113,12 +124,12 @@ export function AccountMapper({
       const created = await ctx.api.accounts.create({
         name: sfin.name,
         accountType,
-        currency: sfin.currency,
+        currency,
         isDefault: false,
         isActive: true,
         trackingMode: 'TRANSACTIONS',
       });
-      setWfAccounts((prev) => [...prev, { id: created.id, name: created.name }]);
+      setWfAccounts((prev) => [...prev, { id: created.id, name: created.name, currency }]);
       setMapping((prev) => ({ ...prev, [sfin.id]: created.id }));
       setLoanLinks((prev) => ({ ...prev, [sfin.id]: '' }));
       onAccountCreated?.({ sfinId: sfin.id, wfId: created.id, name: created.name, accountType });
@@ -287,9 +298,18 @@ export function AccountMapper({
             ))}
             {pendingTypeChoice === sfin.id && (
               <div style={{ marginTop: 6, display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>
+                {needsCurrency(sfin) && (
+                  <>
+                    <span className="sfin-subtle" style={{ fontSize: 12 }}>SimpleFin sent no currency for it:</span>
+                    <Input aria-label="Currency" value={newCurrency} maxLength={3} size={4}
+                      onChange={(e) => setNewCurrency(e.target.value.toUpperCase())}
+                      style={{ padding: '2px 6px', fontSize: 12, width: '4.5em' }} />
+                  </>
+                )}
                 <span className="sfin-subtle" style={{ fontSize: 12 }}>What kind of account?</span>
                 {ACCOUNT_TYPE_OPTIONS.map((opt) => (
                   <Button key={opt.type} variant="outline" style={{ padding: '3px 8px', fontSize: 12 }}
+                    disabled={needsCurrency(sfin) && currencyCode(newCurrency) === null}
                     onClick={() => handleCreateAccount(sfin, opt.type)}>
                     {opt.label}
                   </Button>

@@ -51,6 +51,83 @@ describe('AccountMapper', () => {
     expect(onAccountCreated).not.toHaveBeenCalled();
   });
 
+  describe('an account SimpleFin sent without a currency (#76)', () => {
+    const setup = (wfAccounts: Array<{ id: string; name: string; currency: string }> = []) => {
+      const create = vi.fn(async (a: any) => ({ id: 'wf-new', name: a.name }));
+      const ctx = { api: { accounts: { getAll: vi.fn(async () => wfAccounts), create } } } as any;
+      render(
+        <AccountMapper
+          ctx={ctx}
+          simplefinAccounts={[
+            { id: 'ACT-blank', name: 'Retirement Plan', currency: '', balance: '1', 'balance-date': 1, transactions: [] } as any,
+            { id: 'ACT-cad', name: 'Chequing', currency: 'CAD', balance: '1', 'balance-date': 1, transactions: [] } as any,
+          ]}
+          initialMapping={{}}
+          onSave={vi.fn()}
+        />,
+      );
+      fireEvent.change(screen.getAllByRole('combobox')[0], { target: { value: '__create_new__' } });
+      return create;
+    };
+
+    it('creates it in the currency shown, suggested from the other accounts', async () => {
+      const create = setup();
+      expect(screen.getByRole('textbox', { name: 'Currency' })).toHaveProperty('value', 'CAD');
+      fireEvent.click(screen.getByRole('button', { name: 'Bank / Cash' }));
+      await waitFor(() => expect(create).toHaveBeenCalledWith(expect.objectContaining({ name: 'Retirement Plan', currency: 'CAD' })));
+    });
+
+    it('creates it in the currency the person typed instead', async () => {
+      const create = setup();
+      fireEvent.change(screen.getByRole('textbox', { name: 'Currency' }), { target: { value: 'eur' } });
+      fireEvent.click(screen.getByRole('button', { name: 'Investment' }));
+      await waitFor(() => expect(create).toHaveBeenCalledWith(expect.objectContaining({ currency: 'EUR' })));
+    });
+
+    it('creates nothing until the currency is a 3-letter code', () => {
+      const create = setup();
+      fireEvent.change(screen.getByRole('textbox', { name: 'Currency' }), { target: { value: 'E' } });
+      const button = screen.getByRole('button', { name: 'Bank / Cash' });
+      expect(button).toHaveProperty('disabled', true);
+      fireEvent.click(button);
+      expect(create).not.toHaveBeenCalled();
+    });
+
+    it('asks no currency, and keeps it as sent, for a code longer than three letters', async () => {
+      const create = vi.fn(async (a: any) => ({ id: 'wf-new', name: a.name }));
+      const ctx = { api: { accounts: { getAll: vi.fn(async () => []), create } } } as any;
+      render(
+        <AccountMapper
+          ctx={ctx}
+          simplefinAccounts={[{ id: 'ACT-c', name: 'Exchange', currency: 'USDT', balance: '1', 'balance-date': 1, transactions: [] } as any]}
+          initialMapping={{}}
+          onSave={vi.fn()}
+        />,
+      );
+      fireEvent.change(screen.getByRole('combobox'), { target: { value: '__create_new__' } });
+      expect(screen.queryByRole('textbox', { name: 'Currency' })).toBeNull();
+      fireEvent.click(screen.getByRole('button', { name: 'Investment' }));
+      await waitFor(() => expect(create).toHaveBeenCalledWith(expect.objectContaining({ currency: 'USDT' })));
+    });
+
+    it('asks no currency for an account SimpleFin sent one for', async () => {
+      const create = vi.fn(async (a: any) => ({ id: 'wf-new', name: a.name }));
+      const ctx = { api: { accounts: { getAll: vi.fn(async () => []), create } } } as any;
+      render(
+        <AccountMapper
+          ctx={ctx}
+          simplefinAccounts={[{ id: 'ACT-1', name: 'Spend', currency: 'USD', balance: '1', 'balance-date': 1, transactions: [] } as any]}
+          initialMapping={{}}
+          onSave={vi.fn()}
+        />,
+      );
+      fireEvent.change(screen.getByRole('combobox'), { target: { value: '__create_new__' } });
+      expect(screen.queryByRole('textbox', { name: 'Currency' })).toBeNull();
+      fireEvent.click(screen.getByRole('button', { name: 'Bank / Cash' }));
+      await waitFor(() => expect(create).toHaveBeenCalledWith(expect.objectContaining({ currency: 'USD' })));
+    });
+  });
+
   it('links a loan account to a liability instead of mapping it, and back', async () => {
     const ctx = {
       api: {
