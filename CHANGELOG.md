@@ -7,6 +7,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **A cost entered by hand on a holding is no longer wiped by the next sync
+  (#83).** On accounts whose provider sends no cost (a deferred-comp plan, a
+  529), every sync saved a holdings snapshot that put each position back at
+  cost 0, so Wealthfolio showed "incomplete cost basis" again. Wealthfolio also
+  sets an account's net contribution to 0 on every holdings snapshot it saves,
+  its own holdings editor included, and read that drop as a withdrawal.
+  - A snapshot is now saved only when the holdings changed: a share count, a
+    cost SimpleFin sent, the cash, or the asset a holding is on. Prices are
+    still written every sync. Wealthfolio's snapshot history gets an entry on
+    those days only, and a net contribution you entered lasts until then.
+  - A fund you price by hand (Wealthfolio reports its pricing as manual) keeps
+    its cost like any other holding. Saving a snapshot makes Wealthfolio write
+    the fund's cost as that day's price, so the sync puts the fund's price back
+    afterwards: the one you entered for that day, else the latest before it.
+    This also covers a hand-priced fund SimpleFin does send a cost for, whose
+    price used to be overwritten the same way. A fund with no price at all
+    gets no cost carried, as before. If the price can't be put back, the sync
+    says which fund, and it shows at its cost until its next price. If the
+    fund's prices can't be read at all, the account's snapshot waits for the
+    next sync instead of being saved at cost 0.
+  - A dividend paid after a sale still finds its security in an older
+    snapshot: the snapshot in force when the 60 days before the dividend begin
+    is read too, and the add-on and the companion list two years of snapshots
+    for it instead of six months.
+
+  The snapshot and price changes are the add-on's (the companion writes no
+  snapshots); the dividend change is in both halves.
+
+### Changed
+- **The Amazon "Category for anything unrecognized" can be a subcategory
+  (#80).** It offers the same list as the label rows: subcategories as
+  `Parent / Child` with a companion on 1.74.0 or later (which already files
+  under them), top-level categories only with an older one, and never the
+  sync's own bookkeeping categories (no longer offered to the label rows with
+  an older companion either). A value saved by an older build shows as the
+  category it files under, and leaving the dropdown alone never changes what
+  is saved. Add-on only.
+
 ## [1.76.1] - 2026-11-15
 
 Update both halves. Update the add-on in the app as usual (no new

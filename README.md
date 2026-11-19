@@ -269,6 +269,12 @@ counts as an automatic SimpleFin download (an hour after the newest one, within
 the automatic share of the day). Snapshots still need Wealthfolio open in a
 browser at least once a day.
 
+A snapshot is saved only on a day an account's holdings changed: a share
+count, a cost the provider sent, the cash, or the asset a holding is on.
+Wealthfolio sets an account's net contribution to 0 on every holdings snapshot
+it saves (its own holdings editor does the same), so a snapshot every day undid
+a net contribution entered by hand. Prices are written every sync either way.
+
 Each run re-scans a two-week overlap rather than only new transactions, because
 card purchases often post days later with a backdated timestamp. Transactions
 are matched by their SimpleFin id, so re-scanning already-imported rows changes
@@ -319,7 +325,8 @@ known wording counts (today Fidelity's `DIVIDEND RECEIVED … (VOO) (Cash)`), on
 in an investment account, and only when exactly one security under that ticker
 is found: in the account's holdings; or, for a position already sold, in the
 account's own earlier activity (a dividend, a trade); or in its holdings
-snapshots from the weeks before the dividend. Anything else is imported as
+snapshots from the weeks before the dividend, or the last one before those
+weeks (a snapshot is saved only when holdings change). Anything else is imported as
 before. A transaction rule wins, as always: a rule typed **DIVIDEND** books the
 security the same way, or **Interest** when none is named (a Dividend needs one:
 written on cash, Wealthfolio makes up a `$CASH` security to hold it). A booked
@@ -340,9 +347,17 @@ transferred in raise the count without new money and are costed as a buy, so
 correct the cost on the holding after one. When the share count changes by
 1.5× or more either way (a split, or a large buy or sale) the sync does not
 guess: it asks you once to enter the cost, as it does when the feed has no
-price for new shares. A cost Wealthfolio holds in another currency than the
-feed's is not carried (each day's snapshot is then written without one, so a
-cost entered by hand does not last for such a holding). A holding with no cost
+price for new shares. A fund you price by hand in Wealthfolio keeps its cost
+too. Saving a snapshot makes Wealthfolio write a hand-priced fund's cost as
+that day's price, so the sync then puts the fund's price back: the one you
+entered for that day, else the latest before it (also when the provider sends
+the cost itself). A hand-priced fund with no price at all gets no cost
+carried. If the price can't be put back, the sync reports the fund by name,
+and it shows at its cost until its next price; if its prices can't be read at
+all, the account's snapshot waits for the next sync rather than losing the
+cost. A cost Wealthfolio holds in another currency than the feed's is not
+carried (a snapshot saved then is written without one, so a cost entered by
+hand lasts only until the holdings next change). A holding with no cost
 in Wealthfolio stays unknown, and Home lists it under
 "Wealthfolio has no cost for…" until you enter one (a new holding the feed
 sends without a cost shows there too). That list repeats no alert. If your
@@ -680,7 +695,10 @@ docker run --rm \
 
 Labels are matched by pattern rather than a lookup table, so a label Amazon
 invents next month files itself. Anything unmatched goes to a configurable default
-*and* is announced once in Telegram. `companion/scripts/amazon-rules.mjs` inserts
+*and* is announced once in Telegram. The default is the card's **Category for
+anything unrecognized**, picked from the same list as the labels: a subcategory
+too (`Parent / Child`), with a companion on 1.74.0 or later.
+`companion/scripts/amazon-rules.mjs` inserts
 the matching Wealthfolio rules (dry-run by default).
 
 **Itemization is not possible.** Amazon removed item names, quantities and unit
