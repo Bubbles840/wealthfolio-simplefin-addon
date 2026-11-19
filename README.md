@@ -385,8 +385,9 @@ that day's price, so the sync then puts the fund's price back: the one you
 entered for that day, else the latest before it (also when the provider sends
 the cost itself). A hand-priced fund with no price at all gets no cost
 carried. The carry for a hand-priced fund needs Wealthfolio to report the
-fund's pricing as manual (Wealthfolio 3.13 does). If the price can't be put back, the sync reports the fund by name,
-and it shows at its cost until its next price; if its prices can't be read at
+fund's pricing as manual (Wealthfolio 3.13 does). If the price can't be put
+back, the sync reports the fund by name, and it shows at its cost until its
+next price; if its prices can't be read at
 all, the account's snapshot waits for the next sync rather than losing the
 cost. A cost Wealthfolio holds in another currency than the feed's is not
 carried (a snapshot saved then is written without one, so a cost entered by

@@ -49,8 +49,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   income category keeps that income category (it no longer counts anywhere on
   a refund) and also gets the fee's spending category; Undo takes off only the
   spending one. A fee reversal an older build already linked as a transfer
-  stays a transfer; mark it **Not a transfer** to fix it. Update both halves: an older add-on or
-  companion types these back to deposits.
+  stays a transfer; mark it **Not a transfer** to fix it. Update both halves:
+  an older add-on or companion types these back to deposits.
 - **SimpleFin's connection problems are shown, not hidden (#81).** Both halves
   now ask SimpleFIN Bridge for protocol version 2, which names the bank
   connection behind each problem (Lunch Flow is asked exactly as before). A
