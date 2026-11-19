@@ -81,7 +81,7 @@ export function findConnectionProblems(
     if (entry.code.toLowerCase().startsWith('gen.api')) return;
 
     const sfinAccountIds = entry.connId
-      ? accounts.filter((a) => a?.conn_id === entry.connId).map((a) => a.id)
+      ? accounts.filter((a) => a?.conn_id !== undefined && String(a.conn_id) === entry.connId).map((a) => a.id)
       : entry.accountId
         ? [entry.accountId]
         : [];
@@ -90,7 +90,7 @@ export function findConnectionProblems(
     const account = entry.accountId ? accounts.find((a) => a?.id === entry.accountId) : undefined;
     const rawName =
       (entry.connId ? connNames.get(entry.connId) : undefined) ??
-      (account?.conn_id ? connNames.get(account.conn_id) : undefined) ??
+      (account?.conn_id ? connNames.get(String(account.conn_id)) : undefined) ??
       account?.org?.name;
     const connectionName = rawName ? sanitizeProblemText(rawName, CONNECTION_NAME_MAX_CHARS) : '';
 
@@ -186,18 +186,22 @@ function sentence(text: string): string {
   return /[.!?…]$/.test(text) ? text : `${text}.`;
 }
 
+/** gen.auth: the Bridge refused the whole request, so there is no connection to sign in to. */
+const isBridgeRefusal = (p: ConnectionProblem): boolean => p.code.toLowerCase() === 'gen.auth';
+
 export function connectionProblemTitle(p: ConnectionProblem): string {
   if (p.kind === 'signin') {
-    return p.connectionName ? `${p.connectionName} needs you to sign in again` : 'SimpleFIN Bridge turned this sync away';
+    if (isBridgeRefusal(p)) return 'SimpleFIN Bridge turned this sync away';
+    return `${p.connectionName ?? 'A bank connection'} needs you to sign in again`;
   }
   return `${p.connectionName ?? 'A SimpleFin connection'} isn't updating`;
 }
 
 export function connectionProblemText(p: ConnectionProblem): string {
   if (p.kind === 'signin') {
-    return p.connectionName
-      ? `${p.connectionName} needs you to sign in again at SimpleFIN Bridge. Until you do, its accounts show the last figures SimpleFin got, not today's.`
-      : `SimpleFIN Bridge turned this sync away: ${sentence(p.message)} Until that's fixed, your accounts show the last figures SimpleFin got, not today's.`;
+    return isBridgeRefusal(p)
+      ? `SimpleFIN Bridge turned this sync away: ${sentence(p.message)} Until that's fixed, your accounts show the last figures SimpleFin got, not today's.`
+      : `${p.connectionName ?? 'A bank connection'} needs you to sign in again at SimpleFIN Bridge. Until you do, its accounts show the last figures SimpleFin got, not today's.`;
   }
   return `SimpleFin has reported this since ${dayOf(p.firstSeenAt)}: ${sentence(p.message)} Until it clears, the figures shown are the last ones SimpleFin got.`;
 }

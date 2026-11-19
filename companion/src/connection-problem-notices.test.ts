@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 import type { ConnectionProblem } from '../../shared/connection-problems.js';
-import { ANNOUNCED_PROBLEMS_SECRET_KEY, sendConnectionProblemNotices, type ProblemNoticeDeps } from './connection-problem-notices.js';
+import { ANNOUNCED_PROBLEMS_SECRET_KEY, problemsForNotices, sendConnectionProblemNotices, type ProblemNoticeDeps } from './connection-problem-notices.js';
 
 const AT = '2026-11-18T15:00:00.000Z';
 const fidelity: ConnectionProblem = {
@@ -128,5 +128,49 @@ describe('sendConnectionProblemNotices (#81)', () => {
     const { deps } = make({ telegram: vi.fn(async () => null) });
     await sendConnectionProblemNotices(deps, [fidelity]);
     expect(deps.log).toHaveBeenCalledWith('Telegram not configured, so no connection-problem notice was sent.');
+  });
+});
+
+describe('problemsForNotices: runs that did not download (#81)', () => {
+  const NOW = new Date('2026-11-18T15:00:00.000Z');
+  const recordAt = (ageMs: number) => JSON.stringify({
+    checkedAt: new Date(NOW.getTime() - ageMs).toISOString(), problems: [fidelity],
+  });
+  const HOUR = 3_600_000;
+  const tooSoon = (read: () => Promise<string | null>) =>
+    problemsForNotices({ downloaded: false, connectionProblems: undefined }, read, NOW);
+
+  it('a too-soon run with a fresh record sends the notice once', async () => {
+    const { deps, sent } = make();
+    const shown = await tooSoon(async () => recordAt(2 * HOUR));
+    await sendConnectionProblemNotices(deps, shown);
+    await sendConnectionProblemNotices(deps, await tooSoon(async () => recordAt(3 * HOUR)));
+    expect(sent).toHaveLength(1);
+    expect(sent[0]).toContain('needs you to sign in again');
+  });
+
+  it('a too-soon run with a stale record sends nothing and clears nothing', async () => {
+    const { deps, sent, ledger } = make({}, [fidelity]);
+    const shown = await tooSoon(async () => recordAt(48 * HOUR + 1));
+    expect(shown).toBeUndefined();
+    await sendConnectionProblemNotices(deps, shown);
+    expect(sent).toEqual([]);
+    expect(ledger()).toEqual([fidelity]);
+  });
+
+  it('a failed or unparseable read reads no record', async () => {
+    expect(await tooSoon(async () => { throw new Error('401'); })).toBeUndefined();
+    expect(await tooSoon(async () => '{nope')).toBeUndefined();
+    expect(await tooSoon(async () => null)).toBeUndefined();
+  });
+
+  it('a downloaded run with connectionProblems absent sends nothing and reads nothing', async () => {
+    const read = vi.fn(async () => recordAt(HOUR));
+    const shown = await problemsForNotices({ downloaded: true, connectionProblems: undefined }, read, NOW);
+    expect(shown).toBeUndefined();
+    expect(read).not.toHaveBeenCalled();
+    const { deps, sent } = make();
+    await sendConnectionProblemNotices(deps, shown);
+    expect(sent).toEqual([]);
   });
 });

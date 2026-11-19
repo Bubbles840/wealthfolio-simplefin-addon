@@ -56,7 +56,8 @@ export function activeSnoozes(snoozes: FindingSnoozes, now: Date): FindingSnooze
 
 /** Whether a finding may be snoozed at all. Problems may not: a failing sync
  *  or an account syncing nothing is the reason the block exists, and a snooze
- *  on one would be a month of silently missing money. */
+ *  on one would be a month of silently missing money. The one exception is a
+ *  connection problem (#81): it prints in full and can still be snoozed. */
 export function isSnoozable(f: SelfCheckFinding): boolean {
   return !!f.key && (!printsInFull(f) || f.kind === 'connection-problem');
 }

@@ -70,6 +70,14 @@ describe('runSyncCore — SimpleFin connection problems are remembered (#81)', (
     expect(saved.record?.problems).toEqual([]);
   });
 
+  it('treats a store with only the setter as an unreadable record: nothing written, field absent', async () => {
+    const { fh } = setup([SIGNIN]);
+    delete (fh.store as any).getSimplefinProblems;
+    const result = await runSyncCore(fh.host, fh.store, {});
+    expect(fh.store.setSimplefinProblems).not.toHaveBeenCalled();
+    expect(result).not.toHaveProperty('connectionProblems');
+  });
+
   it('writes nothing, and says nothing, when the record cannot be read', async () => {
     const { fh } = setup([SIGNIN]);
     (fh.store as any).getSimplefinProblems = vi.fn(async () => { throw new Error('401'); });

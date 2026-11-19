@@ -42,7 +42,8 @@ export function needsFindingsButton(visible: readonly SelfCheckFinding[]): boole
   return visible.some((f) => !printsInFull(f) || isSnoozable(f));
 }
 
-/** The one button the morning report carries when anything is folded. */
+/** The one button the morning report carries when anything is folded, or when
+ *  a finding printed in full can be snoozed from the list behind it (#81). */
 export const SHOW_FINDINGS_BUTTON = { text: '🧹 Show what to fix', callback_data: OPEN };
 
 const GONE_ANSWER = 'That one is already sorted — refreshing.';

@@ -2533,7 +2533,9 @@ async function runSyncPass(
     console.warn('[simplefin-sync] connection problems skipped: the loan links or ignore list could not be read');
   } else {
     try {
-      priorProblems = store.getSimplefinProblems ? await store.getSimplefinProblems() : null;
+      // A store that cannot read the record is UNREADABLE (skip), not empty:
+      // null would restart every episode on every run.
+      priorProblems = store.getSimplefinProblems ? await store.getSimplefinProblems() : undefined;
     } catch (e: any) {
       console.warn('[simplefin-sync] connection problems not read: ' + (e?.message ?? e));
     }

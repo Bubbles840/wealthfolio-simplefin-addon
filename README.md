@@ -262,7 +262,7 @@ a cooldown, so reloading the page is a cheap no-op.
 
 Investment positions (holdings snapshots) are written by the add-on only; the
 companion cannot. So while Wealthfolio is open, the add-on also syncs on its own
-when it has not written them for 20 hours and an investment account is mapped.
+when it has not run its holdings step for 20 hours and an investment account is mapped.
 With its schedule off it does so only while a companion is syncing (one that
 synced in the last two days); without one, Off means you sync by hand. It
 counts as an automatic SimpleFin download (an hour after the newest one, within
@@ -300,7 +300,10 @@ nothing.
   transaction rule overrides it. With the companion, it is filed under the
   category of the fee it reverses: same account, same amount, up to 30 days
   before, closest first. One you already put in a spending category is left
-  alone, and Undo in the change log takes the filing off for good.
+  alone, and Undo in the change log takes the filing off for good. One you had
+  filed under an income category keeps it (it no longer counts anywhere on a
+  refund) and also gets the fee's spending category; Undo takes off only the
+  spending one.
 - Cash-transfer legs are deliberately imported with **no asset**, which is what
   lets Wealthfolio book the cash movement and pair the two legs. See
   `companion/upstream-pr.md` for the underlying upstream issue.
@@ -320,7 +323,8 @@ connection has a problem, and say so:
   Assistant alert, and a count on the status page.
 
 A problem on an account you don't sync is left out. The add-on hides a record
-more than two days old. The figures update again once SimpleFin does.
+more than two days old. A problem that names no account (a dead connection)
+is still shown. The figures update again once SimpleFin does.
 
 ### Ignore rules
 
@@ -380,7 +384,8 @@ too. Saving a snapshot makes Wealthfolio write a hand-priced fund's cost as
 that day's price, so the sync then puts the fund's price back: the one you
 entered for that day, else the latest before it (also when the provider sends
 the cost itself). A hand-priced fund with no price at all gets no cost
-carried. If the price can't be put back, the sync reports the fund by name,
+carried. The carry for a hand-priced fund needs Wealthfolio to report the
+fund's pricing as manual (Wealthfolio 3.13 does). If the price can't be put back, the sync reports the fund by name,
 and it shows at its cost until its next price; if its prices can't be read at
 all, the account's snapshot waits for the next sync rather than losing the
 cost. A cost Wealthfolio holds in another currency than the feed's is not

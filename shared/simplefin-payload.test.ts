@@ -118,6 +118,14 @@ describe('isSimplefinNotice', () => {
 const demo = (v: 'v1' | 'v2') => JSON.parse(readFileSync(join(process.cwd(), 'shared', '__fixtures__', 'simplefin-demo', `${v}-balances-only.json`), 'utf8'));
 
 describe('normalizeAccountSet reads protocol v2 the way v1 read (#81)', () => {
+  it('matches an account to its connection when conn_id arrives as a number', () => {
+    const set = normalizeAccountSet({
+      connections: [{ conn_id: 7, name: 'Numeric Bank' }],
+      accounts: [{ id: 'a1', name: 'Checking', currency: 'USD', balance: '0', 'balance-date': 1, conn_id: 7 }],
+    });
+    expect(set.accounts[0].org?.name).toBe('Numeric Bank');
+  });
+
   it('gives every v2 account the org v1 gave it: the connection name, not org_name', () => {
     const v1 = normalizeAccountSet(demo('v1'));
     const v2 = normalizeAccountSet(demo('v2'));

@@ -134,4 +134,26 @@ describe('connection problems (#81)', () => {
     expect(connectionProblemClearedText(problem({}))).toBe('Fidelity NetBenefits is updating again.');
     expect(connectionProblemClearedText(genAuth)).toBe('SimpleFin no longer reports: No credentials provided.');
   });
+
+  it('words a sign-in by its CODE, not by whether a connection name is set', () => {
+    const conNoName = problem({ connectionName: undefined });
+    expect(connectionProblemTitle(conNoName)).toBe('A bank connection needs you to sign in again');
+    expect(connectionProblemText(conNoName)).toBe(
+      "A bank connection needs you to sign in again at SimpleFIN Bridge. Until you do, its accounts show the last figures SimpleFin got, not today's.",
+    );
+    const genNamed = problem({ code: 'gen.auth', connectionName: 'Fidelity NetBenefits', message: 'No credentials provided' });
+    for (const g of [genNamed, problem({ code: 'gen.auth', connectionName: undefined, message: 'No credentials provided' })]) {
+      expect(connectionProblemTitle(g)).toBe('SimpleFIN Bridge turned this sync away');
+      expect(connectionProblemText(g)).toBe(
+        "SimpleFIN Bridge turned this sync away: No credentials provided. Until that's fixed, your accounts show the last figures SimpleFin got, not today's.",
+      );
+    }
+  });
+
+  it('keeps a record exactly 48 hours old, drops it a millisecond later', () => {
+    const at = (ms: number) => ({ checkedAt: new Date(NOW.getTime() - ms).toISOString(), problems: [problem({})] });
+    const opts = { maxRecordAgeMs: PROBLEM_RECORD_MAX_AGE_MS };
+    expect(shownConnectionProblems(at(48 * HOUR), NOW, opts)).toHaveLength(1);
+    expect(shownConnectionProblems(at(48 * HOUR + 1), NOW, opts)).toEqual([]);
+  });
 });

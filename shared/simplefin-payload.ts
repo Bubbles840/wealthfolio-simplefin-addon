@@ -58,7 +58,7 @@ export function normalizeAccountSet(payload: unknown): SimplefinAccountSet {
   // v2 sends no `org` on an account, only the `conn_id` of its connection;
   // give it the org v1 would have, so nothing downstream needs to know.
   const accounts = ((Array.isArray(raw.accounts) ? raw.accounts : []) as SimplefinAccount[]).map((a) => {
-    const org = a && !a.org && a.conn_id ? orgByConn.get(a.conn_id) : undefined;
+    const org = a && !a.org && a.conn_id ? orgByConn.get(String(a.conn_id)) : undefined;
     return org ? { ...a, org } : a;
   });
   const connNameById = new Map(connections.map((c) => [c.connId, c.name]));
@@ -131,7 +131,8 @@ function orgOf(c: Record<string, unknown>): NonNullable<SimplefinAccount['org']>
 /**
  * One failure as a line a human can act on.
  *
- * The name is what makes the message useful, so it is preferred over every id;
+ * The name is what makes the message useful, so it is preferred over every id
+ * (a connection-scoped failure prefers the listed connection's own name);
  * an account the payload no longer carries (exactly what a dead connection looks
  * like) falls back to its id, and a connection-scoped failure to the conn id. A
  * legacy string is already prose and is passed through unchanged rather than

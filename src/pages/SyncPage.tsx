@@ -613,7 +613,6 @@ export function SyncPage({ ctx, store, onReset, scheduler, initialSearch }: Prop
       // these again anyway, and hiding them here would be a lie.
       showThrownError(e, 'Could not save that preference');
       store.getUnmappedAccounts?.().then(setUnmappedAccounts).catch(() => {});
-    store.getSimplefinProblems?.().then(setSimplefinProblems).catch(() => {});
     }
   }, [store, showThrownError]);
 

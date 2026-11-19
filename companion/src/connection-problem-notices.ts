@@ -1,5 +1,8 @@
 import {
   connectionProblemClearedText,
+  parseConnectionProblems,
+  PROBLEM_RECORD_MAX_AGE_MS,
+  shownConnectionProblems,
   connectionProblemText,
   connectionProblemTitle,
   isConnectionProblem,
@@ -107,5 +110,29 @@ export async function sendConnectionProblemNotices(
     if (nextRaw !== (raw ?? '[]')) await deps.setSecret(ANNOUNCED_PROBLEMS_SECRET_KEY, nextRaw);
   } catch (err) {
     deps.log(`Connection problem notice error: ${err instanceof Error ? err.message : String(err)}`);
+  }
+}
+
+/**
+ * What the notices should be driven by for one companion run. A run that
+ * downloaded carries `connectionProblems` (or leaves it absent on purpose when
+ * the record could not be read or written, and then nothing is sent). A run
+ * that did NOT download (too soon, budget-limited, not configured) carries
+ * none, yet the add-on may have written a fresh record since the last run, so
+ * the record is read here: a failed read, an unparseable or a stale (over 48
+ * hours) record yields undefined, exactly "read no record".
+ */
+export async function problemsForNotices(
+  run: { downloaded: boolean; connectionProblems: ConnectionProblem[] | undefined },
+  readRecord: () => Promise<string | null>,
+  now: Date,
+): Promise<ConnectionProblem[] | undefined> {
+  if (run.downloaded) return run.connectionProblems;
+  try {
+    const record = parseConnectionProblems(await readRecord());
+    if (!record || now.getTime() - Date.parse(record.checkedAt) > PROBLEM_RECORD_MAX_AGE_MS) return undefined;
+    return shownConnectionProblems(record, now, { maxRecordAgeMs: PROBLEM_RECORD_MAX_AGE_MS });
+  } catch {
+    return undefined;
   }
 }

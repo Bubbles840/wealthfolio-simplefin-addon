@@ -300,6 +300,15 @@ describe('gatherFindings — SimpleFin connection problems (#81)', () => {
     message: 'Fidelity NetBenefits: Authentication required', firstSeenAt, lastSeenAt: at(0),
   });
 
+  it('does not apply the 48-hour rule: a record 72 hours old still lists its problem (ruling 12)', async () => {
+    const record = { checkedAt: at(72), problems: [problem('con.auth:C1', 'signin', at(80))] };
+    const { deps } = makeDeps({ simplefin_problems: JSON.stringify(record) });
+    const found = await gatherFindings(deps, NOW, { recordLedgerChecks: false, ...healthy });
+    expect(found.visible.filter((f) => f.kind === 'connection-problem').map((f) => f.key)).toEqual([
+      `connection-problem:con.auth:C1@${at(80)}`,
+    ]);
+  });
+
   it('reports the problems being shown, and leaves a snoozed one out', async () => {
     const record = { checkedAt: at(0), problems: [problem('con.auth:C1', 'signin', at(1)), problem('act.failed:a2', 'other', at(2)), problem('act.failed:a3', 'other', at(30))] };
     const { deps } = makeDeps({ simplefin_problems: JSON.stringify(record) });

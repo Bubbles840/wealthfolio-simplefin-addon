@@ -54,6 +54,12 @@ describe('runSyncCore — fee reversals are refunds, never income or a transfer 
     const b = createFakeHost(seedOf({ chk: [tx('t-1', '2026-11-10T12:00:00Z', '35.00', REFUND)] }, { existing: old }));
     await runSyncCore(b.host, b.store, { force: true });
     expect(rowOf(b, 'wf-chk', 't-1')).toMatchObject({ activityType: 'CREDIT', subtype: 'REFUND' });
+
+    // The retype settles: a further sync plans no update for that row.
+    const c = createFakeHost(seedOf({ chk: [tx('t-1', '2026-11-10T12:00:00Z', '35.00', REFUND)] }, { existing: carry(b) }));
+    await runSyncCore(c.host, c.store, { force: true });
+    const updates = c.saved.flatMap((req) => req.updates ?? []);
+    expect(updates).toEqual([]);
   });
 
   it('is never paired with a same-amount outflow in another account', async () => {

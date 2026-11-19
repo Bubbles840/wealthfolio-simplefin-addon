@@ -698,7 +698,7 @@ describe('syncHoldingsWithFeedPrices', () => {
       expect(again).toEqual({ imported: 0, skipped: 1, unresolvedSymbols: [] });
     });
 
-    it('never puts one on a shared asset the person prices by hand, where it would become the day\'s price', async () => {
+    it('carries nothing for a hand-priced fund that has no price at all', async () => {
       const wf = withTicker('MANUAL');
       await syncHoldingsWithFeedPrices(wf.io, wf.pricing, 'wf-a', nextDay('VOO', '10'), [], 'AAAA1111', undefined, NOW);
 

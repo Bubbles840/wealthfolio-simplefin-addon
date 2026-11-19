@@ -45,7 +45,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   fee it reverses (same account, same amount, up to 30 days before), with Undo
   in the change log; one you or a rule already put in a spending category is
   never touched. An ATM rebate of another bank's fee has no fee row to copy
-  from: file it once, or add a rule. Update both halves: an older add-on or
+  from: file it once, or add a rule. A fee reversal you had filed under an
+  income category keeps that income category (it no longer counts anywhere on
+  a refund) and also gets the fee's spending category; Undo takes off only the
+  spending one. A fee reversal an older build already linked as a transfer
+  stays a transfer; mark it **Not a transfer** to fix it. Update both halves: an older add-on or
   companion types these back to deposits.
 - **SimpleFin's connection problems are shown, not hidden (#81).** Both halves
   now ask SimpleFIN Bridge for protocol version 2, which names the bank

@@ -181,7 +181,8 @@ import { createCategorizeController, SPENDING_TAXONOMY_ID } from './categorize.j
 import { createAmazonLabelMenu, type AmazonLabelMenu } from './amazon-labels.js';
 import { fileAmazonCharges } from './amazon-filing.js';
 import { fileFeeReversals } from './fee-reversal-filing.js';
-import { sendConnectionProblemNotices } from './connection-problem-notices.js';
+import { SIMPLEFIN_PROBLEMS_SECRET_KEY } from '../../shared/connection-problems.js';
+import { problemsForNotices, sendConnectionProblemNotices } from './connection-problem-notices.js';
 import { companionChangeSink, readCompanionChangeLog, recordCompanionChanges } from './change-log-host.js';
 import { editSyncOverrides, emptySyncOverrides, hasAccountOverride, hasTxOverride, loadSyncOverrides, notTransferEdit, syncOverridesOrEmpty, type SyncOverrides } from '../../shared/sync-overrides.js';
 import { TRANSFER_NAMES_SECRET_KEY } from '../../shared/transfer-names.js';
@@ -1470,7 +1471,14 @@ async function runCompanionSyncOnce(opts: { force?: boolean; manual?: boolean })
 
     // Announced once per problem key, and the "updating again" notice goes
     // only for a key announced earlier. A run that read no record passes
-    // undefined and touches nothing.
+    // undefined and touches nothing. A run that did not download (too soon,
+    // budget-limited, not configured) reads the add-on's record instead, so
+    // the notice is not late when the add-on does most of the downloading.
+    const shownProblems = await problemsForNotices(
+      { downloaded: outcomeOf(result, notConfiguredResults.has(result)) === 'synced', connectionProblems: result.connectionProblems },
+      () => wfClient.getAddonSecret('simplefin-sync', SIMPLEFIN_PROBLEMS_SECRET_KEY),
+      new Date(),
+    );
     await sendConnectionProblemNotices({
       getSecret: (key) => wfClient.getAddonSecret('simplefin-sync', key),
       setSecret: (key, value) => wfClient.setAddonSecret('simplefin-sync', key, value),
@@ -1481,7 +1489,7 @@ async function runCompanionSyncOnce(opts: { force?: boolean; manual?: boolean })
           : null;
       },
       log,
-    }, result.connectionProblems);
+    }, shownProblems);
 
     try {
       const tgRaw = await wfClient.getAddonSecret('simplefin-sync', 'telegram_config');
