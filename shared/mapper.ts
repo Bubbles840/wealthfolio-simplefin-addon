@@ -1,4 +1,5 @@
 import { REIMBURSEMENT_SUBTYPE } from './cash-flow-bucket.js';
+import { feeReversalAccount, isFeeReversalWording, FEE_REVERSAL_SUBTYPE } from './fee-reversal.js';
 import type { ActivityType, MappingRule } from './types';
 
 /**
@@ -31,6 +32,9 @@ export interface MappedType {
    *  decides whether it stands. Issue #13: "WIRE TRANSFER TO ACME LLC", a wire
    *  to a third party, was held forever waiting for an other half. */
   genericTransferWording?: true;
+  /** A bank fee coming back (#79): CREDIT/REFUND, never paired as a transfer and
+   *  never typed a transfer by a learned name. */
+  feeReversal?: true;
 }
 
 export type MappingRuleProblem = 'empty' | 'matches-everything';
@@ -135,6 +139,10 @@ export function mapTransactionWithSource(
 ): MappedType {
   const ruled = matchRule(description, rules, amount, wfAccountId, txDay);
   if (ruled) return { type: ruled.activityType, fromRule: true, ...(ruled.subtype ? { subtype: ruled.subtype } : {}), ...(ruled.since ? { createOnly: true as const } : {}) };
+
+  if (amount > 0 && feeReversalAccount(accountType) && isFeeReversalWording(description)) {
+    return { type: 'CREDIT', fromRule: false, subtype: FEE_REVERSAL_SUBTYPE, feeReversal: true };
+  }
 
   if (accountType === 'CREDIT_CARD') {
     if (amount < 0) return { type: 'WITHDRAWAL', fromRule: false };
