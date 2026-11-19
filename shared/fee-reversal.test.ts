@@ -31,4 +31,14 @@ describe('fee reversal wording (#79)', () => {
     expect(isFeeWording('COFFEE SHOP')).toBe(false);
     expect(isFeeWording('FEEDBACK SURVEY')).toBe(false);
   });
+
+  it('counts "credit" only directly after a fee word', () => {
+    for (const t of ['LATE FEE CREDIT', 'SERVICE CHARGE CREDIT', 'ATM FEES CREDIT', 'late charge  credit']) {
+      expect(isFeeReversalWording(t)).toBe(true);
+      expect(isFeeWording(t)).toBe(false);
+    }
+    for (const t of ['CONSULTING FEE ACH CREDIT', 'ACH CREDIT PAYROLL FEE', 'CREDIT UNION TRANSFER FEE']) {
+      expect(isFeeReversalWording(t)).toBe(false);
+    }
+  });
 });

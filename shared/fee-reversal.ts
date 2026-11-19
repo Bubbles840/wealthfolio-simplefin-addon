@@ -7,8 +7,10 @@
 /** A fee word as a whole word, so "COFFEE" never matches. */
 export const FEE_WORDS = /\bfees?\b|\bservice\s+charge\b|\blate\s+charge\b/i;
 
-/** A word saying the fee came back. */
-export const FEE_REVERSAL_WORDS = /\b(?:waived|waiver|reversal|reversed|refund|refunded|rebate|reimbursement|adjustment|adj|credit)\b/i;
+/** A word saying the fee came back. "credit" counts only directly after a fee
+ *  word ("FEE CREDIT", "SERVICE CHARGE CREDIT"): "ACH CREDIT" prefixes ordinary
+ *  incoming deposits, so a bare "credit" is not evidence. */
+export const FEE_REVERSAL_WORDS = /\b(?:waived|waiver|reversal|reversed|refund|refunded|rebate|reimbursement|adjustment|adj)\b|(?:\bfees?|\bservice\s+charge|\blate\s+charge)\s+credit\b/i;
 
 /** The subtype a fee reversal carries. Never REIMBURSEMENT (that means "payback"). */
 export const FEE_REVERSAL_SUBTYPE = 'REFUND';
