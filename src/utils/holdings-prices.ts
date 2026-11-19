@@ -50,7 +50,7 @@
  * snapshot for this sync (writing it without knowing which holdings are on
  * per-account assets would move them back), and a failed price is logged.
  */
-import { carriedCost, scopedSymbol, type FeedPrice, type HoldingsSnapshot } from '../../shared/holdings';
+import { carriedCost, sameCurrency, scopedSymbol, type FeedPrice, type HoldingsSnapshot } from '../../shared/holdings';
 import type { HoldingsSyncOutcome } from '../../shared/sync-host';
 
 /** How long a MARKET asset must have had no quote before it is priced from the feed. */
@@ -70,16 +70,6 @@ export interface HeldAsset {
 }
 
 const modeOf = (h: HeldAsset | undefined) => h?.instrument?.pricingMode ?? undefined;
-
-/** Two currency codes for the same unit. Case is ignored, except in a code that
- *  mixes it: a minor unit (GBp, pence; ZAc, cents) is not its major one. */
-export function sameCurrency(a: string, b: string): boolean {
-  const x = a.trim();
-  const y = b.trim();
-  if (x === y) return true;
-  const mixed = (c: string) => c !== c.toUpperCase() && c !== c.toLowerCase();
-  return !mixed(x) && !mixed(y) && x.toUpperCase() === y.toUpperCase();
-}
 
 /** The host calls this needs, as the SDK names them. */
 export interface PricingApi {
