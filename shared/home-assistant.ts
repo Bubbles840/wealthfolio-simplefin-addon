@@ -38,6 +38,7 @@ import {
   formatLargeTransactionAlert, formatRefusedCreatesAlert, formatStuckTransferAlert, importNoticeRows,
 } from './telegram.js';
 import { alertLink } from './reports-archive.js';
+import { connectionProblemText, connectionProblemTitle } from './connection-problems.js';
 
 export const HA_CONFIG_SECRET_KEY = 'homeassistant_config';
 export const HA_OUTBOX_SECRET_KEY = 'ha_outbox';
@@ -155,6 +156,7 @@ const HA_KINDS: Record<string, string> = {
   unmapped: 'new_account',
   import: 'new_transactions',
   synchealth: 'sync_failing',
+  sfproblem: 'connection_problem',
 };
 
 export function haKind(entry: Pick<HaEntry, 'id'>): string {
@@ -395,6 +397,17 @@ export function syncAlertEntries(
       createdAt: now.toISOString(),
       keys,
       link: alertLink('settings'),
+    });
+  }
+  // SimpleFin connection problems (#81). Home Assistant ignores an id it has
+  // seen for 30 days, so the id carries the episode (`firstSeenAt`): a problem
+  // that clears and returns alerts again. There is no "updating again" alert.
+  for (const p of result.connectionProblems ?? []) {
+    out.push({
+      id: `sfproblem:${p.key}@${p.firstSeenAt}`,
+      title: connectionProblemTitle(p),
+      message: connectionProblemText(p),
+      createdAt: now.toISOString(),
     });
   }
   const announced = imports.notifyOnImport ? importNoticeRows(result.importedTransactions, imports) : [];

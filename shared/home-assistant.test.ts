@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
-  drainHaOutbox, enqueueHa, HA_ADDON_QUEUE_SECRET_KEY, HA_CONFIG_SECRET_KEY, HA_OUTBOX_SECRET_KEY, HA_PENDING_LIMIT,
+  drainHaOutbox, enqueueHa, haKind, HA_ADDON_QUEUE_SECRET_KEY, HA_CONFIG_SECRET_KEY, HA_OUTBOX_SECRET_KEY, HA_PENDING_LIMIT,
   HA_RETRY_BASE_MS, HA_RETRY_MAX_MS, haChangedSinceFailure, haConfigComplete, haConfigKey, haDrainMode, haPendingView, haReachProblem,
   haTestEntry, haUrlProblem, homeAssistantConfigForEditing, homeAssistantRequest, mergeDrained, nextHaStatus,
   parseHaOutbox, parseHomeAssistantConfig, plainText, queueHaEntries, queueHaEntriesStrict,
@@ -8,6 +8,7 @@ import {
   type HaEntry, type HaOutbox, type HaSecretIo,
 } from './home-assistant.js';
 import type { SyncResult } from './sync-core.js';
+import type { ConnectionProblem } from './connection-problems.js';
 
 const NOW = new Date('2027-03-15T15:00:00Z');
 const DAY = 24 * 60 * 60 * 1000;
@@ -587,5 +588,31 @@ describe('queueHaEntriesStrict (Send a test)', () => {
 
   it('resolves queued when it queued', async () => {
     expect(await queueHaEntriesStrict(memoryIo(), 'addon', () => [haTestEntry(NOW)], NOW)).toBe('queued');
+  });
+});
+
+describe('syncAlertEntries — SimpleFin connection problems (#81)', () => {
+  const signin: ConnectionProblem = {
+    key: 'con.auth:C1', code: 'con.auth', kind: 'signin', connectionName: 'Fidelity NetBenefits', sfinAccountIds: ['a1'],
+    message: 'Fidelity NetBenefits: Authentication required', firstSeenAt: '2027-03-15T09:00:00.000Z', lastSeenAt: NOW.toISOString(),
+  };
+
+  it('alerts once per episode: the id carries when the problem started', () => {
+    const [e] = syncAlertEntries(emptyResult({ connectionProblems: [signin] }), NOW, nothingKnown, IMPORTS_OFF);
+    expect(e).toEqual({
+      id: 'sfproblem:con.auth:C1@2027-03-15T09:00:00.000Z',
+      title: 'Fidelity NetBenefits needs you to sign in again',
+      message: "Fidelity NetBenefits needs you to sign in again at SimpleFIN Bridge. Until you do, its accounts show the last figures SimpleFin got, not today's.",
+      createdAt: NOW.toISOString(),
+      link: expect.stringContaining('home'),
+    });
+    expect(haKind(e)).toBe('connection_problem');
+    const [again] = syncAlertEntries(emptyResult({ connectionProblems: [{ ...signin, firstSeenAt: '2027-03-20T09:00:00.000Z' }] }), NOW, nothingKnown, IMPORTS_OFF);
+    expect(again.id).not.toBe(e.id);
+  });
+
+  it('says nothing for a run that read no problems', () => {
+    expect(syncAlertEntries(emptyResult(), NOW, nothingKnown, IMPORTS_OFF)).toEqual([]);
+    expect(syncAlertEntries(emptyResult({ connectionProblems: [] }), NOW, nothingKnown, IMPORTS_OFF)).toEqual([]);
   });
 });
