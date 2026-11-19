@@ -50,18 +50,34 @@ describe('fileFeeReversals (#79)', () => {
     });
   });
 
-  it('files over a leftover income category, leaves it in place, and Undo takes only the filing off', async () => {
+  it('files over a leftover income category without touching it, and Undo/Redo/Undo only touch the spending taxonomy', async () => {
     const { deps, drafts } = make([fee(), refund({ income: INCOME })]);
     await fileFeeReversals(deps);
+    expect(deps.assign).toHaveBeenCalledTimes(1);
     expect(deps.assign).toHaveBeenCalledWith('r', 'cat-fees');
-    expect(drafts[0].before).toMatchObject({ categoryId: 'cat-inc', categoryName: 'Refunds', taxonomyId: 'income_sources' });
-    const undo = planChangeUndo(stampChange(drafts[0], 'companion', new Date('2026-11-18T12:00:00Z')), 'undo', {
-      assignments: [{ taxonomyId: 'income_sources', categoryId: 'cat-inc' }, { taxonomyId: 'spending_categories', categoryId: 'cat-fees' }],
-    }, { latest: null });
-    expect(undo.ok && undo.plan.steps).toEqual([
-      { do: 'set-tx', txKey: KEY, flag: 'noAutoFile', label: expect.any(String) },
-      { do: 'unassign', activityId: 'r', taxonomyId: 'spending_categories' },
-    ]);
+    expect(drafts[0].before).toMatchObject({ categoryId: null });
+    expect(drafts[0].before).not.toHaveProperty('assignments');
+    const entry = stampChange(drafts[0], 'companion', new Date('2026-11-18T12:00:00Z'));
+    const inc = { taxonomyId: 'income_sources', categoryId: 'cat-inc' };
+    const spend = { taxonomyId: 'spending_categories', categoryId: 'cat-fees' };
+    const touched: string[] = [];
+    let latest: typeof entry | null = null;
+    for (const [op, assignments] of [['undo', [inc, spend]], ['redo', [inc]], ['undo', [inc, spend]]] as const) {
+      const d = planChangeUndo(entry, op, { assignments: [...assignments] }, { latest });
+      expect(d.ok).toBe(true);
+      if (!d.ok) return;
+      for (const step of d.plan.steps) if ('taxonomyId' in step) touched.push(step.taxonomyId);
+      latest = { ...entry, reverses: { id: entry.id, op: op === 'undo' ? 'undo' : 'redo' } };
+    }
+    expect(touched.length).toBeGreaterThan(0);
+    expect(new Set(touched)).toEqual(new Set(['spending_categories']));
+  });
+
+  it('files a keyless row when nothing was ever undone', async () => {
+    const { deps, drafts } = make([fee(), refund()], { sfinAccountOf: () => undefined });
+    expect(await fileFeeReversals(deps)).toEqual({ filed: 1 });
+    expect(deps.assign).toHaveBeenCalledWith('r', 'cat-fees');
+    expect(drafts[0].subject.txKeys).toBeUndefined();
   });
 
   it('never refiles a refund whose filing was undone, nor any keyless row while one is', async () => {

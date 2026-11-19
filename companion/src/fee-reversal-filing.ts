@@ -2,8 +2,10 @@
  * Files each fee reversal under the spending category of the fee it reverses
  * (#79). Written through the same assignment path as the Amazon and payback
  * filings (never source 'rule', so the story names the sync as the filer).
- * The leftover income category stays in place; Undo restores nothing but
- * takes the spending filing off and sets noAutoFile.
+ * The income category is never touched, by the filing or by Undo/Redo: the
+ * entry records `before: null` and no `restore`, so Undo/Redo only act on the
+ * spending taxonomy (a cross-taxonomy move would strand Redo/Undo, since
+ * Wealthfolio refuses an income category on a spending-bucket row).
  */
 import { categoryFiledChange, type ChangeDraft } from '../../shared/change-entries.js';
 import { FEE_REVERSAL_FILING_WHY, planFeeReversalFilings } from '../../shared/fee-reversal.js';
@@ -43,7 +45,6 @@ export async function fileFeeReversals(deps: FeeReversalFilingDeps): Promise<{ f
         continue;
       }
       filed++;
-      const income = refund.income;
       try {
         deps.record(categoryFiledChange({
           actor: 'auto',
@@ -53,10 +54,9 @@ export async function fileFeeReversals(deps: FeeReversalFilingDeps): Promise<{ f
           description: refund.description,
           amountCents: refund.amountCents,
           date: refund.date,
-          before: income ? { ...income, taxonomyId: 'income_sources' } : null,
+          before: null,
           after: { ...category, taxonomyId: 'spending_categories' },
           why: FEE_REVERSAL_FILING_WHY,
-          ...(income ? { restore: [{ taxonomyId: 'income_sources', categoryId: income.categoryId }] } : {}),
         }));
       } catch (e) {
         deps.log(`Fee reversal filing: change log skipped for ${refund.activityId}: ${errText(e)}`);

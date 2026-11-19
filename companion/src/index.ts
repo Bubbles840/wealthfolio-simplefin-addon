@@ -843,29 +843,6 @@ async function pollVenmoMail(source: MailSource, store: RestSyncStore, wfClient:
  * behaviour is precisely what wants fixing, and an order email can arrive days
  * after the charge it belongs to.
  */
-async function fileFeeReversalRefunds(wfClient: WealthfolioClient, run?: string, overrides: SyncOverrides = emptySyncOverrides()): Promise<void> {
-  const end = new Date();
-  const start = new Date(end.getFullYear(), end.getMonth(), end.getDate() - 90);
-  const mapping = parseSecretJson<Record<string, string>>(
-    await wfClient.getAddonSecret('simplefin-sync', 'account_mapping').catch(() => null),
-    'account_mapping',
-  ) ?? {};
-  const sfinOf = new Map(Object.entries(mapping).map(([sfin, wf]) => [wf, sfin]));
-  const changes: ChangeDraft[] = [];
-  const res = await fileFeeReversals({
-    rows: async () => getNativeFeeReversalRows(wealthfolioDbPath(), toDateString(start), toDateString(new Date(end.getFullYear(), end.getMonth(), end.getDate() + 1))),
-    assign: (activityId, categoryId) => wfClient.assignActivityCategory(activityId, SPENDING_TAXONOMY_ID, categoryId),
-    record: (draft) => changes.push(draft),
-    sfinAccountOf: (wfAccountId) => sfinOf.get(wfAccountId),
-    noAutoFile: (txKey) => hasTxOverride(overrides, txKey, 'noAutoFile'),
-    anyNoAutoFile: Object.keys(overrides.tx).some((key) => hasTxOverride(overrides, key, 'noAutoFile')),
-    log,
-    today: toDateString(end),
-  });
-  await recordCompanionChanges(wfClient, changes, run).catch((e) => log(`Change log skipped: ${formatError(e)}`));
-  if (res.filed > 0) log(`Filed ${res.filed} fee reversal(s) under the category of the fee they reverse.`);
-}
-
 async function fileAmazonLabelledCharges(wfClient: WealthfolioClient, run?: string, overrides: SyncOverrides = emptySyncOverrides()): Promise<void> {
   const dbPath = wealthfolioDbPath();
   const end = new Date();
@@ -909,6 +886,30 @@ async function fileAmazonLabelledCharges(wfClient: WealthfolioClient, run?: stri
   for (const { value, filedUnder } of res.ambiguousCategories) {
     log(`Amazon filing: "${value}" fits more than one category; filed under ${filedUnder} as before. Pick the one you mean on the Amazon card.`);
   }
+}
+
+/** Files each fee-reversal refund under its fee's spending category (#79); the last 90 days, never throws. */
+async function fileFeeReversalRefunds(wfClient: WealthfolioClient, run?: string, overrides: SyncOverrides = emptySyncOverrides()): Promise<void> {
+  const end = new Date();
+  const start = new Date(end.getFullYear(), end.getMonth(), end.getDate() - 90);
+  const mapping = parseSecretJson<Record<string, string>>(
+    await wfClient.getAddonSecret('simplefin-sync', 'account_mapping').catch(() => null),
+    'account_mapping',
+  ) ?? {};
+  const sfinOf = new Map(Object.entries(mapping).map(([sfin, wf]) => [wf, sfin]));
+  const changes: ChangeDraft[] = [];
+  const res = await fileFeeReversals({
+    rows: async () => getNativeFeeReversalRows(wealthfolioDbPath(), toDateString(start), toDateString(new Date(end.getFullYear(), end.getMonth(), end.getDate() + 1))),
+    assign: (activityId, categoryId) => wfClient.assignActivityCategory(activityId, SPENDING_TAXONOMY_ID, categoryId),
+    record: (draft) => changes.push(draft),
+    sfinAccountOf: (wfAccountId) => sfinOf.get(wfAccountId),
+    noAutoFile: (txKey) => hasTxOverride(overrides, txKey, 'noAutoFile'),
+    anyNoAutoFile: Object.keys(overrides.tx).some((key) => hasTxOverride(overrides, key, 'noAutoFile')),
+    log,
+    today: toDateString(end),
+  });
+  await recordCompanionChanges(wfClient, changes, run).catch((e) => log(`Change log skipped: ${formatError(e)}`));
+  if (res.filed > 0) log(`Filed ${res.filed} fee reversal(s) under the category of the fee they reverse.`);
 }
 
 /**
