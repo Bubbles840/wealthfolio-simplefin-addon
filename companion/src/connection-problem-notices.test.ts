@@ -29,7 +29,7 @@ describe('sendConnectionProblemNotices (#81)', () => {
     await sendConnectionProblemNotices(deps, [fidelity]);
     await sendConnectionProblemNotices(deps, [fidelity]);
     expect(sent).toEqual([
-      "*Fidelity\\_NetBenefits needs you to sign in again*\nFidelity\\_NetBenefits needs you to sign in again at SimpleFIN Bridge. Until you do, its accounts show the last figures SimpleFin got, not today's.",
+      "*SimpleFin connection problem*\nFidelity\\_NetBenefits needs you to sign in again\nFidelity\\_NetBenefits needs you to sign in again at SimpleFIN Bridge. Until you do, its accounts show the last figures SimpleFin got, not today's.",
     ]);
     expect(ledger()).toEqual([fidelity]);
   });
@@ -75,5 +75,58 @@ describe('sendConnectionProblemNotices (#81)', () => {
     const { deps } = make({ getSecret: vi.fn(async () => { throw new Error('down'); }) });
     await expect(sendConnectionProblemNotices(deps, [fidelity])).resolves.toBeUndefined();
     expect(deps.log).toHaveBeenCalled();
+  });
+
+  it('keeps untrusted names outside every bold or italic entity', async () => {
+    const starry = { ...fidelity, key: 'con.auth:C2', connectionName: 'Odd*Bank_One' };
+    const { deps, sent } = make();
+    await sendConnectionProblemNotices(deps, [fidelity, starry]);
+    expect(sent).toHaveLength(1);
+    expect(sent[0]).toContain('Odd\\*Bank\\_One');
+    const withoutEscapes = sent[0].replace(/\\./g, '');
+    expect(withoutEscapes.match(/\*[^*]*\*/g)).toEqual(['*SimpleFin connection problem*']);
+    expect(withoutEscapes).not.toMatch(/_/);
+  });
+
+  it('splits many problems into messages under 4096 chars and records only confirmed batches', async () => {
+    const many = Array.from({ length: 20 }, (_, i) => ({ ...fidelity, key: `con.auth:C${i}`, code: 'act.failed', kind: 'other' as const, connectionName: `Bank${i}`, message: 'x'.repeat(190) }));
+    const ok = make();
+    await sendConnectionProblemNotices(ok.deps, many);
+    expect(ok.sent.length).toBeGreaterThanOrEqual(2);
+    for (const m of ok.sent) expect(m.length).toBeLessThan(4096);
+    expect(ok.ledger()).toHaveLength(20);
+
+    let n = 0;
+    const send = vi.fn(async () => (++n === 1 ? { ok: true } : { ok: false, description: 'boom' }));
+    const bad = make({ telegram: vi.fn(async () => ({ send })) });
+    await sendConnectionProblemNotices(bad.deps, many);
+    const firstBatch = bad.ledger();
+    expect(firstBatch.length).toBeGreaterThan(0);
+    expect(firstBatch.length).toBeLessThan(20);
+    expect(firstBatch.map((p: ConnectionProblem) => p.key)).toEqual(many.slice(0, firstBatch.length).map((p) => p.key));
+  });
+
+  it('announces a problem again when it returns after a confirmed clear', async () => {
+    const { deps, sent } = make();
+    await sendConnectionProblemNotices(deps, [fidelity]);
+    await sendConnectionProblemNotices(deps, []);
+    await sendConnectionProblemNotices(deps, [fidelity]);
+    expect(sent).toHaveLength(3);
+    expect(sent[1]).toBe('Fidelity\\_NetBenefits is updating again.');
+  });
+
+  it('sends both fresh and cleared in one run and records the right ledger', async () => {
+    const other = { ...fidelity, key: 'act.failed:a2', connectionName: 'Chase' };
+    const { deps, sent, ledger } = make({}, [other]);
+    await sendConnectionProblemNotices(deps, [fidelity]);
+    expect(sent).toHaveLength(2);
+    expect(sent[1]).toBe('Chase is updating again.');
+    expect(ledger()).toEqual([fidelity]);
+  });
+
+  it('logs once when Telegram is not configured and there is something to send', async () => {
+    const { deps } = make({ telegram: vi.fn(async () => null) });
+    await sendConnectionProblemNotices(deps, [fidelity]);
+    expect(deps.log).toHaveBeenCalledWith('Telegram not configured, so no connection-problem notice was sent.');
   });
 });

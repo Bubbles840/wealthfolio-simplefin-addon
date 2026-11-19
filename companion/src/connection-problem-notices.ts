@@ -18,6 +18,31 @@ export interface ProblemNoticeDeps {
   log(msg: string): void;
 }
 
+const FRESH_HEADER = '*SimpleFin connection problem*';
+const MAX_MESSAGE_CHARS = 3500;
+
+/** Groups items into messages under MAX_MESSAGE_CHARS, each starting with `prefix`. */
+function batches(
+  items: readonly ConnectionProblem[],
+  render: (p: ConnectionProblem) => string,
+  sep: string,
+  prefix: string,
+): Array<{ text: string; items: ConnectionProblem[] }> {
+  const groups: Array<{ parts: string[]; items: ConnectionProblem[]; len: number }> = [];
+  for (const p of items) {
+    const part = render(p);
+    let g = groups[groups.length - 1];
+    if (!g || g.len + sep.length + part.length > MAX_MESSAGE_CHARS) {
+      g = { parts: [], items: [], len: prefix.length };
+      groups.push(g);
+    }
+    g.len += (g.parts.length ? sep.length : 0) + part.length;
+    g.parts.push(part);
+    g.items.push(p);
+  }
+  return groups.map((g) => ({ text: prefix + g.parts.join(sep), items: g.items }));
+}
+
 function readLedger(raw: string | null): ConnectionProblem[] {
   if (!raw) return [];
   try {
@@ -50,21 +75,30 @@ export async function sendConnectionProblemNotices(
 
     if (fresh.length > 0 || cleared.length > 0) {
       const tg = await deps.telegram();
-      if (tg) {
-        if (fresh.length > 0) {
-          const text = fresh
-            .map((p) => `*${escapeMarkdown(connectionProblemTitle(p))}*\n${escapeMarkdown(connectionProblemText(p))}`)
-            .join('\n\n');
-          const res = await tg.send(text);
-          if (res.ok) next = [...next, ...fresh];
-          else deps.log(`Connection problem notice failed to send, will retry next sync: ${res.description ?? 'unknown error'}`);
-        }
-        if (cleared.length > 0) {
-          const res = await tg.send(cleared.map((p) => escapeMarkdown(connectionProblemClearedText(p))).join('\n'));
+      if (!tg) {
+        deps.log('Telegram not configured, so no connection-problem notice was sent.');
+      } else {
+        // Only the fixed header is bold. Names and messages come from outside
+        // and are escaped but never inside an entity: legacy Markdown ignores
+        // backslash escapes there, so a "_" or "*" would print a stray
+        // backslash or break the message.
+        for (const batch of batches(fresh, (p) => `${escapeMarkdown(connectionProblemTitle(p))}\n${escapeMarkdown(connectionProblemText(p))}`, '\n\n', `${FRESH_HEADER}\n`)) {
+          const res = await tg.send(batch.text);
           if (!res.ok) {
-            deps.log(`Connection problem cleared notice failed to send, will retry next sync: ${res.description ?? 'unknown error'}`);
-            next = [...next, ...cleared];
+            deps.log(`Connection problem notice failed to send, will retry next sync: ${res.description ?? 'unknown error'}`);
+            break;
           }
+          next = [...next, ...batch.items];
+        }
+        let clearedFailed = false;
+        for (const batch of batches(cleared, (p) => escapeMarkdown(connectionProblemClearedText(p)), '\n', '')) {
+          if (!clearedFailed) {
+            const res = await tg.send(batch.text);
+            if (res.ok) continue;
+            deps.log(`Connection problem cleared notice failed to send, will retry next sync: ${res.description ?? 'unknown error'}`);
+            clearedFailed = true;
+          }
+          next = [...next, ...batch.items];
         }
       }
     }
