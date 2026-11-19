@@ -571,13 +571,24 @@ describe('syncHoldingsWithFeedPrices', () => {
         expect(wf.pricing.updateQuote).toHaveBeenCalledWith(fund.id, expect.objectContaining({ close: 11.5, currency: 'CAD' }));
       });
 
-      it('carries nothing when the price history cannot be read, as for a fund with no price', async () => {
+      it('skips the snapshot, keeping the held cost, when the price history cannot be read', async () => {
         const { wf } = withHandPriced();
         wf.pricing.getHistory.mockRejectedValue(new Error('timeout'));
-        const r = await contribute(wf);
+        const log = vi.fn();
 
-        expect(r).toEqual({ imported: 1, skipped: 0, unresolvedSymbols: [] });
-        expect(written(wf, NEXT).avgCost).toBeUndefined();
+        await expect(contribute(wf, log)).rejects.toThrow('could not read the price history of PLAN FUND: timeout');
+        expect(wf.io.importSnapshots).not.toHaveBeenCalled();
+        expect(wf.snapshots.get(`wf-a|${DAY}`)).toMatchObject({ positions: [expect.objectContaining({ avgCost: '10' })] });
+        expect(log).toHaveBeenCalledWith(expect.stringContaining('could not read the price history of PLAN FUND: timeout'));
+      });
+
+      it('names the fund when putting the price back is refused with no reason', async () => {
+        const { wf } = withHandPriced();
+        wf.pricing.updateQuote.mockRejectedValue(undefined);
+        const r = await contribute(wf, vi.fn());
+
+        expect(r).toMatchObject({ imported: 1, priceNotRestored: ['PLAN FUND'] });
+        expect(wf.pricing.updateQuote).toHaveBeenCalledTimes(2);
       });
 
       it('reads no price on a day nothing changed', async () => {

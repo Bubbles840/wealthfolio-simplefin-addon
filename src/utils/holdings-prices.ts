@@ -372,11 +372,14 @@ export async function syncHoldingsWithFeedPrices(
   /** The price an import on a MANUAL asset overwrites with the cost, read before
    *  it (only when a snapshot is written): undefined when there is none or
    *  nothing to read, null when the history could not be read. */
-  const readPrice = async (assetId: string | undefined): Promise<KeptPrice | undefined | null> => {
+  let readFailure = '';
+  const readPrice = async (assetId: string | undefined, symbol: string): Promise<KeptPrice | undefined | null> => {
     if (!write || !assetId) return undefined;
     try {
       return priceToRestore(await pricing.getHistory(assetId), snapshot.date);
-    } catch {
+    } catch (e: any) {
+      readFailure = String(e?.message ?? e);
+      log(`[simplefin-sync] could not read the price history of ${symbol}: ${readFailure}`);
       return null;
     }
   };
@@ -397,7 +400,7 @@ export async function syncHoldingsWithFeedPrices(
       if (p.avgCost) {
         // A cost SimpleFin sent: the import still writes it as a hand-priced asset's price.
         if (byHand) {
-          const price = await readPrice(sharedId);
+          const price = await readPrice(sharedId, p.symbol);
           if (price !== undefined) restores.push({ assetId: sharedId!, symbol: p.symbol, currency: p.currency, price });
         }
       } else {
@@ -416,7 +419,10 @@ export async function syncHoldingsWithFeedPrices(
         if (carryable && !(h!.localCurrency && p.currency && !sameCurrency(h!.localCurrency, p.currency))) {
           const carried = carriedCost(p.quantity, { quantity: h!.quantity, cost: h!.costBasis?.local }, priced.get(key)?.price);
           let price: KeptPrice | null | undefined;
-          if (byHand && (carried.ask || carried.avgCost)) price = await readPrice(sharedId);
+          if (byHand && (carried.ask || carried.avgCost)) price = await readPrice(sharedId, p.symbol);
+          // Unreadable: writing the snapshot would store cost 0 and lose the cost
+          // for good, so the account's snapshot waits for the next sync.
+          if (price === null) throw new Error(`could not read the price history of ${p.symbol}: ${readFailure}`);
           // A hand-priced fund with no usable price: nothing carried, nothing asked.
           if (!byHand || price) {
             if (carried.ask) costUnknown.push(p.symbol);
@@ -431,7 +437,7 @@ export async function syncHoldingsWithFeedPrices(
       // MANUAL asset): put back the price it had.
       if (kept.has(key) && out.avgCost) {
         const ownId = ids.get(symbolKey(out.symbol));
-        const price = await readPrice(ownId);
+        const price = await readPrice(ownId, p.symbol);
         if (price !== undefined) restores.push({ assetId: ownId!, symbol: p.symbol, currency: p.currency, price });
       }
     }
@@ -463,20 +469,21 @@ export async function syncHoldingsWithFeedPrices(
   const priceNotRestored: string[] = [];
   if (imported > 0) {
     for (const r of restores) {
+      let restored = false;
       let failure: unknown = r.price === null ? new Error('its price history could not be read') : undefined;
       if (r.price) {
         const quote = manualQuote(r.assetId, snapshot.date, String(r.price.close), r.price.currency ?? r.currency, now, r.price.notes);
         for (let attempt = 0; attempt < 2; attempt++) {
           try {
             await pricing.updateQuote(r.assetId, quote);
-            failure = undefined;
+            restored = true;
             break;
           } catch (e) {
             failure = e;
           }
         }
       }
-      if (failure !== undefined) {
+      if (!restored) {
         log(`[simplefin-sync] could not put back the price of ${r.symbol}: ${(failure as any)?.message ?? failure}`);
         priceNotRestored.push(r.symbol);
       }
