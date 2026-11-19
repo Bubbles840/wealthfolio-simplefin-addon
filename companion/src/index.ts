@@ -181,6 +181,7 @@ import { createCategorizeController, SPENDING_TAXONOMY_ID } from './categorize.j
 import { createAmazonLabelMenu, type AmazonLabelMenu } from './amazon-labels.js';
 import { fileAmazonCharges } from './amazon-filing.js';
 import { fileFeeReversals } from './fee-reversal-filing.js';
+import { sendConnectionProblemNotices } from './connection-problem-notices.js';
 import { companionChangeSink, readCompanionChangeLog, recordCompanionChanges } from './change-log-host.js';
 import { editSyncOverrides, emptySyncOverrides, hasAccountOverride, hasTxOverride, loadSyncOverrides, notTransferEdit, syncOverridesOrEmpty, type SyncOverrides } from '../../shared/sync-overrides.js';
 import { TRANSFER_NAMES_SECRET_KEY } from '../../shared/transfer-names.js';
@@ -1466,6 +1467,21 @@ async function runCompanionSyncOnce(opts: { force?: boolean; manual?: boolean })
     // below: this function does its own config check, because it must not
     // record an account as announced when Telegram is switched off.
     await sendUnmappedAccountsNotice(wfClient, result.unmappedAccounts);
+
+    // Announced once per problem key, and the "updating again" notice goes
+    // only for a key announced earlier. A run that read no record passes
+    // undefined and touches nothing.
+    await sendConnectionProblemNotices({
+      getSecret: (key) => wfClient.getAddonSecret('simplefin-sync', key),
+      setSecret: (key, value) => wfClient.setAddonSecret('simplefin-sync', key, value),
+      telegram: async () => {
+        const tg = parseSecretJson<any>(await wfClient.getAddonSecret('simplefin-sync', 'telegram_config').catch(() => null), 'telegram_config');
+        return tg?.botToken && tg?.chatId && tg.enabled !== false
+          ? { send: (text: string) => sendTelegramMessage(tg.botToken, tg.chatId, text) }
+          : null;
+      },
+      log,
+    }, result.connectionProblems);
 
     try {
       const tgRaw = await wfClient.getAddonSecret('simplefin-sync', 'telegram_config');
