@@ -22,7 +22,7 @@ vi.mock('node:sqlite', () => ({
   },
 }));
 
-import { getNativeBudgetSpend, getNativeSpendingHistoryStart, getNativeSpendMatrix, getNativeUncategorizedSpending, readSpendLines } from './sqlite-native.js';
+import { getNativeBudgetSpend, getNativeSpendingHistoryStart, getNativeSpendMatrix, getNativeUncategorizedSpending, getNativeFeeReversalRows, readSpendLines } from './sqlite-native.js';
 
 let hasSqlite3 = true;
 try { execFileSync('sqlite3', ['-version'], { stdio: 'ignore' }); } catch { hasSqlite3 = false; }
@@ -64,6 +64,19 @@ function database(rows: string): string {
 }
 
 describe.skipIf(!hasSqlite3)('the sqlite3 CLI fallback, for real', () => {
+  it('getNativeFeeReversalRows (#79): every column, a note with "|" and a line break included', () => {
+    const path = database(`
+      INSERT INTO taxonomy_categories (id, name, parent_id, taxonomy_id) VALUES ('cat-fees', 'Bank Fees', NULL, 'spending_categories');
+      INSERT INTO activities (id, amount, activity_date, activity_type, notes, account_id, subtype) VALUES
+        ('fee', '35.00', '2026-11-09T12:00:00Z', 'WITHDRAWAL', 'OVERDRAFT FEE | ITEM' || char(10) || '2 · TRN-1', 'acct-cash', NULL),
+        ('refund', '35.00', '2026-11-10T12:00:00Z', 'CREDIT', 'OVERDRAFT FEE REFUND · TRN-2', 'acct-cash', 'REFUND');
+      INSERT INTO activity_taxonomy_assignments (activity_id, category_id, taxonomy_id, source) VALUES ('fee', 'cat-fees', 'spending_categories', 'manual');
+    `);
+    expect(getNativeFeeReversalRows(path, '2026-08-20', '2026-11-19').map((r) => [r.activityId, r.amountCents, r.direction, r.subtype, r.spending?.categoryId ?? null, r.notes])).toEqual([
+      ['fee', 3500, 'out', null, 'cat-fees', 'OVERDRAFT FEE | ITEM 2 · TRN-1'],
+      ['refund', 3500, 'in', 'REFUND', null, 'OVERDRAFT FEE REFUND · TRN-2'],
+    ]);
+  });
   it('getNativeSpendMatrix: one row per category, a transfer-named category counted, an income filing out', () => {
     const path = database(`
       INSERT INTO taxonomy_categories (id, name, parent_id, taxonomy_id) VALUES

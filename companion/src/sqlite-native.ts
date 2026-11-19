@@ -10,6 +10,7 @@ import { execFileSync } from 'child_process';
 import { DatabaseSync } from 'node:sqlite';
 import { descriptionFromComment, PENDING_SUFFIX as PENDING_NOTE_SUFFIX } from '../../shared/sync-core.js';
 import { IN_TRANSIT_COMMENT_PREFIX } from '../../shared/reconcile.js';
+import { FEE_WORDS, type FeeReversalRow } from '../../shared/fee-reversal.js';
 import { cashSignSql } from '../../shared/audit-ledger.js';
 import { CLI_SEPARATOR, isDay, isTrue, NOTES, shiftDay, SPENDING_BUDGET_TARGET_FILTER, tail, TOP_CATEGORY_CTE } from './sqlite-cli-helpers.js';
 import { spendLines, topCategoryId, SPENDING_TAXONOMY, type SpendLine, type SpendRow } from '../../shared/wf-spending.js';
@@ -718,6 +719,87 @@ export function getNativeRuleCategorizedAmazonRows(
       categoryName: String(v[8]),
     };
   });
+}
+
+/** A candidate fee or fee reversal, with the category each taxonomy holds for it. */
+export interface NativeFeeReversalRow extends FeeReversalRow {
+  /** The raw stored note. */
+  notes: string;
+  accountName: string;
+}
+
+/**
+ * Fee-worded rows on tracked cash and card accounts (#79): the fees themselves
+ * and the refunds that reverse them, each with its spending and income
+ * category. The note is the LAST column so the CLI fallback can rejoin a note
+ * that holds the separator.
+ */
+export function getNativeFeeReversalRows(
+  dbPath: string,
+  startInclusive: string,
+  endExclusive: string,
+): NativeFeeReversalRow[] {
+  if (!dbPath || !existsSync(dbPath)) return [];
+  if (!validDateBounds(startInclusive, endExclusive)) return [];
+  const T = hasActivityTypeOverride(dbPath)
+    ? "UPPER(COALESCE(NULLIF(TRIM(a.activity_type_override), ''), a.activity_type, ''))"
+    : "UPPER(COALESCE(a.activity_type, ''))";
+  const NOT_SPLIT = hasSpendingSplits(dbPath)
+    ? 'AND NOT EXISTS (SELECT 1 FROM spending_activity_splits s WHERE s.activity_id = a.id)'
+    : '';
+  const query = `
+    SELECT a.id, COALESCE(a.account_id, ''), COALESCE(ac.name, ''),
+           ROUND(ABS(CAST(a.amount AS REAL)) * 100), substr(a.activity_date, 1, 10),
+           CASE WHEN ${T} IN ('WITHDRAWAL', 'FEE', 'TAX')
+                  OR (${T} = 'INTEREST' AND UPPER(COALESCE(ac.account_type, '')) = 'CREDIT_CARD')
+                THEN 'out' ELSE 'in' END,
+           ${T}, COALESCE(a.subtype, ''),
+           COALESCE(sp.category_id, ''), COALESCE(spc.name, ''),
+           COALESCE(inc.category_id, ''), COALESCE(incc.name, ''),
+           ${NOTES}
+    FROM activities a
+    JOIN accounts ac ON a.account_id = ac.id
+    LEFT JOIN activity_taxonomy_assignments sp ON sp.activity_id = a.id AND sp.taxonomy_id = 'spending_categories'
+    LEFT JOIN taxonomy_categories spc ON spc.id = sp.category_id
+    LEFT JOIN activity_taxonomy_assignments inc ON inc.activity_id = a.id AND inc.taxonomy_id = 'income_sources'
+    LEFT JOIN taxonomy_categories incc ON incc.id = inc.category_id
+    WHERE UPPER(COALESCE(ac.account_type, '')) IN ('CASH', 'CREDIT_CARD')
+      AND a.activity_date >= '${startInclusive}' AND a.activity_date < '${endExclusive}'
+      AND COALESCE(a.source_group_id, '') = ''
+      AND (LOWER(COALESCE(a.notes, '')) LIKE '%fee%' OR LOWER(COALESCE(a.notes, '')) LIKE '%charge%')
+      ${IN_SPENDING_SCOPE}
+      ${NOT_SPLIT}
+    ORDER BY a.activity_date, a.id;
+  `;
+  const rows = queryNativeDb<Record<string, unknown>>(
+    dbPath,
+    'fee-reversals',
+    query,
+    (parts) => (parts.length >= 13
+      ? { c0: parts[0], c1: parts[1], c2: parts[2], c3: parts[3], c4: parts[4], c5: parts[5], c6: parts[6], c7: parts[7], c8: parts[8], c9: parts[9], c10: parts[10], c11: parts[11], c12: tail(parts, 12) }
+      : null),
+    CLI_SEPARATOR,
+  );
+  return rows
+    .map((r): NativeFeeReversalRow => {
+      const v = Object.values(r).map((x) => String(x ?? ''));
+      const notes = v[12];
+      return {
+        activityId: v[0],
+        wfAccountId: v[1],
+        accountName: v[2],
+        notes,
+        description: descriptionFromComment(notes),
+        amountCents: Math.round(Number(v[3]) || 0),
+        date: v[4].slice(0, 10),
+        direction: v[5] === 'out' ? 'out' : 'in',
+        activityType: v[6].toUpperCase(),
+        subtype: v[7] === '' ? null : v[7],
+        spending: v[8] === '' ? null : { categoryId: v[8], categoryName: v[9] },
+        income: v[10] === '' ? null : { categoryId: v[10], categoryName: v[11] },
+      };
+    })
+    .filter((r) => FEE_WORDS.test(r.description));
 }
 
 /** One taxonomy's assignment on a transaction — a transaction can carry more

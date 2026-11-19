@@ -2024,3 +2024,56 @@ describe('getNativeAccountIds (#50: is this file the profile the API serves?)', 
     expect(() => getNativeAccountIds('/nonexistent/wealthfolio.db')).toThrow(NativeDbUnreadableError);
   });
 });
+
+import { getNativeFeeReversalRows } from './sqlite-native.js';
+
+describe('getNativeFeeReversalRows (#79)', () => {
+  it('reads fee-worded rows on tracked cash and card accounts, with each taxonomy’s category', () => {
+    const { path, cleanup } = makeTestDb();
+    try {
+      const db = new DatabaseSync(path);
+      db.exec(`
+        INSERT INTO accounts (id, name, account_type) VALUES ('acct-inv', 'Brokerage', 'SECURITIES'), ('acct-off', 'Untracked', 'CASH');
+        INSERT INTO taxonomy_categories (id, name, parent_id, taxonomy_id) VALUES
+          ('cat-fees', 'Bank Fees', NULL, 'spending_categories'), ('cat-inc', 'Refunds', NULL, 'income_sources');
+        INSERT INTO activities (id, amount, activity_date, activity_type, notes, account_id, subtype, source_group_id) VALUES
+          ('fee',    '35.00', '2026-11-09T12:00:00Z', 'WITHDRAWAL', 'OVERDRAFT FEE · TRN-1', 'acct-cash', NULL, NULL),
+          ('refund', '35.00', '2026-11-10T12:00:00Z', 'CREDIT', 'OVERDRAFT FEE REFUND · TRN-2', 'acct-cash', 'REFUND', NULL),
+          ('late',   '40.00', '2026-11-11T12:00:00Z', 'CREDIT', 'LATE CHARGE ADJUSTMENT · TRN-3', 'acct-card', 'REFUND', NULL),
+          ('coffee', '5.00',  '2026-11-11T12:00:00Z', 'WITHDRAWAL', 'COFFEE SHOP · TRN-4', 'acct-cash', NULL, NULL),
+          ('inv',    '20.00', '2026-11-11T12:00:00Z', 'DEPOSIT', 'ADVISORY FEE REFUND · TRN-5', 'acct-inv', NULL, NULL),
+          ('off',    '9.00',  '2026-11-11T12:00:00Z', 'WITHDRAWAL', 'ATM FEE · TRN-6', 'acct-off', NULL, NULL),
+          ('linked', '3.00',  '2026-11-11T12:00:00Z', 'TRANSFER_OUT', 'TRANSFER FEE · TRN-7', 'acct-cash', NULL, 'g-1'),
+          ('split',  '3.00',  '2026-11-11T12:00:00Z', 'WITHDRAWAL', 'ATM FEE · TRN-8', 'acct-cash', NULL, NULL),
+          ('old',    '3.00',  '2026-07-01T12:00:00Z', 'WITHDRAWAL', 'ATM FEE · TRN-9', 'acct-cash', NULL, NULL);
+        INSERT INTO activity_taxonomy_assignments (activity_id, category_id, taxonomy_id, source) VALUES
+          ('fee', 'cat-fees', 'spending_categories', 'manual'),
+          ('refund', 'cat-inc', 'income_sources', 'manual');
+        INSERT INTO spending_activity_splits (id, activity_id, taxonomy_id, category_id, amount, sort_order) VALUES ('s1', 'split', 'spending_categories', 'cat-fees', '3.00', 0);
+      `);
+      db.close();
+      expect(getNativeFeeReversalRows(path, '2026-08-20', '2026-11-19')).toEqual([
+        {
+          activityId: 'fee', wfAccountId: 'acct-cash', accountName: 'Spend', notes: 'OVERDRAFT FEE · TRN-1', description: 'OVERDRAFT FEE',
+          amountCents: 3500, date: '2026-11-09', direction: 'out', activityType: 'WITHDRAWAL', subtype: null,
+          spending: { categoryId: 'cat-fees', categoryName: 'Bank Fees' }, income: null,
+        },
+        {
+          activityId: 'refund', wfAccountId: 'acct-cash', accountName: 'Spend', notes: 'OVERDRAFT FEE REFUND · TRN-2', description: 'OVERDRAFT FEE REFUND',
+          amountCents: 3500, date: '2026-11-10', direction: 'in', activityType: 'CREDIT', subtype: 'REFUND',
+          spending: null, income: { categoryId: 'cat-inc', categoryName: 'Refunds' },
+        },
+        {
+          activityId: 'late', wfAccountId: 'acct-card', accountName: 'Card', notes: 'LATE CHARGE ADJUSTMENT · TRN-3', description: 'LATE CHARGE ADJUSTMENT',
+          amountCents: 4000, date: '2026-11-11', direction: 'in', activityType: 'CREDIT', subtype: 'REFUND', spending: null, income: null,
+        },
+      ]);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it('reads nothing without a database', () => {
+    expect(getNativeFeeReversalRows('/nonexistent/wealthfolio.db', '2026-08-20', '2026-11-19')).toEqual([]);
+  });
+});
