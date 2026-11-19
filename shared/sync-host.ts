@@ -170,6 +170,9 @@ export interface HoldingsSyncOutcome {
    *  change of 1.5× or more either way, which may be a split). Absent on a host that
    *  does not carry costs. */
   costUnknown?: string[];
+  /** Hand-priced holdings whose price the snapshot import overwrote with their
+   *  average cost and that could not be put back, even on a second try (#83). */
+  priceNotRestored?: string[];
 }
 
 export interface SyncHost {

@@ -4971,6 +4971,9 @@ async function runSyncPass(
         for (const symbol of outcome.costUnknown ?? []) {
           errors.push(`No cost basis for ${symbol} (${sfAccount.name}): SimpleFin sent no cost, and its share count changed in a way the sync cannot cost (a purchase with no single price, or a change of 1.5× or more either way, which may be a split). Enter the cost on the holding in Wealthfolio, or gains for the account stay unknown.`);
         }
+        for (const symbol of outcome.priceNotRestored ?? []) {
+          errors.push(`Couldn't put back the price of ${symbol} after saving its holdings. It shows at its cost until its next price.`);
+        }
         for (const symbol of outcome.unresolvedSymbols) {
           // Deduped across accounts: the same unresolvable ticker in two
           // brokerages is one problem to report, not two.

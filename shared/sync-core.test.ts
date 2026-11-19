@@ -3709,6 +3709,16 @@ describe('holdings snapshots for investment accounts', () => {
     ]);
   });
 
+  it('says when a hand-entered price could not be put back after the holdings were saved', async () => {
+    const seed = brokerageSeed();
+    seed.holdingsOutcome = { imported: 1, skipped: 0, unresolvedSymbols: [], priceNotRestored: ['PLAN FUND'] };
+    const { host, store } = createFakeHost(seed);
+    const result = await runSyncCore(host, store, { force: true });
+    expect(result.errors).toEqual([
+      "Couldn't put back the price of PLAN FUND after saving its holdings. It shows at its cost until its next price.",
+    ]);
+  });
+
   it('dates the holdings pass on a host that can write snapshots', async () => {
     const { host, store } = createFakeHost(brokerageSeed());
     const setHoldingsPassAt = vi.fn(async (_at: Date) => {});
