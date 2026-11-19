@@ -1,6 +1,6 @@
 import type { SimplefinAccountSet } from '../../shared/types';
 import { normalizeAccountSet } from '../../shared/simplefin-payload.js';
-import { requireSimplefinProviderHost } from '../../shared/simplefin-hosts.js';
+import { isSimplefinBridgeHost, requireSimplefinProviderHost } from '../../shared/simplefin-hosts.js';
 
 function requireHttps(url: string): void {
   if (!url.startsWith('https://')) {
@@ -42,6 +42,7 @@ export async function fetchAccountsNode(
   const accountsUrl = new URL(`${base}/accounts`);
   accountsUrl.searchParams.set('start-date', String(Math.floor(startDate.getTime() / 1000)));
   accountsUrl.searchParams.set('pending', '1');
+  if (isSimplefinBridgeHost(accountsUrl.hostname)) accountsUrl.searchParams.set('version', '2');
 
   const res = await fetch(accountsUrl.toString(), {
     headers: { Authorization: `Basic ${credentials}` },

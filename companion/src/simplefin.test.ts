@@ -34,6 +34,14 @@ describe('fetchAccountsNode', () => {
     expect(new URL(url).hostname).toBe('www.lunchflow.app');
   });
 
+  it('asks SimpleFIN Bridge for protocol v2, and sends Lunch Flow the request it always sent (#81)', async () => {
+    mockFetch.mockResolvedValue({ ok: true, json: async () => ({ errors: [], accounts: [] }) });
+    await fetchAccountsNode('https://u:p@beta-bridge.simplefin.org/simplefin', new Date('2024-01-01T00:00:00Z'));
+    await fetchAccountsNode('https://u:p@www.lunchflow.app/simplefin', new Date('2024-01-01T00:00:00Z'));
+    expect(mockFetch.mock.calls[0][0]).toBe('https://beta-bridge.simplefin.org/simplefin/accounts?start-date=1704067200&pending=1&version=2');
+    expect(mockFetch.mock.calls[1][0]).toBe('https://www.lunchflow.app/simplefin/accounts?start-date=1704067200&pending=1');
+  });
+
   it('requests pending transactions', async () => {
     mockFetch.mockResolvedValueOnce({
       ok: true,
