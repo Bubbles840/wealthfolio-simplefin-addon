@@ -1,5 +1,5 @@
 import { afterEach, describe, it, expect, vi } from 'vitest';
-import { accountTag, balanceShowsTotal, carriedCost, feedPrices, holdingsWithoutCost, holdingSymbol, scopedSymbol, toHoldingsSnapshot } from './holdings.js';
+import { accountTag, balanceShowsTotal, carriedCost, feedPrices, holdingsWithoutCost, holdingSymbol, sameAsHeld, sameCurrency, scopedSymbol, toHoldingsSnapshot, type HeldLine, type PositionOnAsset } from './holdings.js';
 import type { SimplefinAccount } from './types.js';
 
 const account = (over: Partial<SimplefinAccount> = {}): SimplefinAccount => ({
@@ -469,6 +469,94 @@ describe('carriedCost', () => {
     expect(carriedCost('10', { quantity: 0, cost: 500 })).toEqual({});
     expect(carriedCost('10', {})).toEqual({});
     expect(carriedCost('10', { quantity: 1e-7, cost: 500 })).toEqual({});
+  });
+});
+
+describe('sameAsHeld', () => {
+  const sec = (id: string, quantity: number | string, cost: number | null = 0, localCurrency = 'USD'): HeldLine =>
+    ({ holdingType: 'security', instrument: { id }, quantity, costBasis: cost === null ? null : { local: cost }, localCurrency });
+  const cashLine = (quantity: number | string, localCurrency: string | null = 'USD'): HeldLine =>
+    ({ holdingType: 'cash', instrument: { id: `cash:${localCurrency}` }, quantity, localCurrency });
+  const pos = (assetId: string | undefined, quantity: string, sentAvgCost?: string): PositionOnAsset =>
+    ({ assetId, quantity, currency: 'USD', ...(sentAvgCost ? { sentAvgCost } : {}) });
+
+  it('is true for the same assets, share counts, sent cost and cash', () => {
+    // a-1 came without a cost: what Wealthfolio holds for it is not compared.
+    expect(sameAsHeld(
+      [pos('a-1', '400.5'), pos('a-2', '10', '50.005')],
+      { USD: '1234.56' },
+      [sec('a-1', 400.5, 999), sec('a-2', 10, 500.05), cashLine(1234.56)],
+    )).toBe(true);
+  });
+
+  it('reads a cash balance of zero as no cash line, the way Wealthfolio reports it', () => {
+    expect(sameAsHeld([pos('a-1', '5')], { USD: '0' }, [sec('a-1', 5)])).toBe(true);
+    expect(sameAsHeld([pos('a-1', '5')], { USD: '0.004' }, [sec('a-1', 5)])).toBe(true);
+    expect(sameAsHeld([pos('a-1', '5')], { USD: '0' }, [sec('a-1', 5), cashLine(5)])).toBe(false);
+    expect(sameAsHeld([pos('a-1', '5')], { USD: '5' }, [sec('a-1', 5)])).toBe(false);
+  });
+
+  it('compares share counts as decimals, and a count the read cannot show exactly as different', () => {
+    expect(sameAsHeld([pos('a-1', '10.10')], { USD: '0' }, [sec('a-1', 10.1)])).toBe(true);
+    expect(sameAsHeld([pos('a-1', '0.123456789')], { USD: '0' }, [sec('a-1', 0.123456789)])).toBe(true);
+    expect(sameAsHeld([pos('a-1', '10.1')], { USD: '0' }, [sec('a-1', '10.10')])).toBe(true);
+    expect(sameAsHeld([pos('a-1', '+010.000')], { USD: '0' }, [sec('a-1', 10)])).toBe(true);
+    expect(sameAsHeld([pos('a-1', '400.5')], { USD: '0' }, [sec('a-1', 400.50000001)])).toBe(false);
+    // 1e-7 has no plain decimal form in JavaScript.
+    expect(sameAsHeld([pos('a-1', '0.0000001')], { USD: '0' }, [sec('a-1', 1e-7)])).toBe(false);
+    expect(sameAsHeld([pos('a-1', '10')], { USD: '0' }, [sec('a-1', 'ten')])).toBe(false);
+  });
+
+  it('needs every position held and every holding in the feed', () => {
+    expect(sameAsHeld([pos('a-1', '5')], { USD: '0' }, [sec('a-1', 5), sec('a-2', 1)])).toBe(false);
+    expect(sameAsHeld([pos('a-1', '5'), pos('a-2', '1')], { USD: '0' }, [sec('a-1', 5)])).toBe(false);
+    expect(sameAsHeld([pos('a-1', '5')], { USD: '0' }, [])).toBe(false);
+    // No shares on either side is the same thing as not held.
+    expect(sameAsHeld([pos('a-1', '5'), pos('a-2', '0')], { USD: '0' }, [sec('a-1', 5)])).toBe(true);
+    expect(sameAsHeld([pos('a-1', '5')], { USD: '0' }, [sec('a-1', 5), sec('a-2', 0)])).toBe(true);
+  });
+
+  it('is false for anything it cannot match one to one', () => {
+    // An asset that does not exist yet (a first move, a new ticker).
+    expect(sameAsHeld([pos(undefined, '5')], { USD: '0' }, [sec('a-1', 5)])).toBe(false);
+    // Two positions on one asset.
+    expect(sameAsHeld([pos('a-1', '2'), pos('a-1', '3')], { USD: '0' }, [sec('a-1', 5)])).toBe(false);
+    // A holding the read names no asset for.
+    expect(sameAsHeld([pos('a-1', '5')], { USD: '0' }, [sec('a-1', 5), { holdingType: 'security', instrument: null, quantity: 1 }])).toBe(false);
+  });
+
+  it('compares a cost SimpleFin sent with the total Wealthfolio holds, within a cent', () => {
+    const sent = (cost: number | null, currency = 'USD') =>
+      sameAsHeld([pos('a-2', '10', '50.005')], { USD: '0' }, [sec('a-2', 10, cost, currency)]);
+    expect(sent(500.06)).toBe(true);
+    expect(sent(500.04)).toBe(true);
+    expect(sent(500.07)).toBe(false);
+    expect(sent(null)).toBe(false);
+    expect(sent(500.05, 'CAD')).toBe(false);
+    expect(sameAsHeld([pos('a-3', '10', '50')], { USD: '0' }, [sec('a-3', 10, 500)])).toBe(true);
+  });
+
+  it('compares cash per currency to the cent', () => {
+    const cash = (amounts: Record<string, string>, ...lines: HeldLine[]) =>
+      sameAsHeld([pos('a-1', '5')], amounts, [sec('a-1', 5), ...lines]);
+    expect(cash({ USD: '1234.56' }, cashLine(1234.564))).toBe(true);
+    expect(cash({ USD: '1234.56' }, cashLine(1234.57))).toBe(false);
+    expect(cash({ USD: '1234.56' }, cashLine(1234.56), cashLine(10, 'CAD'))).toBe(false);
+    expect(cash({ USD: '1234.56' }, cashLine('n/a'))).toBe(false);
+    expect(cash({ USD: '1234.56' }, cashLine(1234.56, null))).toBe(false);
+    expect(cash({ USD: 'n/a' }, cashLine(1234.56))).toBe(false);
+    // Margin: cash below zero is compared the same way.
+    expect(cash({ USD: '-120.50' }, cashLine(-120.5))).toBe(true);
+    expect(cash({ USD: '-120.50' }, cashLine(120.5))).toBe(false);
+  });
+});
+
+describe('sameCurrency', () => {
+  it('ignores case, except in a code that mixes it (pence is not pounds)', () => {
+    expect(sameCurrency('usd', 'USD')).toBe(true);
+    expect(sameCurrency(' USD', 'USD ')).toBe(true);
+    expect(sameCurrency('GBp', 'GBP')).toBe(false);
+    expect(sameCurrency('CAD', 'USD')).toBe(false);
   });
 });
 

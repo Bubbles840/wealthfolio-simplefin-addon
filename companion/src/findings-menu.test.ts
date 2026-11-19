@@ -6,6 +6,7 @@ import { accountTxKey } from '../../shared/transfers.js';
 import type { GatheredFindings } from './daily-findings.js';
 import {
   createFindingsMenu,
+  needsFindingsButton,
   renderFindingsList,
   SHOW_FINDINGS_BUTTON,
   type FindingsMenuDeps,
@@ -374,5 +375,15 @@ describe('findings-menu', () => {
       expect(ui.answer).toHaveBeenCalledWith(SYNC_OVERRIDES_UNREADABLE_MESSAGE);
       expect(ui.edit).not.toHaveBeenCalled();
     });
+  });
+});
+
+describe('needsFindingsButton (#81)', () => {
+  const finding = (over: Partial<SelfCheckFinding>): SelfCheckFinding => ({ kind: 'feed-stale', severity: 'warning', message: 'm', key: 'k', ...over });
+  it('is there when something is folded, or a problem printed in full can be snoozed', () => {
+    expect(needsFindingsButton([finding({})])).toBe(true);
+    expect(needsFindingsButton([finding({ kind: 'connection-problem', severity: 'problem' })])).toBe(true);
+    expect(needsFindingsButton([finding({ kind: 'sync-failing', severity: 'problem', key: undefined })])).toBe(false);
+    expect(needsFindingsButton([])).toBe(false);
   });
 });

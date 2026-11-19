@@ -19,7 +19,7 @@
 import { MENU_CALLBACK_PREFIX } from '../../shared/categorize-menu.js';
 import { formatDollars, type InlineKeyboard } from '../../shared/telegram.js';
 import { isUnreadableOverridesError, SYNC_OVERRIDES_UNREADABLE_MESSAGE } from '../../shared/sync-overrides.js';
-import { escapeFindingText, type FindingFix, type SelfCheckFinding } from '../../shared/self-check.js';
+import { escapeFindingText, printsInFull, type FindingFix, type SelfCheckFinding } from '../../shared/self-check.js';
 import { findingHandle, findingLabel, formatFindingsList, isSnoozable, SNOOZE_DAYS } from '../../shared/findings.js';
 import type { GatheredFindings } from './daily-findings.js';
 
@@ -36,7 +36,14 @@ const FIX = `${FINDINGS_CALLBACK_PREFIX}f:`;
 const NOT_TRANSFER = `${FINDINGS_CALLBACK_PREFIX}n:`;
 const UNSNOOZE_ALL = `${FINDINGS_CALLBACK_PREFIX}u`;
 
-/** The one button the morning report carries when anything is folded. */
+/** The button belongs under the report when something is folded, or a finding
+ *  printed in full can be snoozed from the list behind it (#81). */
+export function needsFindingsButton(visible: readonly SelfCheckFinding[]): boolean {
+  return visible.some((f) => !printsInFull(f) || isSnoozable(f));
+}
+
+/** The one button the morning report carries when anything is folded, or when
+ *  a finding printed in full can be snoozed from the list behind it (#81). */
 export const SHOW_FINDINGS_BUTTON = { text: '🧹 Show what to fix', callback_data: OPEN };
 
 const GONE_ANSWER = 'That one is already sorted — refreshing.';

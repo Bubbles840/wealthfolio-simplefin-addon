@@ -7,6 +7,8 @@ import { Button, SectionLabel, Why } from '../components/ui';
 import { SetupChecklist } from '../components/SetupChecklist';
 import { UncategorizedList, useDismissals } from '../components/UncategorizedList';
 import { WhyCard } from '../components/WhyCard';
+import { ConnectionProblemBanners } from '../components/ConnectionProblemBanners';
+import type { ConnectionProblem } from '../../shared/connection-problems';
 import { HoldingsWithoutCost } from '../components/HoldingsWithoutCost';
 import { checksToLookAt } from '../components/AuditViews';
 import type { AuditSnapshotRead } from '../../shared/audit-snapshot';
@@ -41,6 +43,10 @@ type BaselineFixOffer = {
 };
 
 interface Props {
+  /** SimpleFin connection problems worth showing now (#81), already filtered by the page. */
+  connectionProblems?: readonly ConnectionProblem[];
+  /** The Bridge's own site for the sign-in link; never the access URL. */
+  bridgeSite?: string | null;
   ctx: AddonContext;
   store: SecretsStore;
   mapping: AccountMapping;
@@ -130,7 +136,7 @@ export function HomeTab({
   isOpen, toggleCard, onBalancesChanged, onClearError, onError,
   companionVersion, telegramConfigured, amazonConfigured, checklistDismissed,
   onDismissChecklist, onNavigate, poolStatus, onOpenPool, renderTxStory, linkedStory, auditSnapshot, cashForecast,
-  payback, paidBack, paybackNote,
+  payback, paidBack, paybackNote, connectionProblems, bridgeSite,
 }: Props) {
   const checksToLook = checksToLookAt(auditSnapshot);
   // 1.62 (W5): the last sync found the report and Wealthfolio's Spending page
@@ -214,6 +220,8 @@ export function HomeTab({
         </div>
       )}
       {renderTxStory && <WhyCard search={searchTx} renderStory={renderTxStory} />}
+
+      <ConnectionProblemBanners problems={connectionProblems ?? []} bridgeSite={bridgeSite ?? null} />
 
       {/* An account SimpleFin is offering that nothing is mapped to. First
           banner on the page because it is the only one that means data is

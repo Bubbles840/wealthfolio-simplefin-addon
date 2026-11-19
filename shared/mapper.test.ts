@@ -253,3 +253,37 @@ describe('a rule that would match every transaction', () => {
     expect(mapTransactionWithSource('EMPLOYER PAYROLL', 2500, [blank, payroll]).fromRule).toBe(true);
   });
 });
+
+describe('fee reversals (#79)', () => {
+  const reversal = { type: 'CREDIT', fromRule: false, subtype: 'REFUND', feeReversal: true };
+
+  it('types money in on a cash account as a refund, not a deposit', () => {
+    expect(mapTransactionWithSource('OVERDRAFT FEE REFUND', 35, [], 'CASH')).toEqual(reversal);
+    expect(mapTransactionWithSource('Monthly Maintenance Fee Waived', 12, [], 'CASH')).toEqual(reversal);
+  });
+
+  it('beats the card-payment keywords on a card ("payment" is in the text)', () => {
+    expect(mapTransactionWithSource('LATE PAYMENT FEE REVERSAL', 40, [], 'CREDIT_CARD')).toEqual(reversal);
+  });
+
+  it('beats the bank-transfer keywords on a cash account', () => {
+    expect(mapTransactionWithSource('ONLINE TRANSFER FEE REFUND', 3, [], 'CASH')).toEqual(reversal);
+  });
+
+  it('reads an unknown account type the way the cash path does', () => {
+    expect(mapTransactionWithSource('ATM FEE REIMBURSEMENT', 3, [], undefined)).toEqual(reversal);
+    expect(mapTransactionWithSource('ATM FEE REIMBURSEMENT', 3, [], '')).toEqual(reversal);
+  });
+
+  it('leaves money out, investment accounts and plain refunds alone', () => {
+    expect(mapTransactionWithSource('OVERDRAFT FEE REFUND', -35, [], 'CASH')).toEqual({ type: 'WITHDRAWAL', fromRule: false });
+    expect(mapTransactionWithSource('ADVISORY FEE REFUND', 20, [], 'SECURITIES')).toEqual({ type: 'DEPOSIT', fromRule: false });
+    expect(mapTransactionWithSource('TAX REFUND', 500, [], 'CASH')).toEqual({ type: 'DEPOSIT', fromRule: false });
+    expect(mapTransactionWithSource('COFFEE REFUND', 5, [], 'CREDIT_CARD')).toEqual({ type: 'CREDIT', fromRule: false });
+  });
+
+  it('lets a user rule win', () => {
+    const rules: MappingRule[] = [{ pattern: 'OVERDRAFT', matchType: 'contains', activityType: 'DEPOSIT' }];
+    expect(mapTransactionWithSource('OVERDRAFT FEE REFUND', 35, rules, 'CASH')).toEqual({ type: 'DEPOSIT', fromRule: true });
+  });
+});

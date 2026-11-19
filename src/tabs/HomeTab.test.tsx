@@ -1011,3 +1011,43 @@ describe('Why is this here? (1.61)', () => {
     expect(await screen.findByText("Not filed yet — it's on your needs-a-category list.")).toBeInTheDocument();
   });
 });
+
+describe('SimpleFin connection problems on Home (#81)', () => {
+  const NOW = new Date('2026-11-18T15:00:00.000Z');
+  const HOUR = 3_600_000;
+  const signin = {
+    key: 'con.auth:C1', code: 'con.auth', kind: 'signin' as const, connectionName: 'Fidelity NetBenefits', sfinAccountIds: ['sfin-1'],
+    message: 'Fidelity NetBenefits: Authentication required', firstSeenAt: NOW.toISOString(), lastSeenAt: NOW.toISOString(),
+  };
+  beforeEach(() => { vi.useFakeTimers({ toFake: ['Date'] }); vi.setSystemTime(NOW); });
+  afterEach(() => { vi.useRealTimers(); cleanup(); });
+
+  it('shows a sign-in banner linking to the Bridge, never the access URL, and marks the account in Settings', async () => {
+    const props = makeProps();
+    props.store.getSimplefinProblems = vi.fn(async () => ({ checkedAt: NOW.toISOString(), problems: [signin] }));
+    const { container } = render(<SyncPage {...props} />);
+    expect(await screen.findByText(/Fidelity NetBenefits needs you to sign in again at SimpleFIN Bridge/)).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: /open simplefin bridge/i })).toHaveAttribute('href', 'https://bridge.simplefin.org');
+    expect(container.innerHTML).not.toContain('u:p@');
+    await openAccounts();
+    const row = (await screen.findByText('Growth')).closest('.sfin-acct-card') as HTMLElement;
+    expect(within(row).getByText('not updating')).toBeInTheDocument();
+  });
+
+  it('shows nothing from a record more than 48 hours old, nor a read problem younger than a day', async () => {
+    const stale = makeProps();
+    stale.store.getSimplefinProblems = vi.fn(async () => ({ checkedAt: new Date(NOW.getTime() - 49 * HOUR).toISOString(), problems: [signin] }));
+    render(<SyncPage {...stale} />);
+    await waitFor(() => expect(stale.store.getSimplefinProblems).toHaveBeenCalled());
+    await new Promise((r) => setTimeout(r, 50));
+    expect(screen.queryByText(/needs you to sign in again/)).toBeNull();
+    cleanup();
+
+    const young = makeProps();
+    young.store.getSimplefinProblems = vi.fn(async () => ({ checkedAt: NOW.toISOString(), problems: [{ ...signin, key: 'act.failed:sfin-1', code: 'act.failed', kind: 'other' as const, firstSeenAt: new Date(NOW.getTime() - 23 * HOUR).toISOString() }] }));
+    render(<SyncPage {...young} />);
+    await waitFor(() => expect(young.store.getSimplefinProblems).toHaveBeenCalled());
+    await new Promise((r) => setTimeout(r, 50));
+    expect(screen.queryByText(/isn't updating/)).toBeNull();
+  });
+});

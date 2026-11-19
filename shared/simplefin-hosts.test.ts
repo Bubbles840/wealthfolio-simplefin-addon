@@ -4,6 +4,7 @@ import { describe, it, expect } from 'vitest';
 import {
   ADDON_PROVIDER_HOSTS,
   addonHostEntriesFor,
+  isSimplefinBridgeHost,
   isSimplefinProviderHost,
   requireSimplefinProviderHost,
 } from './simplefin-hosts.js';
@@ -68,5 +69,16 @@ describe('manifest.json network hosts', () => {
 
   it('declares no other host than the providers and Telegram', () => {
     expect([...manifest.network.allowedHosts].sort()).toEqual([...ADDON_PROVIDER_HOSTS, 'api.telegram.org'].sort());
+  });
+});
+
+describe('isSimplefinBridgeHost (#81: only the Bridge is asked for protocol v2)', () => {
+  it('is simplefin.org and its subdomains, nothing else', () => {
+    expect(isSimplefinBridgeHost('bridge.simplefin.org')).toBe(true);
+    expect(isSimplefinBridgeHost('beta-bridge.simplefin.org')).toBe(true);
+    expect(isSimplefinBridgeHost('SimpleFIN.org')).toBe(true);
+    expect(isSimplefinBridgeHost('www.lunchflow.app')).toBe(false);
+    expect(isSimplefinBridgeHost('evilsimplefin.org')).toBe(false);
+    expect(isSimplefinBridgeHost('simplefin.org.evil.com')).toBe(false);
   });
 });

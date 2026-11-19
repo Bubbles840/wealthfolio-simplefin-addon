@@ -33,6 +33,7 @@ import type { SyncResult } from '../../shared/sync-core';
 import { BALANCE_TOTAL_DAYS } from '../../shared/holdings';
 import { LARGE_TX_OUTBOX_SECRET_KEY, SUBSCRIPTION_NEWS_SECRET_KEY } from '../../shared/telegram';
 import { ADDON_VERSION_SECRET_KEY, INSTALLED_ADDON_VERSION_SECRET_KEY, SIMPLEFIN_SYNC_VERSION, WEALTHFOLIO_VERSION_SECRET_KEY } from '../../shared/version';
+import { SIMPLEFIN_PROBLEMS_SECRET_KEY, parseConnectionProblems, type ConnectionProblemsRecord } from '../../shared/connection-problems';
 import { REFUSED_ALERTED_SECRET_KEY } from '../../shared/refused-alerts';
 import {
   RECEIPT_CONFIG_SECRET_KEY, RECEIPT_STATUS_SECRET_KEY, parseReceiptHostStatus, receiptReaderConfigForEditing,
@@ -135,6 +136,7 @@ const KEYS = {
   lastSyncImported: 'last_sync_imported',
   accountBalances: 'account_balances',
   unmappedAccounts: 'unmapped_accounts',
+  simplefinProblems: SIMPLEFIN_PROBLEMS_SECRET_KEY,
   ignoredAccounts: 'ignored_accounts',
   skippedTransactions: SKIPPED_TRANSACTIONS_SECRET_KEY,
   ignoreRules: IGNORE_RULES_SECRET_KEY,
@@ -733,6 +735,14 @@ export class SecretsStore {
   }
   async setUnmappedAccounts(list: UnmappedAccount[]): Promise<void> {
     await this.ctx.api.secrets.set(KEYS.unmappedAccounts, JSON.stringify(list));
+  }
+
+  /** The SimpleFin connection problems record (#81), shared with the companion. */
+  async getSimplefinProblems(): Promise<ConnectionProblemsRecord | null> {
+    return parseConnectionProblems(await this.ctx.api.secrets.get(KEYS.simplefinProblems));
+  }
+  async setSimplefinProblems(record: ConnectionProblemsRecord): Promise<void> {
+    await this.ctx.api.secrets.set(KEYS.simplefinProblems, JSON.stringify(record));
   }
 
   /**

@@ -270,3 +270,22 @@ describe('startStatusServer', () => {
     expect(Date.now() - started).toBeLessThan(8_000);
   }, 15_000);
 });
+
+describe('the connection problem count (#81)', () => {
+  const problem = { key: 'k' };
+  it('keeps the count of the last run that read the record, with no names', () => {
+    const status = createSyncStatus(clock(T0));
+    expect(status.snapshot()).not.toHaveProperty('connectionProblems');
+    status.begin().finish('synced', { ...counts, connectionProblems: [problem, problem] });
+    expect(status.snapshot().connectionProblems).toBe(2);
+    status.begin().finish('too-soon', counts);
+    expect(status.snapshot().connectionProblems).toBe(2);
+    status.begin().finish('synced', { ...counts, connectionProblems: [] });
+    expect(status.snapshot().connectionProblems).toBe(0);
+  });
+
+  it('puts the count on the page', () => {
+    const out = statusReply('GET', '/status', 'v', { running: false, lastRun: null, lastSyncedAt: null, connectionProblems: 1 });
+    expect(JSON.parse(out.body)).toEqual({ version: 'v', ok: true, running: false, lastRun: null, lastSyncedAt: null, connectionProblems: 1 });
+  });
+});

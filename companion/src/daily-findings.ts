@@ -20,6 +20,7 @@ import { FINDING_SNOOZES_SECRET_KEY, parseSnoozes, partitionSnoozed, activeSnooz
 import { ADDON_VERSION_SECRET_KEY } from '../../shared/version.js';
 import { AUDIT_SNAPSHOT_SECRET_KEY, parseAuditSnapshot } from '../../shared/audit-snapshot.js';
 import { snapshotTripwire, tripwireFinding } from '../../shared/spending-tripwire.js';
+import { parseConnectionProblems, shownConnectionProblems, SIMPLEFIN_PROBLEMS_SECRET_KEY } from '../../shared/connection-problems.js';
 import type { SyncHealth } from '../../shared/telegram.js';
 
 export const LEDGER_CHECK_SEEN_SECRET_KEY = 'ledger_check_seen';
@@ -162,6 +163,11 @@ export async function gatherFindings(
     // Off disk, because the secret above only says what last RAN in a browser.
     installedAddonVersion: deps.installedAddonVersion(),
     companionVersion: deps.companionVersion,
+    // No 48-hour record-age rule here (ruling 12): a stale record means the
+    // companion is not syncing, which sync-stale already reports.
+    connectionProblems: shownConnectionProblems(
+      parseConnectionProblems(await deps.getSecret(SIMPLEFIN_PROBLEMS_SECRET_KEY).catch(() => null)), now,
+    ),
     unmappedAccountNames: (Array.isArray(unmapped) ? unmapped : [])
       .map((a) => a?.accountName || a?.sfinAccountId || '')
       .filter((n) => n !== ''),

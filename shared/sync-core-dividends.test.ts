@@ -183,6 +183,19 @@ describe('runSyncCore — dividends on their security', () => {
       expect(fh.saved.slice(before).filter((x) => (x.creates?.length ?? 0) + (x.updates?.length ?? 0) > 0)).toEqual([]);
     });
 
+    it('is booked from the snapshot in force when the window opens, though it is older than six months', async () => {
+      // Held unchanged from June 2026 until the sale, so no snapshot in between.
+      const sparse = {
+        'wf-1': [
+          { date: '2026-06-01', positionCount: 1, securities: [{ assetId: 'asset-voo', symbol: 'VOO' }] },
+          { date: '2027-03-05', positionCount: 0, securities: [] },
+        ],
+      };
+      const fh = createFakeHost(seed(VOO, { heldSecurities: { 'wf-1': [] }, snapshots: sparse }));
+      await runSyncCore(fh.host, fh.store, { dividendSecurities: true });
+      expect(theRow(fh)).toMatchObject({ activityType: 'DIVIDEND', assetId: 'asset-voo' });
+    });
+
     it('reads no snapshot while the other writer is not new enough', async () => {
       const fh = createFakeHost(seed(VOO, { heldSecurities: { 'wf-1': [] }, snapshots }));
       const days = vi.fn(fh.host.listSnapshotDays!);

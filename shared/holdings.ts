@@ -220,6 +220,138 @@ export function holdingsWithoutCost(
     .map((h) => h.instrument!.symbol!.trim());
 }
 
+/** Two currency codes for the same unit. Case is ignored, except in a code that
+ *  mixes it: a minor unit (GBp, pence; ZAc, cents) is not its major one. */
+export function sameCurrency(a: string, b: string): boolean {
+  const x = a.trim();
+  const y = b.trim();
+  if (x === y) return true;
+  const mixed = (c: string) => c !== c.toUpperCase() && c !== c.toLowerCase();
+  return !mixed(x) && !mixed(y) && x.toUpperCase() === y.toUpperCase();
+}
+
+/** A decimal read exactly: its value as an integer over ten to `scale`, with no
+ *  trailing zeros, and `-0` as `0`. A number is read as its printed form, so a
+ *  non-finite one, or one JavaScript prints with an exponent, is unreadable. */
+function readExact(value: string | number | null | undefined): { n: bigint; scale: number; key: string } | null {
+  if (value === null || value === undefined) return null;
+  const match = /^([+-]?)(\d+)(?:\.(\d*))?$/.exec(String(value).trim());
+  if (!match) return null;
+  const fraction = (match[3] ?? '').replace(/0+$/, '');
+  const n = BigInt(match[2] + fraction) * (match[1] === '-' ? -1n : 1n);
+  const key = n === 0n ? '0' : `${n < 0n ? '-' : ''}${match[2].replace(/^0+(?=\d)/, '').replace(/^0+$/, '0')}${fraction ? `.${fraction}` : ''}`;
+  return { n, scale: fraction.length, key };
+}
+
+/** A decimal in whole cents, rounded half away from zero. */
+function toCents(d: { n: bigint; scale: number }): bigint {
+  if (d.scale <= 2) return d.n * 10n ** BigInt(2 - d.scale);
+  const unit = 10n ** BigInt(d.scale - 2);
+  const abs = d.n < 0n ? -d.n : d.n;
+  const rounded = (abs + unit / 2n) / unit;
+  return d.n < 0n ? -rounded : rounded;
+}
+
+/** A position the sync is about to write, as the comparison sees it. */
+export interface PositionOnAsset {
+  /** The asset it lands on; undefined when that asset does not exist yet. */
+  assetId: string | undefined;
+  quantity: string;
+  currency: string;
+  /** The per-share cost SimpleFin sent, if it sent one. */
+  sentAvgCost?: string;
+}
+
+/** A line of what Wealthfolio reports holding (a subset of the SDK's Holding). */
+export interface HeldLine {
+  holdingType?: string | null;
+  instrument?: { id?: string | null } | null;
+  quantity?: number | string | null;
+  costBasis?: { local?: number | string | null } | null;
+  localCurrency?: string | null;
+}
+
+/**
+ * True when writing these positions and cash would change nothing Wealthfolio
+ * holds: the same assets and share counts, the cost of each position that came
+ * with one (to the cent), and the same cash per currency (to the cent).
+ *
+ * Why (#83): Wealthfolio resets the account's net contribution to 0 on every
+ * snapshot it saves, so a write that changes nothing still costs the user data.
+ * No cash line means zero cash. Anything unreadable or that does not match one
+ * to one is "not the same", which is a write, as before.
+ */
+export function sameAsHeld(
+  positions: readonly PositionOnAsset[],
+  cashBalances: Readonly<Record<string, string>>,
+  held: readonly HeldLine[],
+): boolean {
+  const written = new Map<string, { key: string; position: PositionOnAsset }>();
+  for (const position of positions) {
+    const quantity = readExact(position.quantity);
+    if (!quantity) return false;
+    if (quantity.n === 0n) continue;
+    if (!position.assetId || written.has(position.assetId)) return false;
+    written.set(position.assetId, { key: quantity.key, position });
+  }
+
+  const lines = new Map<string, { key: string; line: HeldLine }>();
+  const cash: Array<{ currency: string; cents: bigint }> = [];
+  for (const line of held) {
+    if (String(line.holdingType ?? '').toLowerCase() === 'cash') {
+      const currency = line.localCurrency?.trim();
+      const quantity = readExact(line.quantity);
+      if (!currency || !quantity) return false;
+      if (cash.some((c) => sameCurrency(c.currency, currency))) return false;
+      cash.push({ currency, cents: toCents(quantity) });
+      continue;
+    }
+    const id = line.instrument?.id;
+    const quantity = readExact(line.quantity);
+    if (!id || !quantity) return false;
+    if (quantity.n === 0n) continue;
+    if (lines.has(id)) return false;
+    lines.set(id, { key: quantity.key, line });
+  }
+
+  if (written.size !== lines.size) return false;
+  for (const [id, { key, position }] of written) {
+    const found = lines.get(id);
+    if (!found || found.key !== key) return false;
+    if (position.sentAvgCost === undefined) continue;
+    const { line } = found;
+    if (line.localCurrency && !sameCurrency(line.localCurrency, position.currency)) return false;
+    const perShare = parseDecimal(position.sentAvgCost);
+    const count = parseDecimal(position.quantity);
+    const total = readExact(line.costBasis?.local);
+    if (!perShare || !count || !total) return false;
+    const sent = { n: perShare.n * count.n, scale: perShare.scale + count.scale };
+    const scale = Math.max(2, sent.scale, total.scale);
+    const a = sent.n * 10n ** BigInt(scale - sent.scale);
+    const b = total.n * 10n ** BigInt(scale - total.scale);
+    const diff = a > b ? a - b : b - a;
+    if (diff > 10n ** BigInt(scale - 2)) return false;
+  }
+
+  const currencies: string[] = [];
+  for (const currency of [...Object.keys(cashBalances), ...cash.map((c) => c.currency)]) {
+    if (!currencies.some((c) => sameCurrency(c, currency))) currencies.push(currency);
+  }
+  for (const currency of currencies) {
+    const keys = Object.keys(cashBalances).filter((k) => sameCurrency(k, currency));
+    if (keys.length > 1) return false;
+    let writtenCents = 0n;
+    if (keys.length) {
+      const amount = readExact(cashBalances[keys[0]]);
+      if (!amount) return false;
+      writtenCents = toCents(amount);
+    }
+    const heldCents = cash.find((c) => sameCurrency(c.currency, currency))?.cents ?? 0n;
+    if (writtenCents !== heldCents) return false;
+  }
+  return true;
+}
+
 /** A US money market fund's ticker: five letters ending in XX (e.g. ABCXX). */
 const MONEY_MARKET_TICKER = /^[A-Z]{3}XX$/;
 /** How far a money market line's value may sit from its share count: a cent. */

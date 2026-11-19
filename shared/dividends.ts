@@ -164,14 +164,18 @@ export const SNAPSHOT_LOOKBACK_DAYS = 60;
 /** At most this many snapshots are read for one dividend. */
 export const SNAPSHOT_READS = 8;
 /** The snapshot dates are listed once per account per sync, for this many days
- *  back: a dividend's own window, for any dividend a sync re-reads. */
-export const SNAPSHOT_WINDOW_DAYS = 180;
+ *  back: a dividend's own window, for any dividend a sync re-reads, and the
+ *  snapshot in force when that window opens, which can be long before it since
+ *  a snapshot is written only on a day the holdings changed (#83). */
+export const SNAPSHOT_WINDOW_DAYS = 730;
 
 /**
  * The snapshot dates worth reading for a ticker no longer held, in order: those
  * within SNAPSHOT_LOOKBACK_DAYS on or before the dividend, first each one the
  * next snapshot holds fewer positions than (a sale shows there), newest first,
- * then the rest, newest first; at most SNAPSHOT_READS.
+ * then the rest, newest first; then the newest one dated on or before the day
+ * the window opens (the one in force then, however old, unless one is dated
+ * that day and so is in the window); at most SNAPSHOT_READS, that one cut first.
  */
 export function snapshotDatesToRead(days: readonly SnapshotDay[], dividendDate: string): string[] {
   const end = Date.parse(`${dividendDate}T00:00:00Z`);
@@ -184,7 +188,9 @@ export function snapshotDatesToRead(days: readonly SnapshotDay[], dividendDate: 
   };
   const beforeDrop = new Set(all.filter((d, i) => i + 1 < all.length && all[i + 1].positionCount < d.positionCount).map((d) => d.date));
   const candidates = all.filter(inWindow).reverse();
-  return [...candidates.filter((d) => beforeDrop.has(d.date)), ...candidates.filter((d) => !beforeDrop.has(d.date))]
+  const inForce = all.filter((d) => Date.parse(`${d.date}T00:00:00Z`) <= start).pop();
+  const opening = inForce && !inWindow(inForce) ? [inForce] : [];
+  return [...candidates.filter((d) => beforeDrop.has(d.date)), ...candidates.filter((d) => !beforeDrop.has(d.date)), ...opening]
     .slice(0, SNAPSHOT_READS)
     .map((d) => d.date);
 }

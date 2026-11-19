@@ -150,13 +150,13 @@ export function createWealthfolioClient(apiUrl: string): WealthfolioClient {
     log,
   });
 }
-import { formatSelfCheckBlock, formatFindingsSummary, printsInFull } from '../../shared/self-check.js';
+import { formatSelfCheckBlock, formatFindingsSummary } from '../../shared/self-check.js';
 import { readInstalledAddonVersion } from './installed-addon.js';
 import { createSyncStatus, outcomeOf, startStatusServer, statusServerConfig } from './status-server.js';
 import { getLedgerFacts } from './ledger-facts.js';
 import { REFUSED_ALERTED_SECRET_KEY, parseAnnouncedRefusals, unannouncedRefusals, withAnnouncedRefusals } from '../../shared/refused-alerts.js';
 import { gatherFindings, readSyncHealth, updateSnoozes, type FindingsDeps } from './daily-findings.js';
-import { createFindingsMenu, SHOW_FINDINGS_BUTTON, type FindingsMenu } from './findings-menu.js';
+import { createFindingsMenu, needsFindingsButton, SHOW_FINDINGS_BUTTON, type FindingsMenu } from './findings-menu.js';
 import { withSnooze } from '../../shared/findings.js';
 
 /** When each ledger-check condition was first seen — what lets a card mismatch
@@ -174,12 +174,15 @@ import type { GlyphStyle, InlineKeyboard } from '../../shared/telegram.js';
 import type { DismissalLedger } from './dismissals.js';
 import type { SyncHealth } from '../../shared/telegram.js';
 import { addonUnderstandsDividends, SIMPLEFIN_SYNC_VERSION, COMPANION_VERSION_SECRET_KEY, INSTALLED_ADDON_VERSION_SECRET_KEY, isNewerVersion } from '../../shared/version.js';
-import { getNativeWealthfolioSpending, getNativeWealthfolioSpendingBetween, getNativeWealthfolioBudgets, getNativeWealthfolioTopSpending, getNativeUncategorizedSpending, getNativeAccountIds, getNativeRuleCategorizedAmazonRows, getNativeCategorizedSpending, getNativeSpendingCategories, getNativeCategoryCatalog, getNativeSubcategorySpending, getNativeUncategorizedSpendingTotal, countRulePatternMatches, getNativeBudgetSpend, getNativeIncomeByMonthAccount, getNativeUncategorizedByMonthAccount, getNativeMerchantRows, getNativeDrillRows, getNativeFeesInterestByMonth, getNativeSpendDailyTotals, getNativeValuationByMonth, getNativeIncomeCategories } from './sqlite-native.js';
+import { getNativeWealthfolioSpending, getNativeWealthfolioSpendingBetween, getNativeWealthfolioBudgets, getNativeWealthfolioTopSpending, getNativeUncategorizedSpending, getNativeAccountIds, getNativeRuleCategorizedAmazonRows, getNativeCategorizedSpending, getNativeSpendingCategories, getNativeCategoryCatalog, getNativeSubcategorySpending, getNativeUncategorizedSpendingTotal, countRulePatternMatches, getNativeBudgetSpend, getNativeIncomeByMonthAccount, getNativeUncategorizedByMonthAccount, getNativeMerchantRows, getNativeDrillRows, getNativeFeesInterestByMonth, getNativeSpendDailyTotals, getNativeValuationByMonth, getNativeIncomeCategories, getNativeFeeReversalRows } from './sqlite-native.js';
 import { publishUncategorizedStatusForDbPath } from './uncategorized-status.js';
 import { getNativePastFilings } from './sqlite-guess.js';
 import { createCategorizeController, SPENDING_TAXONOMY_ID } from './categorize.js';
 import { createAmazonLabelMenu, type AmazonLabelMenu } from './amazon-labels.js';
 import { fileAmazonCharges } from './amazon-filing.js';
+import { fileFeeReversals } from './fee-reversal-filing.js';
+import { SIMPLEFIN_PROBLEMS_SECRET_KEY } from '../../shared/connection-problems.js';
+import { problemsForNotices, sendConnectionProblemNotices } from './connection-problem-notices.js';
 import { companionChangeSink, readCompanionChangeLog, recordCompanionChanges } from './change-log-host.js';
 import { editSyncOverrides, emptySyncOverrides, hasAccountOverride, hasTxOverride, loadSyncOverrides, notTransferEdit, syncOverridesOrEmpty, type SyncOverrides } from '../../shared/sync-overrides.js';
 import { TRANSFER_NAMES_SECRET_KEY } from '../../shared/transfer-names.js';
@@ -887,6 +890,30 @@ async function fileAmazonLabelledCharges(wfClient: WealthfolioClient, run?: stri
   }
 }
 
+/** Files each fee-reversal refund under its fee's spending category (#79); the last 90 days, never throws. */
+async function fileFeeReversalRefunds(wfClient: WealthfolioClient, run?: string, overrides: SyncOverrides = emptySyncOverrides()): Promise<void> {
+  const end = new Date();
+  const start = new Date(end.getFullYear(), end.getMonth(), end.getDate() - 90);
+  const mapping = parseSecretJson<Record<string, string>>(
+    await wfClient.getAddonSecret('simplefin-sync', 'account_mapping').catch(() => null),
+    'account_mapping',
+  ) ?? {};
+  const sfinOf = new Map(Object.entries(mapping).map(([sfin, wf]) => [wf, sfin]));
+  const changes: ChangeDraft[] = [];
+  const res = await fileFeeReversals({
+    rows: async () => getNativeFeeReversalRows(wealthfolioDbPath(), toDateString(start), toDateString(new Date(end.getFullYear(), end.getMonth(), end.getDate() + 1))),
+    assign: (activityId, categoryId) => wfClient.assignActivityCategory(activityId, SPENDING_TAXONOMY_ID, categoryId),
+    record: (draft) => changes.push(draft),
+    sfinAccountOf: (wfAccountId) => sfinOf.get(wfAccountId),
+    noAutoFile: (txKey) => hasTxOverride(overrides, txKey, 'noAutoFile'),
+    anyNoAutoFile: Object.keys(overrides.tx).some((key) => hasTxOverride(overrides, key, 'noAutoFile')),
+    log,
+    today: toDateString(end),
+  });
+  await recordCompanionChanges(wfClient, changes, run).catch((e) => log(`Change log skipped: ${formatError(e)}`));
+  if (res.filed > 0) log(`Filed ${res.filed} fee reversal(s) under the category of the fee they reverse.`);
+}
+
 /**
  * The one label-menu instance, shared between the LISTENER (which owns taps)
  * and the SYNC (which sends the notice the buttons are attached to). It has to
@@ -1264,6 +1291,7 @@ async function runCompanionSyncOnce(opts: { force?: boolean; manual?: boolean })
     // the sync. Unreadable is empty: the filers then behave as they always did.
     const overrides = await syncOverridesOrEmpty((k) => wfClient.getAddonSecret('simplefin-sync', k));
     await fileAmazonLabelledCharges(wfClient, changeLog.run, overrides);
+    await fileFeeReversalRefunds(wfClient, changeLog.run, overrides);
 
     // Once, on Wealthfolio 3.10+: the card bookkeeping rows written as
     // WITHDRAWALs become TRANSFER_OUTs, which its Spending page ignores — before
@@ -1440,6 +1468,28 @@ async function runCompanionSyncOnce(opts: { force?: boolean; manual?: boolean })
     // below: this function does its own config check, because it must not
     // record an account as announced when Telegram is switched off.
     await sendUnmappedAccountsNotice(wfClient, result.unmappedAccounts);
+
+    // Announced once per problem key, and the "updating again" notice goes
+    // only for a key announced earlier. A run that read no record passes
+    // undefined and touches nothing. A run that did not download (too soon,
+    // budget-limited, not configured) reads the add-on's record instead, so
+    // the notice is not late when the add-on does most of the downloading.
+    const shownProblems = await problemsForNotices(
+      { downloaded: outcomeOf(result, notConfiguredResults.has(result)) === 'synced', connectionProblems: result.connectionProblems },
+      () => wfClient.getAddonSecret('simplefin-sync', SIMPLEFIN_PROBLEMS_SECRET_KEY),
+      new Date(),
+    );
+    await sendConnectionProblemNotices({
+      getSecret: (key) => wfClient.getAddonSecret('simplefin-sync', key),
+      setSecret: (key, value) => wfClient.setAddonSecret('simplefin-sync', key, value),
+      telegram: async () => {
+        const tg = parseSecretJson<any>(await wfClient.getAddonSecret('simplefin-sync', 'telegram_config').catch(() => null), 'telegram_config');
+        return tg?.botToken && tg?.chatId && tg.enabled !== false
+          ? { send: (text: string) => sendTelegramMessage(tg.botToken, tg.chatId, text) }
+          : null;
+      },
+      log,
+    }, shownProblems);
 
     try {
       const tgRaw = await wfClient.getAddonSecret('simplefin-sync', 'telegram_config');
@@ -2286,7 +2336,7 @@ export interface DailyDigest {
   /** For the Reports tab and push: the same report with every finding spelled
    *  out, since neither has a button to unfold them. */
   archive: string;
-  /** The "Show what to fix" button, when anything was folded. */
+  /** The "Show what to fix" button, when anything was folded or a printed finding can be snoozed. */
   keyboard?: InlineKeyboard;
 }
 
@@ -2433,7 +2483,6 @@ export async function composeDailyDigest(
   let archive = message;
   if (summary) message += `\n\n${summary}`;
   if (fullBlock) archive += `\n\n${fullBlock}`;
-  const folded = visible.filter((f) => !printsInFull(f)).length;
 
   const footer = opts.healthFooter === 'failures-only' && !health?.firstFailedAt
     ? ''
@@ -2463,8 +2512,8 @@ export async function composeDailyDigest(
     const hides = comingUp.cancelled.slice(0, 2).map(hideFromReportButton);
     if (hides.length > 0) rows.push(hides);
   }
-  // The 🧹 button only when something is actually folded behind it.
-  if (folded > 0) rows.push([SHOW_FINDINGS_BUTTON]);
+  // The 🧹 button when something is folded behind it, or a printed finding can be snoozed.
+  if (needsFindingsButton(visible)) rows.push([SHOW_FINDINGS_BUTTON]);
   return {
     text: message,
     archive,

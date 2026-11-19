@@ -23,6 +23,9 @@ import { useAmazonDraft } from '../components/AmazonCard';
 import type { SecretsStore, AccountBalanceInfo, CategoryCatalogEntry } from '../utils/secrets';
 import type { Scheduler } from '../utils/scheduler';
 import type { AccountMapping, UnmappedAccount } from '../../shared/types';
+import {
+  shownConnectionProblems, PROBLEM_RECORD_MAX_AGE_MS, bridgeSiteOf, type ConnectionProblemsRecord,
+} from '../../shared/connection-problems';
 import { pruneDismissals, mergeDismissals, type DismissalLedger, type PaidBackLedger } from '../../shared/uncategorized';
 import {
   emptySubscriptionPrefs, isUnreadablePrefsError, type LoadedSubscriptionPrefs, type SubscriptionEdit,
@@ -109,6 +112,12 @@ export function SyncPage({ ctx, store, onReset, scheduler, initialSearch }: Prop
   const [wfNames, setWfNames] = useState<Record<string, string>>({});
   const [balances, setBalances] = useState<Record<string, AccountBalanceInfo>>({});
   const [unmappedAccounts, setUnmappedAccounts] = useState<UnmappedAccount[]>([]);
+  const [simplefinProblems, setSimplefinProblems] = useState<ConnectionProblemsRecord | null>(null);
+  const [bridgeSite, setBridgeSite] = useState<string | null>(null);
+  // Only the Bridge's origin is kept, never the access URL with its credentials.
+  useEffect(() => {
+    store.getAccessUrl().then((url) => setBridgeSite(bridgeSiteOf(url))).catch(() => {});
+  }, [store]);
   const [healing, setHealing] = useState(false);
   const [checklistDismissed, setChecklistDismissed] = useState(false);
   // Which companion build last synced this instance. Null until one has run — the
@@ -250,6 +259,7 @@ export function SyncPage({ ctx, store, onReset, scheduler, initialSearch }: Prop
     // short-circuits the whole chain instead, costing the banner and nothing
     // else.
     store.getUnmappedAccounts?.().then(setUnmappedAccounts).catch(() => {});
+    store.getSimplefinProblems?.().then(setSimplefinProblems).catch(() => {});
   }, [store]);
 
   /** The three values Home DERIVES from storage rather than being told about
@@ -392,6 +402,7 @@ export function SyncPage({ ctx, store, onReset, scheduler, initialSearch }: Prop
     // Optional-called: a missing method throws SYNCHRONOUSLY, which `.catch`
     // never sees — it would take the whole refresh down with it.
     store.getUnmappedAccounts?.().then(setUnmappedAccounts).catch(() => {});
+    store.getSimplefinProblems?.().then(setSimplefinProblems).catch(() => {});
     refreshDerivedSignals();
     // New report editions arrive behind the page's back too.
     refreshInbox();
@@ -691,6 +702,9 @@ export function SyncPage({ ctx, store, onReset, scheduler, initialSearch }: Prop
   // "Reports" carries the unread count while there is one.
   const tabs = inbox.total > 0 ? TABS.map((t) => (t.id === 'reports' ? { ...t, badge: inbox.total } : t)) : TABS;
 
+  const shownProblems = shownConnectionProblems(simplefinProblems, new Date(), { maxRecordAgeMs: PROBLEM_RECORD_MAX_AGE_MS });
+  const notUpdating = new Set(shownProblems.flatMap((p) => p.sfinAccountIds));
+
   return (
     <div className={`sfin-page${activeTab === 'home' ? ' sfin-page--wide' : ''}`}>
       <div className="sfin-head">
@@ -737,6 +751,8 @@ export function SyncPage({ ctx, store, onReset, scheduler, initialSearch }: Prop
           the budget under it. One tab since 1.57 (was Overview + Budget). */}
       <TabPanel tab="home" active={activeTab}>
         <HomeTab
+          connectionProblems={shownProblems}
+          bridgeSite={bridgeSite}
           linkedStory={alertLink?.story ? { activityId: alertLink.story } : undefined}
           ctx={ctx}
           store={store}
@@ -801,6 +817,7 @@ export function SyncPage({ ctx, store, onReset, scheduler, initialSearch }: Prop
           Telegram, sync, categorizing, reset. */}
       <TabPanel tab="settings" active={activeTab}>
         <SettingsTab
+          notUpdating={notUpdating}
           ctx={ctx}
           store={store}
           scheduler={scheduler}

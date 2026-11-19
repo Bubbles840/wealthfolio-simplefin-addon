@@ -20,7 +20,7 @@
  * — so every existing consumer is untouched; `errorList` carries the structure
  * for anything that wants to act per connection.
  */
-import type { SimplefinAccount, SimplefinAccountSet, SimplefinBridgeError } from './types.js';
+import type { SimplefinAccount, SimplefinAccountSet, SimplefinBridgeError, SimplefinConnection } from './types.js';
 
 function text(value: unknown, fallback = ''): string {
   return value === null || value === undefined || value === '' ? fallback : String(value);
@@ -44,7 +44,24 @@ export function normalizeAccountSet(payload: unknown): SimplefinAccountSet {
     throw new Error('SimpleFin returned a payload that is not an object');
   }
   const raw = payload as Record<string, unknown>;
-  const accounts = (Array.isArray(raw.accounts) ? raw.accounts : []) as SimplefinAccount[];
+  const connections: SimplefinConnection[] = [];
+  const orgByConn = new Map<string, NonNullable<SimplefinAccount['org']>>();
+  if (Array.isArray(raw.connections)) {
+    for (const item of raw.connections) {
+      const c = (item ?? {}) as Record<string, unknown>;
+      const connId = optional(c.conn_id);
+      if (!connId) continue;
+      connections.push({ connId, name: text(c.name) });
+      orgByConn.set(connId, orgOf(c));
+    }
+  }
+  // v2 sends no `org` on an account, only the `conn_id` of its connection;
+  // give it the org v1 would have, so nothing downstream needs to know.
+  const accounts = ((Array.isArray(raw.accounts) ? raw.accounts : []) as SimplefinAccount[]).map((a) => {
+    const org = a && !a.org && a.conn_id ? orgByConn.get(String(a.conn_id)) : undefined;
+    return org ? { ...a, org } : a;
+  });
+  const connNameById = new Map(connections.map((c) => [c.connId, c.name]));
   const nameById = new Map(accounts.map((a) => [text(a?.id), text(a?.name)]));
 
   const errorList: SimplefinBridgeError[] = [];
@@ -84,24 +101,49 @@ export function normalizeAccountSet(payload: unknown): SimplefinAccountSet {
 
   return {
     accounts,
-    errors: errorList.map(describeBridgeError(nameById)),
+    errors: errorList.map(describeBridgeError(nameById, connNameById)),
     errorList,
+    ...(connections.length > 0 ? { connections } : {}),
   };
+}
+
+/**
+ * The org v1 gave an account, rebuilt from its v2 connection. `org.name` is the
+ * connection's `name` (checked against the live demo, which sends "SimpleFIN
+ * Demo" for both), NOT `org_name` ("SimpleFIN Bridge").
+ */
+function orgOf(c: Record<string, unknown>): NonNullable<SimplefinAccount['org']> {
+  const org: NonNullable<SimplefinAccount['org']> = {};
+  const name = text(c.name);
+  if (name) org.name = name;
+  const orgUrl = text(c.org_url);
+  try {
+    org.domain = new URL(orgUrl).hostname;
+    org.url = orgUrl;
+  } catch {
+    // not a URL: neither field
+  }
+  const sfinUrl = text(c.sfin_url);
+  if (sfinUrl) org['sfin-url'] = sfinUrl;
+  return org;
 }
 
 /**
  * One failure as a line a human can act on.
  *
- * The name is what makes the message useful, so it is preferred over every id;
+ * The name is what makes the message useful, so it is preferred over every id
+ * (a connection-scoped failure prefers the listed connection's own name);
  * an account the payload no longer carries (exactly what a dead connection looks
  * like) falls back to its id, and a connection-scoped failure to the conn id. A
  * legacy string is already prose and is passed through unchanged rather than
  * decorated with a meaningless `(account null)`.
  */
-function describeBridgeError(nameById: Map<string, string>) {
+function describeBridgeError(nameById: Map<string, string>, connNameById: Map<string, string>) {
   return (error: SimplefinBridgeError): string => {
     const name = error.accountId ? nameById.get(error.accountId) : undefined;
     if (name) return `${name}: ${error.msg}`;
+    const connName = error.connId ? connNameById.get(error.connId) : undefined;
+    if (connName) return `${connName}: ${error.msg}`;
     if (error.accountId) return `${error.msg} (account ${error.accountId})`;
     if (error.connId) return `${error.msg} (connection ${error.connId})`;
     return error.msg;

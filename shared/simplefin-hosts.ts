@@ -13,6 +13,16 @@ export function isSimplefinProviderHost(hostname: string): boolean {
   return SIMPLEFIN_PROVIDER_DOMAINS.some((domain) => host === domain || host.endsWith(`.${domain}`));
 }
 
+/**
+ * Whether `hostname` is SimpleFIN Bridge (simplefin.org or a subdomain). Only
+ * the Bridge is asked for protocol v2 (#81): Lunch Flow's v2 support is
+ * unverified, so its request stays as it always was.
+ */
+export function isSimplefinBridgeHost(hostname: string): boolean {
+  const host = hostname.toLowerCase();
+  return host === 'simplefin.org' || host.endsWith('.simplefin.org');
+}
+
 export function requireSimplefinProviderHost(url: string, label: string): void {
   const { hostname } = new URL(url);
   if (!isSimplefinProviderHost(hostname)) {

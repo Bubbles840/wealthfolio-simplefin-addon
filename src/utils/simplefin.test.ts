@@ -159,6 +159,20 @@ describe('fetchAccounts', () => {
     ).rejects.toThrow('simplefin.org');
   });
 
+  it('asks SimpleFIN Bridge for protocol v2 (#81)', async () => {
+    const network = makeNetwork(() => okResponse(JSON.stringify({ errlist: [], connections: [], accounts: [] })));
+    await fetchAccounts('https://user:pass@beta-bridge.simplefin.org/simplefin', new Date('2024-01-01T00:00:00Z'), network);
+    const [calledReq] = (network.request as ReturnType<typeof vi.fn>).mock.calls[0];
+    expect(calledReq.url).toBe('https://beta-bridge.simplefin.org/simplefin/accounts?start-date=1704067200&pending=1&version=2');
+  });
+
+  it('sends Lunch Flow the request it always sent, byte for byte (#81)', async () => {
+    const network = makeNetwork(() => okResponse(JSON.stringify({ errors: [], accounts: [] })));
+    await fetchAccounts('https://user:pass@www.lunchflow.app/simplefin', new Date('2024-01-01T00:00:00Z'), network);
+    const [calledReq] = (network.request as ReturnType<typeof vi.fn>).mock.calls[0];
+    expect(calledReq.url).toBe('https://www.lunchflow.app/simplefin/accounts?start-date=1704067200&pending=1');
+  });
+
   it('fetches from a Lunch Flow access URL (#25)', async () => {
     const network = makeNetwork(() => okResponse(JSON.stringify({ errors: [], accounts: [] })));
     await fetchAccounts('https://user:pass@www.lunchflow.app/simplefin', new Date(), network);

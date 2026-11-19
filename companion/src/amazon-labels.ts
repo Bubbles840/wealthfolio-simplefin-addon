@@ -10,7 +10,8 @@
  *
  * MAIN CATEGORIES ONLY, deliberately. Every rule in
  * `DEFAULT_AMAZON_LABEL_RULES` targets a top-level category (Groceries,
- * Housing, Electronics …) and `defaultCategory` is one too. Subcategories are
+ * Housing, Electronics …); `defaultCategory` may be a subcategory path (#80),
+ * but this menu still offers main categories only. Subcategories are
  * picked on the Amazon card instead: here they would need paging, since there
  * are ~52. A top-level name stored bare is still exact (`findAmazonCategory`
  * prefers a top-level category over a subcategory of the same name).

@@ -38,6 +38,13 @@ export interface SyncStatus {
   lastRun: RunRecord | null;
   /** When the last `synced` run in this process finished. */
   lastSyncedAt: string | null;
+  /**
+   * How many SimpleFin connection problems the last run that read the record
+   * saw (#81), a count only: the page is unauthenticated, so no names. Absent
+   * until a run has read it; a run that did not (too soon, budget-limited)
+   * keeps the last count.
+   */
+  connectionProblems?: number;
 }
 
 /**
@@ -91,7 +98,7 @@ export function scrubStatusError(message: string, secrets: readonly string[] = [
 export interface SyncStatusRecorder {
   /** Marks a run started; the handle records how it ended, once. */
   begin(): {
-    finish(outcome: Exclude<RunOutcome, 'failed'>, counts: { imported: number; skipped: number }): void;
+    finish(outcome: Exclude<RunOutcome, 'failed'>, counts: { imported: number; skipped: number; connectionProblems?: readonly unknown[] }): void;
     fail(message: string): void;
   };
   /** A copy of the record: the server serializes it, nobody edits it. */
@@ -108,6 +115,7 @@ export function createSyncStatus(
   let running = 0;
   let lastRun: RunRecord | null = null;
   let lastSyncedAt: string | null = null;
+  let connectionProblems: number | null = null;
   return {
     begin() {
       const startedAt = now().toISOString();
@@ -121,11 +129,20 @@ export function createSyncStatus(
         if (record.outcome === 'synced') lastSyncedAt = lastRun.finishedAt;
       };
       return {
-        finish: (outcome, counts) => settle({ outcome, imported: counts.imported, skipped: counts.skipped, error: null }),
+        finish: (outcome, counts) => {
+          if (done) return;
+          if (counts.connectionProblems) connectionProblems = counts.connectionProblems.length;
+          settle({ outcome, imported: counts.imported, skipped: counts.skipped, error: null });
+        },
         fail: (message) => settle({ outcome: 'failed', imported: 0, skipped: 0, error: scrubStatusError(message, secrets()) }),
       };
     },
-    snapshot: () => ({ running: running > 0, lastRun: lastRun ? { ...lastRun } : null, lastSyncedAt }),
+    snapshot: () => ({
+      running: running > 0,
+      lastRun: lastRun ? { ...lastRun } : null,
+      lastSyncedAt,
+      ...(connectionProblems === null ? {} : { connectionProblems }),
+    }),
   };
 }
 
@@ -155,7 +172,10 @@ export function statusReply(
   return {
     status: ok ? 200 : 503,
     headers: { ...JSON_HEADERS },
-    body: JSON.stringify({ version, ok, running: status.running, lastRun: status.lastRun, lastSyncedAt: status.lastSyncedAt }),
+    body: JSON.stringify({
+      version, ok, running: status.running, lastRun: status.lastRun, lastSyncedAt: status.lastSyncedAt,
+      ...(status.connectionProblems === undefined ? {} : { connectionProblems: status.connectionProblems }),
+    }),
   };
 }
 

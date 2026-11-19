@@ -262,12 +262,18 @@ a cooldown, so reloading the page is a cheap no-op.
 
 Investment positions (holdings snapshots) are written by the add-on only; the
 companion cannot. So while Wealthfolio is open, the add-on also syncs on its own
-when it has not written them for 20 hours and an investment account is mapped.
+when it has not run its holdings step for 20 hours and an investment account is mapped.
 With its schedule off it does so only while a companion is syncing (one that
 synced in the last two days); without one, Off means you sync by hand. It
 counts as an automatic SimpleFin download (an hour after the newest one, within
 the automatic share of the day). Snapshots still need Wealthfolio open in a
 browser at least once a day.
+
+A snapshot is saved only on a day an account's holdings changed: a share
+count, a cost the provider sent, the cash, or the asset a holding is on.
+Wealthfolio sets an account's net contribution to 0 on every holdings snapshot
+it saves (its own holdings editor does the same), so a snapshot every day undid
+a net contribution entered by hand. Prices are written every sync either way.
 
 Each run re-scans a two-week overlap rather than only new transactions, because
 card purchases often post days later with a backdated timestamp. Transactions
@@ -284,9 +290,41 @@ nothing.
 - Positive amounts on a credit-card account import as **Credit** (a refund,
   netted against spending) unless they look like a card payment — "payment",
   "autopay", "thank you", "e-pay" — which become Transfer In.
+- A bank fee coming back ("OVERDRAFT FEE REFUND", "Monthly Maintenance Fee
+  Waived", "LATE PAYMENT FEE REVERSAL") imports as a **Credit** marked Refund on
+  a cash or card account, never as income, a card payment or half of a
+  transfer. The text needs a fee word (`fee`, `service charge`, `late charge`)
+  and a word saying it came back (waived, reversal, refund, rebate,
+  reimbursement, adjustment, or "credit" right after the fee word, as in
+  "LATE FEE CREDIT"; a deposit labelled "ACH CREDIT" stays a deposit). A
+  transaction rule overrides it. With the companion, it is filed under the
+  category of the fee it reverses: same account, same amount, up to 30 days
+  before, closest first. One you already put in a spending category is left
+  alone, and Undo in the change log takes the filing off for good. One you had
+  filed under an income category keeps it (it no longer counts anywhere on a
+  refund) and also gets the fee's spending category; Undo takes off only the
+  spending one.
 - Cash-transfer legs are deliberately imported with **no asset**, which is what
   lets Wealthfolio book the cash movement and pair the two legs. See
   `companion/upstream-pr.md` for the underlying upstream issue.
+
+### When SimpleFin can't update a connection
+
+SimpleFIN Bridge keeps serving a connection's last figures when the bank needs
+you to sign in again, so its accounts look current. The add-on and companion
+ask the Bridge (protocol version 2; Lunch Flow is asked as before) which
+connection has a problem, and say so:
+- **Sign in again**: a banner on Home at once, with a link to the Bridge, and
+  "not updating" next to the affected accounts in Settings → Accounts.
+- **Anything else** (an account SimpleFin could not read, say): the same, once
+  it has lasted a day, so a one-off "try again later" stays quiet.
+- With the companion: a Telegram notice when a problem starts and another when
+  it clears, a line in the daily report while it lasts (snoozable), a Home
+  Assistant alert, and a count on the status page.
+
+A problem on an account you don't sync is left out. The add-on hides a record
+more than two days old. A problem that names no account (a dead connection)
+is still shown. The figures update again once SimpleFin does.
 
 ### Ignore rules
 
@@ -319,7 +357,8 @@ known wording counts (today Fidelity's `DIVIDEND RECEIVED … (VOO) (Cash)`), on
 in an investment account, and only when exactly one security under that ticker
 is found: in the account's holdings; or, for a position already sold, in the
 account's own earlier activity (a dividend, a trade); or in its holdings
-snapshots from the weeks before the dividend. Anything else is imported as
+snapshots from the weeks before the dividend, or the last one before those
+weeks (a snapshot is saved only when holdings change). Anything else is imported as
 before. A transaction rule wins, as always: a rule typed **DIVIDEND** books the
 security the same way, or **Interest** when none is named (a Dividend needs one:
 written on cash, Wealthfolio makes up a `$CASH` security to hold it). A booked
@@ -340,9 +379,19 @@ transferred in raise the count without new money and are costed as a buy, so
 correct the cost on the holding after one. When the share count changes by
 1.5× or more either way (a split, or a large buy or sale) the sync does not
 guess: it asks you once to enter the cost, as it does when the feed has no
-price for new shares. A cost Wealthfolio holds in another currency than the
-feed's is not carried (each day's snapshot is then written without one, so a
-cost entered by hand does not last for such a holding). A holding with no cost
+price for new shares. A fund you price by hand in Wealthfolio keeps its cost
+too. Saving a snapshot makes Wealthfolio write a hand-priced fund's cost as
+that day's price, so the sync then puts the fund's price back: the one you
+entered for that day, else the latest before it (also when the provider sends
+the cost itself). A hand-priced fund with no price at all gets no cost
+carried. The carry for a hand-priced fund needs Wealthfolio to report the
+fund's pricing as manual (Wealthfolio 3.13 does). If the price can't be put
+back, the sync reports the fund by name, and it shows at its cost until its
+next price; if its prices can't be read at
+all, the account's snapshot waits for the next sync rather than losing the
+cost. A cost Wealthfolio holds in another currency than the feed's is not
+carried (a snapshot saved then is written without one, so a cost entered by
+hand lasts only until the holdings next change). A holding with no cost
 in Wealthfolio stays unknown, and Home lists it under
 "Wealthfolio has no cost for…" until you enter one (a new holding the feed
 sends without a cost shows there too). That list repeats no alert. If your
@@ -474,7 +523,8 @@ are different versions, naming the fix (reload, upload the zip, or pull the imag
 Under **Settings → Home Assistant**, the companion can also send alerts to Home
 Assistant, through its notify service (with a long-lived access token) or a
 webhook. Problem alerts are sent: sync failing, balance drift, unlinked
-transfers, large transactions, new accounts, refusals and duplicates removed. A
+transfers, large transactions, new accounts, SimpleFin connection problems,
+refusals and duplicates removed. A
 notice for each import is off until you switch it on. Alerts the add-on raises
 wait for the companion's next pass, within 5 minutes.
 
@@ -522,8 +572,11 @@ Running the companion headless? Set `STATUS_PORT` (say `8099`) and it answers
 { "version": "1.71.0", "ok": true, "running": false,
   "lastRun": { "startedAt": "…", "finishedAt": "…", "outcome": "synced",
                "imported": 3, "skipped": 120, "error": null },
-  "lastSyncedAt": "…" }
+  "lastSyncedAt": "…", "connectionProblems": 0 }
 ```
+
+`connectionProblems` counts the SimpleFin connection problems being shown, as
+of the last run that read the feed. It is absent until one has.
 
 Each `outcome` and the status it returns:
 - `synced`: 200.
@@ -680,7 +733,10 @@ docker run --rm \
 
 Labels are matched by pattern rather than a lookup table, so a label Amazon
 invents next month files itself. Anything unmatched goes to a configurable default
-*and* is announced once in Telegram. `companion/scripts/amazon-rules.mjs` inserts
+*and* is announced once in Telegram. The default is the card's **Category for
+anything unrecognized**, picked from the same list as the labels: a subcategory
+too (`Parent / Child`), with a companion on 1.74.0 or later.
+`companion/scripts/amazon-rules.mjs` inserts
 the matching Wealthfolio rules (dry-run by default).
 
 **Itemization is not possible.** Amazon removed item names, quantities and unit

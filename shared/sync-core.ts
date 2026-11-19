@@ -6,10 +6,12 @@ import { learnedNameKeys, learnedTransferType } from './transfer-names.js';
 import { decideDividend, isDividendRow, isInvestmentAccountType, NO_DIVIDEND_READS, SNAPSHOT_WINDOW_DAYS, type DividendReads, type HeldSecurity, type PastActivity, type SnapshotDay } from './dividends.js';
 import { mapTransactionWithSource, type MappedType } from './mapper.js';
 import { REIMBURSEMENT_SUBTYPE } from './cash-flow-bucket.js';
+import { FEE_REVERSAL_SUBTYPE } from './fee-reversal.js';
 import { accountTxKey, detectTransferPairs, TRANSFER_MATCH_WINDOW_SECONDS } from './transfers.js';
 import type { TransferCandidate } from './transfers.js';
 import { planReconciliation, IN_TRANSIT_COMMENT_PREFIX, isSecurityAsset } from './reconcile.js';
 import { isSimplefinNotice } from './simplefin-payload.js';
+import { findConnectionProblems, mergeConnectionProblems, shownConnectionProblems, type ConnectionProblem, type ConnectionProblemsRecord } from './connection-problems.js';
 import { accountTag, BALANCE_TOTAL_DAYS, balanceShowsTotal, feedPrices, toHoldingsSnapshot } from './holdings.js';
 import { loanBalanceOf, type LinkedLoan, type LoanLinks } from './loan-balances.js';
 import type { FeedTx, ExistingRow } from './reconcile.js';
@@ -586,6 +588,13 @@ export interface SyncResult {
    * restarted by hand often — re-announcing the same account indefinitely.
    */
   unmappedAccounts: UnmappedAccount[] | null;
+  /**
+   * The SimpleFin connection problems to show now (#81): sign-ins at once,
+   * anything else once it has lasted 24 hours. Absent when the run downloaded
+   * nothing, or could not read the stored record (then nothing was written
+   * either, so no episode restarts).
+   */
+  connectionProblems?: ConnectionProblem[];
   /**
    * Creates the host REFUSED — planned because no stored row carried that
    * transaction id, then rejected anyway by Wealthfolio's own date+amount
@@ -2247,7 +2256,8 @@ async function runSyncPass(
   const relinkOf = new Map(relinks.map((r) => [r.newId, r]));
   /** Loan accounts linked to a liability (shared/loan-balances.ts): not
    *  unmapped, and recorded after the accounts below. A failed read links none. */
-  const loanLinks: LoanLinks = (await store.getLoanLinks?.().catch(() => ({}))) ?? {};
+  let problemsInputsDegraded = false;
+  const loanLinks: LoanLinks = (await store.getLoanLinks?.().catch(() => { problemsInputsDegraded = true; return {}; })) ?? {};
   /** Old ids a confirmed re-link replaced: not a feed that is late, so nothing
    *  waits on them. One mapped elsewhere or linked to a loan since is not. */
   const replacedIds = retiredIds(relinks, mapping, loanLinks);
@@ -2260,7 +2270,7 @@ async function runSyncPass(
    *  per run; a failure degrades to "nothing ignored", which is the safe
    *  direction (it over-reports rather than hiding an account silently). */
   const ignoredAccountIds = new Set(
-    (await store.getIgnoredAccounts?.().catch(() => [])) ?? [],
+    (await store.getIgnoredAccounts?.().catch(() => { problemsInputsDegraded = true; return [] as string[]; })) ?? [],
   );
   // A retired id is expected to fall silent. One that reports transactions is
   // the old connection still at the Bridge, or a Yes given by mistake: say so
@@ -2436,7 +2446,8 @@ async function runSyncPass(
      *  `since`): reconciliation leaves a stored row's type and subtype as they are. */
     createOnly?: true;
     /** Nothing decided this cash money-in row's type and the plain mapping says
-     *  DEPOSIT: a stored payback stays as stored (see `FeedTx.keepPayback`). */
+     *  DEPOSIT (or a fee reversal's CREDIT/REFUND, #79): a stored payback stays as
+     *  stored (see `FeedTx.keepPayback`). */
     keepPayback?: true;
     /** A dividend row this run named no security for: a stored dividend stays
      *  as stored (see `FeedTx.keepDividend`). */
@@ -2515,6 +2526,31 @@ async function runSyncPass(
   }
   const linkedLoan = (sfinId: string): boolean =>
     !!loanLinks[sfinId] && (loansById === null || loansById.has(loanLinks[sfinId]));
+  let connectionProblems: ConnectionProblem[] | undefined;
+  let priorProblems: ConnectionProblemsRecord | null | undefined;
+  if (problemsInputsDegraded) {
+    // A degraded "in use" set would flip problems in and out (false "updating again").
+    console.warn('[simplefin-sync] connection problems skipped: the loan links or ignore list could not be read');
+  } else {
+    try {
+      // A store that cannot read the record is UNREADABLE (skip), not empty:
+      // null would restart every episode on every run.
+      priorProblems = store.getSimplefinProblems ? await store.getSimplefinProblems() : undefined;
+    } catch (e: any) {
+      console.warn('[simplefin-sync] connection problems not read: ' + (e?.message ?? e));
+    }
+  }
+  if (priorProblems !== undefined) {
+    const inUse = (id: string) => (!!mapping[id] || linkedLoan(id)) && !ignoredAccountIds.has(id);
+    const problemsAt = new Date();
+    const record = mergeConnectionProblems(priorProblems, findConnectionProblems(accountSet, inUse), problemsAt);
+    try {
+      await store.setSimplefinProblems?.(record);
+      connectionProblems = shownConnectionProblems(record, problemsAt);
+    } catch (e: any) {
+      console.warn('[simplefin-sync] connection problems not saved: ' + (e?.message ?? e));
+    }
+  }
   /** Bank transactions the user has said are not real (shared/skipped-transactions.ts),
    *  per account. A failed read imports everything, as before the list existed. */
   const skippedTxKeys = new Set(
@@ -2768,7 +2804,7 @@ async function runSyncPass(
       // `tx.description` is the bank's raw text — enrichment comes later.
       const bankFirst = bankFirstTransferOut(tx.description, amount, acctType, builtIn, otherAccountWords);
       // R13: from the bank text ALONE, before learned typing.
-      const keepPayback = !payback && !builtIn.fromRule && builtIn.type === 'DEPOSIT' && amount > 0 && (!acctType || acctType === 'CASH');
+      const keepPayback = !payback && !builtIn.fromRule && (builtIn.type === 'DEPOSIT' || !!builtIn.feeReversal) && amount > 0 && (!acctType || acctType === 'CASH');
       // Live, 2026-10-18: a savings -> Spend landing ("... TRANSFER CAPITAL ONE ACH
       // WEB PAYMENT") posted before the savings half and read as a plain deposit,
       // and 360 Checking's withdrawal to Performance Savings read as spending. A
@@ -2896,7 +2932,8 @@ async function runSyncPass(
       // Never paired: pairing would type it a transfer and link it again — or,
       // for a payback, turn it into a transfer leg.
       // (A stored payback a learned name matched stays out too, R13.)
-      if (notTransfer || payback || heldAsPayback) continue;
+      // A refund of a fee is never a transfer half either (#79).
+      if (notTransfer || payback || heldAsPayback || builtIn.feeReversal) continue;
       // A rule's type is never overridden by pair detection, which is why ruled
       // rows sit out of it — except a rule that already says "transfer, this way".
       // Pairing assigns that very type, so all it adds is the link; leaving such a
@@ -3282,7 +3319,7 @@ async function runSyncPass(
       ...(inTransit ? { inTransit: true } : {}),
       ...(needsReview ? { needsReview: true } : {}),
       ...(createOnly ? { createOnly: true as const } : {}),
-      ...(keepPayback && type === 'DEPOSIT' && !inTransit ? { keepPayback: true as const } : {}),
+      ...(keepPayback && (type === 'DEPOSIT' || (type === 'CREDIT' && subtype === FEE_REVERSAL_SUBTYPE)) && !inTransit ? { keepPayback: true as const } : {}),
       ...(assetId ? { assetId } : {}),
       ...(keepDividend ? { keepDividend } : {}),
       // Carried so `changed()` can compare it against the stored row — a rule
@@ -4971,6 +5008,9 @@ async function runSyncPass(
         for (const symbol of outcome.costUnknown ?? []) {
           errors.push(`No cost basis for ${symbol} (${sfAccount.name}): SimpleFin sent no cost, and its share count changed in a way the sync cannot cost (a purchase with no single price, or a change of 1.5× or more either way, which may be a split). Enter the cost on the holding in Wealthfolio, or gains for the account stay unknown.`);
         }
+        for (const symbol of outcome.priceNotRestored ?? []) {
+          errors.push(`Couldn't put back the price of ${symbol} after saving its holdings. It shows at its cost until its next price.`);
+        }
         for (const symbol of outcome.unresolvedSymbols) {
           // Deduped across accounts: the same unresolvable ticker in two
           // brokerages is one problem to report, not two.
@@ -5290,6 +5330,7 @@ async function runSyncPass(
   return {
     imported, skipped, errors, stuckTransferAlerts, importedTransactions,
     largeTransactionAlerts, balanceDriftAlerts, prunedDuplicates, unmappedAccounts,
+    ...(connectionProblems ? { connectionProblems } : {}),
     refusedCreates,
     holdingsSnapshots,
     ignoredByRules,

@@ -26,6 +26,14 @@ describe('AccountList', () => {
     expect(onOpenAccount).toHaveBeenCalledWith('wf-b');
   });
 
+  it('marks only the accounts SimpleFin is not updating (#81)', () => {
+    render(<AccountList mapping={mapping} balances={balances} sfinNames={sfinNames} wfNames={wfNames} onOpenAccount={() => {}} notUpdating={new Set(['s2'])} />);
+    const chips = screen.getAllByText('not updating');
+    expect(chips).toHaveLength(1);
+    expect(chips[0].closest('.sfin-acct-card')?.textContent).toContain('Citi Double Cash');
+    expect(chips[0].getAttribute('title')).toMatch(/SimpleFin/);
+  });
+
   it('says so when nothing is mapped yet, instead of an empty frame', () => {
     render(<AccountList mapping={{}} balances={{}} sfinNames={{}} wfNames={{}} onOpenAccount={() => {}} />);
     expect(screen.getByText('No accounts mapped yet.')).toBeInTheDocument();

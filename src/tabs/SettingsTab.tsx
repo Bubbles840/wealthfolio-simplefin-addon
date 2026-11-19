@@ -62,6 +62,8 @@ export const CARD = {
 } as const;
 
 interface Props {
+  /** SimpleFin ids of accounts to mark "not updating" (#81). */
+  notUpdating?: ReadonlySet<string>;
   ctx: AddonContext;
   store: SecretsStore;
   scheduler: Scheduler;
@@ -112,7 +114,7 @@ interface Props {
  */
 export function SettingsTab({
   ctx, store, scheduler, onReset, amazon, categories, isOpen, toggleCard,
-  accountMapping, balances, sfinNames, wfNames, telegramDraft, onAccountsChanged, auditSnapshot, onAuditChanged,
+  accountMapping, balances, sfinNames, wfNames, telegramDraft, onAccountsChanged, auditSnapshot, onAuditChanged, notUpdating,
 }: Props) {
   // The stored pool, for the card's collapsed summary. Read here and updated by
   // the card itself on Set / Clear: the companion's published status would lag
@@ -478,6 +480,7 @@ export function SettingsTab({
             yet." beside "Could not read your saved account mapping" would be
             two contradicting statements. */}
         {!mappingLoadFailed && <AccountList
+          notUpdating={notUpdating}
           mapping={accountMapping}
           balances={balances}
           sfinNames={sfinNames}

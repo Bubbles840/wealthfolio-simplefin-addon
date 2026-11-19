@@ -34,7 +34,7 @@ export interface FeedTx {
    *  update writes the stored ones back. */
   createOnly?: true;
   /** A cash money-in row that nothing decides (no rule, no payback flag) and the plain
-   *  mapping calls a DEPOSIT. A STORED CREDIT/REIMBURSEMENT is then a payback somebody
+   *  mapping calls a DEPOSIT or a fee reversal's CREDIT/REFUND (#79). A STORED CREDIT/REIMBURSEMENT is then a payback somebody
    *  filed (or made by hand, or a rule made before it was undone): `changed()` leaves
    *  its type and subtype alone and an update writes them back, as for `createOnly`. */
   keepPayback?: true;

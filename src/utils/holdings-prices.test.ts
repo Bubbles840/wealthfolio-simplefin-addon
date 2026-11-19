@@ -37,12 +37,12 @@ describe('manualQuote', () => {
 function wealthfolio() {
   type Asset = { id: string; quoteMode: string; createdAt: string; displayCode?: string };
   const assets = new Map<string, Asset>();
-  const quotes = new Map<string, { close: number; dataSource: string }>(); // `${assetId}|${day}|${source}`
+  const quotes = new Map<string, { close: number; dataSource: string; notes?: string | null }>(); // `${assetId}|${day}|${source}`
   const snapshots = new Map<string, HoldingsSnapshot>(); // `${account}|${date}`
   const key = (s: string) => s.trim().toUpperCase();
   const byId = (id: string) => [...assets.values()].find((a) => a.id === id)!;
   const quotesOf = (id: string) => [...quotes].filter(([k]) => k.startsWith(`${id}|`))
-    .map(([k, q]) => ({ timestamp: `${k.split('|')[1]}T12:00:00Z`, close: q.close, dataSource: q.dataSource }));
+    .map(([k, q]) => ({ timestamp: `${k.split('|')[1]}T12:00:00Z`, close: q.close, dataSource: q.dataSource, notes: q.notes ?? null }));
   const latest = (id: string) => quotesOf(id).sort((a, b) => (a.timestamp < b.timestamp ? 1 : -1))[0]?.close ?? null;
 
   const io: SnapshotIo = {
@@ -71,28 +71,42 @@ function wealthfolio() {
     getHoldings: vi.fn(async (account: string) => {
       const dates = [...snapshots.keys()].filter((k) => k.startsWith(`${account}|`)).sort();
       if (dates.length === 0) return [];
-      return snapshots.get(dates[dates.length - 1])!.positions.map((p) => {
+      const snap = snapshots.get(dates[dates.length - 1])!;
+      const positions = snap.positions.map((p) => {
         const asset = assets.get(key(p.symbol))!;
         const quantity = Number(p.quantity);
         return {
+          holdingType: 'security',
           instrument: { id: asset.id, symbol: asset.displayCode ?? p.symbol, pricingMode: asset.quoteMode },
           price: latest(asset.id),
           quantity,
           costBasis: { local: p.avgCost ? Math.round(Number(p.avgCost) * quantity * 100) / 100 : 0 },
         };
       });
+      // A cash line per currency, none for a zero balance (Wealthfolio skips it).
+      const cash = Object.entries(snap.cashBalances).filter(([, amount]) => Number(amount) !== 0).map(([currency, amount]) => ({
+        holdingType: 'cash',
+        instrument: { id: `cash:${currency}`, symbol: currency, pricingMode: 'MANUAL' },
+        price: 1,
+        quantity: Number(amount),
+        costBasis: { local: Number(amount) },
+        localCurrency: currency,
+      }));
+      return [...positions, ...cash];
     }),
     getProfile: vi.fn(async (id: string) => ({ quoteMode: byId(id).quoteMode, createdAt: byId(id).createdAt })),
     updateQuoteMode: vi.fn(async (id: string, mode: string) => { byId(id).quoteMode = mode; }),
     getHistory: vi.fn(async (id: string) => quotesOf(id)),
-    updateQuote: vi.fn(async (id: string, quote: { timestamp: string; close: number }) => {
-      quotes.set(`${id}|${quote.timestamp.slice(0, 10)}|MANUAL`, { close: quote.close, dataSource: 'MANUAL' });
+    updateQuote: vi.fn(async (id: string, quote: { timestamp: string; close: number; notes?: string }) => {
+      quotes.set(`${id}|${quote.timestamp.slice(0, 10)}|MANUAL`, { close: quote.close, dataSource: 'MANUAL', notes: quote.notes });
     }),
   } satisfies PricingApi;
 
-  /** What a position is worth in this account on this day, as Wealthfolio values it. */
+  /** What a position is worth in this account on this day, as Wealthfolio values
+   *  it: the shares of the latest snapshot on or before the day. */
   const value = (account: string, date: string, symbolPrefix: string) => {
-    const snap = snapshots.get(`${account}|${date}`)!;
+    const on = [...snapshots.keys()].filter((k) => k.startsWith(`${account}|`) && k.split('|')[1] <= date).sort();
+    const snap = snapshots.get(on[on.length - 1])!;
     const p = snap.positions.find((x) => key(x.symbol).startsWith(key(symbolPrefix)))!;
     const asset = assets.get(key(p.symbol))!;
     const day = quotesOf(asset.id).filter((q) => q.timestamp.slice(0, 10) <= date)
@@ -105,13 +119,15 @@ function wealthfolio() {
     return assets.get(key(symbol))!;
   };
   const marketQuote = (id: string, day: string, close: number) => quotes.set(`${id}|${day}|YAHOO`, { close, dataSource: 'YAHOO' });
-  return { io, pricing, assets, quotes, snapshots, value, seedAsset, marketQuote };
+  /** A price the person entered by hand. */
+  const handQuote = (id: string, day: string, close: number, notes?: string) => quotes.set(`${id}|${day}|MANUAL`, { close, dataSource: 'MANUAL', notes });
+  return { io, pricing, assets, quotes, snapshots, value, seedAsset, marketQuote, handQuote };
 }
 
-const snap = (symbol: string, quantity: string, date = DAY, avgCost?: string): HoldingsSnapshot => ({
+const snap = (symbol: string, quantity: string, date = DAY, avgCost?: string, cash = '0'): HoldingsSnapshot => ({
   date,
   positions: [{ symbol, quantity, currency: 'USD', ...(avgCost ? { avgCost } : {}) }],
-  cashBalances: { USD: '0' },
+  cashBalances: { USD: cash },
 });
 const priceOf = (symbol: string, price: string, extra: Partial<FeedPrice> = {}): FeedPrice[] => [{ symbol, price, currency: 'USD', ...extra }];
 
@@ -182,6 +198,25 @@ describe('syncHoldingsWithFeedPrices', () => {
     expect(wf.value('wf-a', next, 'MODEL BASKET')).toEqual({ symbol: 'MODEL BASKET (AAAA1111)', value: 50000 });
   });
 
+  it('keeps a price entered for the day itself on a kept holding', async () => {
+    const wf = withBasket();
+    await syncHoldingsWithFeedPrices(wf.io, wf.pricing, 'wf-a', snap('MODEL BASKET', '400.5'), priceOf('MODEL BASKET', '124.84394507'), 'AAAA1111', undefined, NOW);
+    const next = '2026-10-20';
+    wf.handQuote(wf.assets.get('MODEL BASKET (AAAA1111)')!.id, next, 130);
+    await syncHoldingsWithFeedPrices(wf.io, wf.pricing, 'wf-a', snap('MODEL BASKET', '400.5', next, '100'), [], 'AAAA1111', undefined, NOW);
+    expect(wf.value('wf-a', next, 'MODEL BASKET')).toEqual({ symbol: 'MODEL BASKET (AAAA1111)', value: 52065 });
+  });
+
+  it('names a kept holding whose price could not be read before its import', async () => {
+    // The import writes the cost as the day's price, and there is no price to put back.
+    const wf = withBasket();
+    await syncHoldingsWithFeedPrices(wf.io, wf.pricing, 'wf-a', snap('MODEL BASKET', '400.5'), priceOf('MODEL BASKET', '124.84394507'), 'AAAA1111', undefined, NOW);
+    wf.pricing.getHistory.mockRejectedValueOnce(new Error('timeout'));
+    const r = await syncHoldingsWithFeedPrices(wf.io, wf.pricing, 'wf-a', snap('MODEL BASKET', '400.5', '2026-10-20', '100'), [], 'AAAA1111', undefined, NOW);
+
+    expect(r).toMatchObject({ imported: 1, priceNotRestored: ['MODEL BASKET'] });
+  });
+
   it('leaves a shared asset the person set to manual alone', async () => {
     const wf = wealthfolio();
     wf.seedAsset('MODEL BASKET', 'MANUAL', OLD);
@@ -248,7 +283,8 @@ describe('syncHoldingsWithFeedPrices', () => {
 
     const next = '2026-10-20';
     const r = await syncHoldingsWithFeedPrices(wf.io, wf.pricing, 'wf-a', snap('MODEL BASKET', '400.5', next), priceOf('MODEL BASKET', '125'), 'AAAA1111', undefined, NOW);
-    expect(r).toMatchObject({ imported: 1, pricedFromFeed: ['MODEL BASKET (AAAA1111)'] });
+    // Held unchanged, so no snapshot (#83); the day's price is still written.
+    expect(r).toMatchObject({ imported: 0, skipped: 1, pricedFromFeed: ['MODEL BASKET (AAAA1111)'] });
     expect(wf.pricing.getProfile).not.toHaveBeenCalled();
   });
 
@@ -370,10 +406,13 @@ describe('syncHoldingsWithFeedPrices', () => {
       return wf;
     }
     const written = (wf: ReturnType<typeof wealthfolio>, date: string) => wf.snapshots.get(`wf-a|${date}`)!.positions[0];
+    /** The day after: the same shares, and a dividend paid in cash, so the
+     *  snapshot is written (one that changed nothing is not: #83). */
+    const nextDay = (symbol: string, shares: string) => snap(symbol, shares, NEXT, undefined, '25.00');
 
     it('keeps the cost Wealthfolio already has', async () => {
       const wf = withTicker();
-      const r = await syncHoldingsWithFeedPrices(wf.io, wf.pricing, 'wf-a', snap('VOO', '10', NEXT), [], 'AAAA1111', undefined, NOW);
+      const r = await syncHoldingsWithFeedPrices(wf.io, wf.pricing, 'wf-a', nextDay('VOO', '10'), [], 'AAAA1111', undefined, NOW);
 
       expect(written(wf, NEXT).avgCost).toBe('50.00');
       expect(r).toEqual({ imported: 1, skipped: 0, unresolvedSymbols: [] });
@@ -383,7 +422,7 @@ describe('syncHoldingsWithFeedPrices', () => {
       const wf = wealthfolio();
       wf.seedAsset('SHOP.TO', 'MARKET', OLD, 'SHOP');
       wf.snapshots.set(`wf-a|${DAY}`, snap('SHOP.TO', '10', DAY, '50'));
-      await syncHoldingsWithFeedPrices(wf.io, wf.pricing, 'wf-a', snap('SHOP.TO', '10', NEXT), [], 'AAAA1111', undefined, NOW);
+      await syncHoldingsWithFeedPrices(wf.io, wf.pricing, 'wf-a', nextDay('SHOP.TO', '10'), [], 'AAAA1111', undefined, NOW);
 
       expect(written(wf, NEXT).avgCost).toBe('50.00');
     });
@@ -393,7 +432,7 @@ describe('syncHoldingsWithFeedPrices', () => {
       const read = wf.pricing.getHoldings.getMockImplementation()!;
       wf.pricing.getHoldings.mockImplementation(async (account: string) =>
         (await read(account)).map((h) => ({ ...h, localCurrency: 'CAD' })));
-      await syncHoldingsWithFeedPrices(wf.io, wf.pricing, 'wf-a', snap('VOO', '10', NEXT), [], 'AAAA1111', undefined, NOW);
+      await syncHoldingsWithFeedPrices(wf.io, wf.pricing, 'wf-a', nextDay('VOO', '10'), [], 'AAAA1111', undefined, NOW);
 
       expect(written(wf, NEXT).avgCost).toBeUndefined();
     });
@@ -403,7 +442,7 @@ describe('syncHoldingsWithFeedPrices', () => {
       const read = wf.pricing.getHoldings.getMockImplementation()!;
       wf.pricing.getHoldings.mockImplementation(async (account: string) =>
         (await read(account)).map((h) => ({ ...h, localCurrency: 'usd' })));
-      await syncHoldingsWithFeedPrices(wf.io, wf.pricing, 'wf-a', snap('VOO', '10', NEXT), [], 'AAAA1111', undefined, NOW);
+      await syncHoldingsWithFeedPrices(wf.io, wf.pricing, 'wf-a', nextDay('VOO', '10'), [], 'AAAA1111', undefined, NOW);
 
       expect(written(wf, NEXT).avgCost).toBe('50.00');
     });
@@ -414,7 +453,7 @@ describe('syncHoldingsWithFeedPrices', () => {
         const read = wf.pricing.getHoldings.getMockImplementation()!;
         wf.pricing.getHoldings.mockImplementation(async (account: string) =>
           (await read(account)).map((h) => ({ ...h, localCurrency: held })));
-        const r = await syncHoldingsWithFeedPrices(wf.io, wf.pricing, 'wf-a', snap('VOO', '10', NEXT), [], 'AAAA1111', undefined, NOW);
+        const r = await syncHoldingsWithFeedPrices(wf.io, wf.pricing, 'wf-a', nextDay('VOO', '10'), [], 'AAAA1111', undefined, NOW);
         expect(written(wf, NEXT).avgCost).toBeUndefined();
         // The mismatch stays: asking would repeat every day. Home lists it instead.
         expect(r.costUnknown).toBeUndefined();
@@ -428,11 +467,11 @@ describe('syncHoldingsWithFeedPrices', () => {
       wf.snapshots.set(`wf-a|${DAY}`, snap('MODEL BASKET (AAAA1111)', '400.5', DAY, '100'));
       wf.marketQuote(wf.assets.get('MODEL BASKET')!.id, DAY, 126);
 
-      await syncHoldingsWithFeedPrices(wf.io, wf.pricing, 'wf-a', snap('MODEL BASKET', '400.5', NEXT), priceOf('MODEL BASKET', '125'), 'AAAA1111', undefined, NOW);
+      await syncHoldingsWithFeedPrices(wf.io, wf.pricing, 'wf-a', nextDay('MODEL BASKET', '400.5'), priceOf('MODEL BASKET', '125'), 'AAAA1111', undefined, NOW);
       expect(written(wf, NEXT)).toMatchObject({ symbol: 'MODEL BASKET', avgCost: '100.00' });
     });
 
-    it('carries nothing back onto a shared asset the person prices by hand', async () => {
+    it('carries the cost back onto a shared asset the person prices by hand, and keeps its price', async () => {
       const wf = withBasket();
       await syncHoldingsWithFeedPrices(wf.io, wf.pricing, 'wf-a', snap('MODEL BASKET', '400.5'), priceOf('MODEL BASKET', '124.84394507'), 'AAAA1111', undefined, NOW);
       wf.snapshots.set(`wf-a|${DAY}`, snap('MODEL BASKET (AAAA1111)', '400.5', DAY, '100'));
@@ -440,8 +479,149 @@ describe('syncHoldingsWithFeedPrices', () => {
       wf.assets.get('MODEL BASKET')!.quoteMode = 'MANUAL';
 
       await syncHoldingsWithFeedPrices(wf.io, wf.pricing, 'wf-a', snap('MODEL BASKET', '400.5', NEXT), priceOf('MODEL BASKET', '125'), 'AAAA1111', undefined, NOW);
-      expect(written(wf, NEXT)).toMatchObject({ symbol: 'MODEL BASKET' });
-      expect(written(wf, NEXT).avgCost).toBeUndefined();
+      expect(written(wf, NEXT)).toMatchObject({ symbol: 'MODEL BASKET', avgCost: '100.00' });
+      // The import wrote 100 as the day's price; the last price, 126, is back.
+      expect(wf.value('wf-a', NEXT, 'MODEL BASKET')).toEqual({ symbol: 'MODEL BASKET', value: 50463 });
+    });
+
+    describe('on a shared fund the person prices by hand', () => {
+      /** A plan fund on a shared asset priced by hand: 100 shares at a cost of
+       *  $10 entered by hand, its price $11.50 on DAY. */
+      function withHandPriced() {
+        const wf = wealthfolio();
+        const fund = wf.seedAsset('PLAN FUND', 'MANUAL', OLD);
+        wf.handQuote(fund.id, DAY, 11.5, 'From my statement');
+        wf.snapshots.set(`wf-a|${DAY}`, snap('PLAN FUND', '100', DAY, '10'));
+        return { wf, fund };
+      }
+      // A contribution: 4 more shares at the feed's $12.
+      const contribute = (wf: ReturnType<typeof wealthfolio>, log?: (line: string) => void) =>
+        syncHoldingsWithFeedPrices(wf.io, wf.pricing, 'wf-a', snap('PLAN FUND', '104', NEXT), priceOf('PLAN FUND', '12'), 'AAAA1111', log, NOW);
+
+      it('carries the cost, then puts back the price the import overwrote', async () => {
+        const { wf, fund } = withHandPriced();
+        const r = await contribute(wf);
+
+        // (100 × $10 + 4 × $12) ÷ 104
+        expect(written(wf, NEXT).avgCost).toBe('10.07692308');
+        expect(r).toEqual({ imported: 1, skipped: 0, unresolvedSymbols: [] });
+        // The latest price before the day, with its own note; not the cost.
+        expect(wf.quotes.get(`${fund.id}|${NEXT}|MANUAL`)).toEqual({ close: 11.5, dataSource: 'MANUAL', notes: 'From my statement' });
+        // Still the person's: same asset, still priced by hand.
+        expect(fund.quoteMode).toBe('MANUAL');
+        expect(written(wf, NEXT).symbol).toBe('PLAN FUND');
+      });
+
+      it('puts back a price entered for that very day', async () => {
+        const { wf, fund } = withHandPriced();
+        wf.handQuote(fund.id, NEXT, 12.25);
+        await contribute(wf);
+
+        expect(wf.value('wf-a', NEXT, 'PLAN FUND')).toEqual({ symbol: 'PLAN FUND', value: 1274 });
+      });
+
+      it('asks, as for any holding, when the shares change by 1.5× or more', async () => {
+        const { wf, fund } = withHandPriced();
+        const r = await syncHoldingsWithFeedPrices(wf.io, wf.pricing, 'wf-a', snap('PLAN FUND', '160', NEXT), priceOf('PLAN FUND', '12'), 'AAAA1111', undefined, NOW);
+
+        expect(written(wf, NEXT).avgCost).toBeUndefined();
+        expect(r.costUnknown).toEqual(['PLAN FUND']);
+        expect(wf.quotes.has(`${fund.id}|${NEXT}|MANUAL`)).toBe(false);
+      });
+
+      it('carries nothing, and asks nothing, for a fund with no price at all', async () => {
+        for (const shares of ['104', '160']) {
+          const { wf, fund } = withHandPriced();
+          wf.quotes.clear();
+          const r = await syncHoldingsWithFeedPrices(wf.io, wf.pricing, 'wf-a', snap('PLAN FUND', shares, NEXT), priceOf('PLAN FUND', '12'), 'AAAA1111', undefined, NOW);
+
+          expect(written(wf, NEXT).avgCost).toBeUndefined();
+          expect(r.costUnknown).toBeUndefined();
+          expect(wf.quotes.has(`${fund.id}|${NEXT}|MANUAL`)).toBe(false);
+        }
+      });
+
+      it('tries the price once more when putting it back fails', async () => {
+        const { wf, fund } = withHandPriced();
+        wf.pricing.updateQuote.mockRejectedValueOnce(new Error('busy'));
+        const r = await contribute(wf);
+
+        expect(r.priceNotRestored).toBeUndefined();
+        expect(wf.pricing.updateQuote).toHaveBeenCalledTimes(2);
+        expect(wf.quotes.get(`${fund.id}|${NEXT}|MANUAL`)?.close).toBe(11.5);
+      });
+
+      it('names the fund when the price cannot be put back', async () => {
+        const { wf } = withHandPriced();
+        wf.pricing.updateQuote.mockRejectedValue(new Error('refused'));
+        const log = vi.fn();
+        const r = await contribute(wf, log);
+
+        expect(r).toMatchObject({ imported: 1, priceNotRestored: ['PLAN FUND'] });
+        expect(wf.pricing.updateQuote).toHaveBeenCalledTimes(2);
+        expect(log).toHaveBeenCalledWith(expect.stringContaining('could not put back the price of PLAN FUND: refused'));
+      });
+
+      it('puts the price back in the currency it was entered in', async () => {
+        const { wf, fund } = withHandPriced();
+        const read = wf.pricing.getHistory.getMockImplementation()!;
+        wf.pricing.getHistory.mockImplementation(async (id: string) => (await read(id)).map((q) => ({ ...q, currency: 'CAD' })));
+        await contribute(wf);
+
+        expect(wf.pricing.updateQuote).toHaveBeenCalledWith(fund.id, expect.objectContaining({ close: 11.5, currency: 'CAD' }));
+      });
+
+      it('skips the snapshot, keeping the held cost, when the price history cannot be read', async () => {
+        const { wf } = withHandPriced();
+        wf.pricing.getHistory.mockRejectedValue(new Error('timeout'));
+        const log = vi.fn();
+
+        await expect(contribute(wf, log)).rejects.toThrow('could not read the price history of PLAN FUND: timeout');
+        expect(wf.io.importSnapshots).not.toHaveBeenCalled();
+        expect(wf.snapshots.get(`wf-a|${DAY}`)).toMatchObject({ positions: [expect.objectContaining({ avgCost: '10' })] });
+        expect(log).toHaveBeenCalledWith(expect.stringContaining('could not read the price history of PLAN FUND: timeout'));
+      });
+
+      it('names the fund when putting the price back is refused with no reason', async () => {
+        const { wf } = withHandPriced();
+        wf.pricing.updateQuote.mockRejectedValue(undefined);
+        const r = await contribute(wf, vi.fn());
+
+        expect(r).toMatchObject({ imported: 1, priceNotRestored: ['PLAN FUND'] });
+        expect(wf.pricing.updateQuote).toHaveBeenCalledTimes(2);
+      });
+
+      it('reads no price on a day nothing changed', async () => {
+        const { wf } = withHandPriced();
+        const r = await syncHoldingsWithFeedPrices(wf.io, wf.pricing, 'wf-a', snap('PLAN FUND', '100', NEXT), priceOf('PLAN FUND', '12'), 'AAAA1111', undefined, NOW);
+
+        expect(r).toEqual({ imported: 0, skipped: 1, unresolvedSymbols: [] });
+        expect(wf.pricing.getHistory).not.toHaveBeenCalled();
+      });
+
+      // Lead's amendment (after plan verification): the restore also covers a cost SimpleFin sent.
+      it('puts back the price when SimpleFin sent the cost itself', async () => {
+        const { wf, fund } = withHandPriced();
+        await syncHoldingsWithFeedPrices(wf.io, wf.pricing, 'wf-a', snap('PLAN FUND', '104', NEXT, '10.07692308'), priceOf('PLAN FUND', '12'), 'AAAA1111', undefined, NOW);
+
+        expect(written(wf, NEXT).avgCost).toBe('10.07692308');
+        expect(wf.quotes.get(`${fund.id}|${NEXT}|MANUAL`)).toEqual({ close: 11.5, dataSource: 'MANUAL', notes: 'From my statement' });
+      });
+
+      // Lead's amendment: B only on a mode REPORTED as MANUAL. Unreported may be a market-priced
+      // asset, where a MANUAL quote could replace the market's quote for the day.
+      it('carries nothing and writes no price when Wealthfolio does not report the mode', async () => {
+        const { wf } = withHandPriced();
+        const read = wf.pricing.getHoldings.getMockImplementation()!;
+        wf.pricing.getHoldings.mockImplementation(async (account: string) =>
+          (await read(account)).map((h: any) => (h.instrument ? { ...h, instrument: { ...h.instrument, pricingMode: undefined } } : h)));
+        const r = await contribute(wf);
+
+        expect(written(wf, NEXT).avgCost).toBeUndefined();
+        expect(r.costUnknown).toBeUndefined();
+        expect(wf.pricing.getHistory).not.toHaveBeenCalled();
+        expect(wf.pricing.updateQuote).not.toHaveBeenCalled();
+      });
     });
 
     it('asks instead of guessing when the shares change by 1.5× or more (maybe a split)', async () => {
@@ -460,7 +640,7 @@ describe('syncHoldingsWithFeedPrices', () => {
       const read = wf.pricing.getHoldings.getMockImplementation()!;
       wf.pricing.getHoldings.mockImplementation(async (account: string) =>
         (await read(account)).map((h) => ({ ...h, instrument: { ...h.instrument, pricingMode: undefined as unknown as string } })));
-      await syncHoldingsWithFeedPrices(wf.io, wf.pricing, 'wf-a', snap('VOO', '10', NEXT), [], 'AAAA1111', undefined, NOW);
+      await syncHoldingsWithFeedPrices(wf.io, wf.pricing, 'wf-a', nextDay('VOO', '10'), [], 'AAAA1111', undefined, NOW);
 
       expect(written(wf, NEXT).avgCost).toBeUndefined();
     });
@@ -503,7 +683,7 @@ describe('syncHoldingsWithFeedPrices', () => {
       // The feed's count moved after today's snapshot was saved: the import is
       // skipped, so there is no cost-less snapshot to ask about.
       const wf = withTicker();
-      await syncHoldingsWithFeedPrices(wf.io, wf.pricing, 'wf-a', snap('VOO', '10', NEXT), [], 'AAAA1111', undefined, NOW);
+      await syncHoldingsWithFeedPrices(wf.io, wf.pricing, 'wf-a', snap('VOO', '9', NEXT), [], 'AAAA1111', undefined, NOW);
       const r = await syncHoldingsWithFeedPrices(wf.io, wf.pricing, 'wf-a', snap('VOO', '12', NEXT), [], 'AAAA1111', undefined, NOW);
 
       expect(r.imported).toBe(0);
@@ -518,9 +698,9 @@ describe('syncHoldingsWithFeedPrices', () => {
       expect(again).toEqual({ imported: 0, skipped: 1, unresolvedSymbols: [] });
     });
 
-    it('never puts one on a shared asset the person prices by hand, where it would become the day\'s price', async () => {
+    it('carries nothing for a hand-priced fund that has no price at all', async () => {
       const wf = withTicker('MANUAL');
-      await syncHoldingsWithFeedPrices(wf.io, wf.pricing, 'wf-a', snap('VOO', '10', NEXT), [], 'AAAA1111', undefined, NOW);
+      await syncHoldingsWithFeedPrices(wf.io, wf.pricing, 'wf-a', nextDay('VOO', '10'), [], 'AAAA1111', undefined, NOW);
 
       expect(written(wf, NEXT).avgCost).toBeUndefined();
       expect(wf.quotes.size).toBe(0);
@@ -532,15 +712,96 @@ describe('syncHoldingsWithFeedPrices', () => {
       // The cost the person entered on that day's holding.
       wf.snapshots.set(`wf-a|${DAY}`, snap('MODEL BASKET (AAAA1111)', '400.5', DAY, '100'));
 
-      await syncHoldingsWithFeedPrices(wf.io, wf.pricing, 'wf-a', snap('MODEL BASKET', '400.5', NEXT), priceOf('MODEL BASKET', '125'), 'AAAA1111', undefined, NOW);
+      await syncHoldingsWithFeedPrices(wf.io, wf.pricing, 'wf-a', nextDay('MODEL BASKET', '400.5'), priceOf('MODEL BASKET', '125'), 'AAAA1111', undefined, NOW);
       expect(written(wf, NEXT)).toMatchObject({ symbol: 'MODEL BASKET (AAAA1111)', avgCost: '100.00' });
       expect(wf.value('wf-a', NEXT, 'MODEL BASKET').value).toBe(50062.5);
 
       // And on a day the feed sends no price: still the last price, not the cost.
       const later = '2026-10-21';
-      await syncHoldingsWithFeedPrices(wf.io, wf.pricing, 'wf-a', snap('MODEL BASKET', '400.5', later), [], 'AAAA1111', undefined, NOW);
+      await syncHoldingsWithFeedPrices(wf.io, wf.pricing, 'wf-a', snap('MODEL BASKET', '400.5', later, undefined, '30.00'), [], 'AAAA1111', undefined, NOW);
       expect(written(wf, later).avgCost).toBe('100.00');
       expect(wf.value('wf-a', later, 'MODEL BASKET').value).toBe(50062.5);
+    });
+  });
+
+  describe('a snapshot that says what Wealthfolio already holds (#83)', () => {
+    const NEXT = '2026-10-20';
+
+    it('is not written, so a cost entered by hand stays, and the day\'s price is still written', async () => {
+      // A plan fund named from its description, on its own asset since DAY.
+      const wf = wealthfolio();
+      const fund = (date: string) => snap('TARGET DATE FUND 2060', '40', date);
+      await syncHoldingsWithFeedPrices(wf.io, wf.pricing, 'wf-plan', fund(DAY), priceOf('TARGET DATE FUND 2060', '250.00', { fromDescription: true }), 'CCCC3333', undefined, NOW);
+      // The person enters the real cost: $200 a share.
+      wf.snapshots.set(`wf-plan|${DAY}`, snap('TARGET DATE FUND 2060 (CCCC3333)', '40', DAY, '200'));
+
+      const r = await syncHoldingsWithFeedPrices(wf.io, wf.pricing, 'wf-plan', fund(NEXT), priceOf('TARGET DATE FUND 2060', '255.00', { fromDescription: true }), 'CCCC3333', undefined, NOW);
+      expect(r).toEqual({ imported: 0, skipped: 1, unresolvedSymbols: [], pricedFromFeed: ['TARGET DATE FUND 2060 (CCCC3333)'] });
+      expect(wf.snapshots.has(`wf-plan|${NEXT}`)).toBe(false);
+      expect((await wf.pricing.getHoldings('wf-plan'))[0].costBasis.local).toBe(8000);
+      expect(wf.value('wf-plan', NEXT, 'TARGET DATE')).toEqual({ symbol: 'TARGET DATE FUND 2060 (CCCC3333)', value: 10200 });
+    });
+
+    it('is not written for a ticker the market prices, and costs no read past the holdings', async () => {
+      const wf = wealthfolio();
+      wf.seedAsset('VOO', 'MARKET', OLD);
+      wf.snapshots.set(`wf-a|${DAY}`, snap('VOO', '10', DAY, '50', '25.00'));
+      const r = await syncHoldingsWithFeedPrices(wf.io, wf.pricing, 'wf-a', snap('VOO', '10', NEXT, undefined, '25.00'), [], 'AAAA1111', undefined, NOW);
+
+      expect(r).toEqual({ imported: 0, skipped: 1, unresolvedSymbols: [] });
+      expect(wf.io.importSnapshots).not.toHaveBeenCalled();
+      expect(wf.pricing.getHistory).not.toHaveBeenCalled();
+      expect(wf.pricing.getProfile).not.toHaveBeenCalled();
+    });
+
+    it('is written when anything in it changed', async () => {
+      const day: HoldingsSnapshot = {
+        date: DAY,
+        positions: [{ symbol: 'VOO', quantity: '10', currency: 'USD', avgCost: '50' }, { symbol: 'VTI', quantity: '4', currency: 'USD', avgCost: '200' }],
+        cashBalances: { USD: '25.00' },
+      };
+      const next = (change: (s: HoldingsSnapshot) => HoldingsSnapshot) =>
+        change({ ...day, date: NEXT, positions: day.positions.map((p) => ({ ...p })), cashBalances: { ...day.cashBalances } });
+      const changes: Array<[string, HoldingsSnapshot]> = [
+        ['nothing (the control)', next((s) => s)],
+        ['a share count', next((s) => ({ ...s, positions: [{ ...s.positions[0], quantity: '10.5' }, s.positions[1]] }))],
+        ['the cash', next((s) => ({ ...s, cashBalances: { USD: '25.01' } }))],
+        ['a cost SimpleFin sent', next((s) => ({ ...s, positions: [{ ...s.positions[0], avgCost: '50.01' }, s.positions[1]] }))],
+        ['a position sold', next((s) => ({ ...s, positions: [s.positions[0]] }))],
+        ['a new position', next((s) => ({ ...s, positions: [...s.positions, { symbol: 'BND', quantity: '3', currency: 'USD' }] }))],
+      ];
+      const imported: Record<string, number> = {};
+      for (const [what, snapshot] of changes) {
+        const wf = wealthfolio();
+        wf.seedAsset('VOO', 'MARKET', OLD);
+        wf.seedAsset('VTI', 'MARKET', OLD);
+        wf.snapshots.set(`wf-a|${DAY}`, day);
+        imported[what] = (await syncHoldingsWithFeedPrices(wf.io, wf.pricing, 'wf-a', snapshot, [], 'AAAA1111', undefined, NOW)).imported;
+      }
+      expect(imported).toEqual({
+        'nothing (the control)': 0, 'a share count': 1, 'the cash': 1, 'a cost SimpleFin sent': 1, 'a position sold': 1, 'a new position': 1,
+      });
+    });
+
+    it('is written on the day a holding moves onto its own asset that already exists', async () => {
+      const wf = withBasket();
+      wf.seedAsset('MODEL BASKET (AAAA1111)', 'MANUAL', OLD);
+      const r = await syncHoldingsWithFeedPrices(wf.io, wf.pricing, 'wf-a', snap('MODEL BASKET', '400.5', NEXT), priceOf('MODEL BASKET', '125'), 'AAAA1111', undefined, NOW);
+
+      expect(r).toMatchObject({ imported: 1, pricedFromFeed: ['MODEL BASKET (AAAA1111)'] });
+      expect(wf.value('wf-a', NEXT, 'MODEL BASKET')).toEqual({ symbol: 'MODEL BASKET (AAAA1111)', value: 50062.5 });
+    });
+
+    it('is written, as before, when the cash in Wealthfolio cannot be read', async () => {
+      const wf = wealthfolio();
+      wf.seedAsset('VOO', 'MARKET', OLD);
+      wf.snapshots.set(`wf-a|${DAY}`, snap('VOO', '10', DAY, '50', '25.00'));
+      const read = wf.pricing.getHoldings.getMockImplementation()!;
+      wf.pricing.getHoldings.mockImplementation(async (account: string) =>
+        (await read(account)).map((h) => (h.holdingType === 'cash' ? { ...h, quantity: Number.NaN } : h)));
+      const r = await syncHoldingsWithFeedPrices(wf.io, wf.pricing, 'wf-a', snap('VOO', '10', NEXT, undefined, '25.00'), [], 'AAAA1111', undefined, NOW);
+
+      expect(r.imported).toBe(1);
     });
   });
 

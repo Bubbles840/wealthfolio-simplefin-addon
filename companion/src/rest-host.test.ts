@@ -265,6 +265,22 @@ describe('RestSyncHost.postedLedgerTotals — the after-save card total (1.64, B
 
 
 describe('RestSyncStore', () => {
+  it('reads and writes the SimpleFin connection problems under the key the add-on shares, and a failed read rejects (#81)', async () => {
+    const secrets = new Map<string, string>();
+    const client = {
+      getAddonSecret: vi.fn(async (_a: string, key: string) => secrets.get(key) ?? null),
+      setAddonSecret: vi.fn(async (_a: string, key: string, val: string) => { secrets.set(key, val); }),
+    } as any;
+    const store = new RestSyncStore(client);
+    expect(await store.getSimplefinProblems()).toBeNull();
+    const record = { checkedAt: '2026-11-18T15:00:00.000Z', problems: [] };
+    await store.setSimplefinProblems(record);
+    expect(secrets.get('simplefin_problems')).toBe(JSON.stringify(record));
+    expect(await store.getSimplefinProblems()).toEqual(record);
+    client.getAddonSecret.mockRejectedValueOnce(new Error('401'));
+    await expect(store.getSimplefinProblems()).rejects.toThrow('401');
+  });
+
   it('reads and writes secrets via client addon secrets endpoints', async () => {
     const secrets = new Map<string, string>();
     const client = {

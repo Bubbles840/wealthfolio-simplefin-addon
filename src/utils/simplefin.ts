@@ -1,7 +1,7 @@
 import type { NetworkAPI } from '@wealthfolio/addon-sdk';
 import type { SimplefinAccountSet } from '../../shared/types';
 import { normalizeAccountSet } from '../../shared/simplefin-payload';
-import { addonHostEntriesFor, requireSimplefinProviderHost } from '../../shared/simplefin-hosts';
+import { addonHostEntriesFor, isSimplefinBridgeHost, requireSimplefinProviderHost } from '../../shared/simplefin-hosts';
 
 /**
  * What the user is told when the request to SimpleFin never completed.
@@ -151,6 +151,7 @@ export async function fetchAccounts(
   url.pathname = url.pathname.replace(/\/$/, '') + '/accounts';
   url.searchParams.set('start-date', String(Math.floor(startDate.getTime() / 1000)));
   url.searchParams.set('pending', '1');
+  if (isSimplefinBridgeHost(url.hostname)) url.searchParams.set('version', '2');
 
   // SDK 3.9's NetworkRequest has `timeoutSecs` (max 120); our SDK types (3.6.2)
   // lack it and older hosts ignore the unknown field. The bridge can be slow.

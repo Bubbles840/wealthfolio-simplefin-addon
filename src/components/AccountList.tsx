@@ -36,6 +36,8 @@ export interface AccountListProps {
   /** 2c: why an account is off, opened in place under it from its "off by"
    *  chip. Absent: the chip stays a plain label. */
   renderExplanation?: (wfAccountId: string) => React.ReactNode;
+  /** SimpleFin ids of accounts whose connection has a problem the page shows (#81). */
+  notUpdating?: ReadonlySet<string>;
 }
 
 /** "2 accounts · 1 off by $36.10": the collapsed Accounts card's summary and
@@ -58,7 +60,7 @@ export function accountsSummary(mapping: AccountMapping, balances: Record<string
  * against the bank. Moved out of the Overview tab (1.57) so Settings → Accounts
  * can show the same rows the mapping beneath them is about.
  */
-export function AccountList({ mapping, balances, sfinNames, wfNames, onOpenAccount, renderExplanation }: AccountListProps) {
+export function AccountList({ mapping, balances, sfinNames, wfNames, onOpenAccount, renderExplanation, notUpdating }: AccountListProps) {
   /** The account whose "off by" chip is open, by SimpleFin id. */
   const [explaining, setExplaining] = useState<string | null>(null);
   const entries = Object.entries(mapping).filter(([, wfId]) => !!wfId);
@@ -103,6 +105,14 @@ export function AccountList({ mapping, balances, sfinNames, wfNames, onOpenAccou
                   <span className="sfin-acct-gone">account no longer exists — reset &amp; re-map</span>
                 )}
               </div>
+              {notUpdating?.has(sfinId) && (
+                <span
+                  className="sfin-chip sfin-chip--off"
+                  title="SimpleFin reports a problem with this connection: the figures are the last ones it got. See Home."
+                >
+                  not updating
+                </span>
+              )}
             </div>
           </div>
           <div className="sfin-acct-right">

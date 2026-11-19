@@ -1,5 +1,8 @@
 import { describe, it, expect } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { isSimplefinNotice, normalizeAccountSet } from './simplefin-payload.js';
+import { accountNameWords } from './sync-core.js';
 
 describe('normalizeAccountSet', () => {
   it('names the failing account when the Bridge sends a structured errlist', () => {
@@ -107,5 +110,55 @@ describe('isSimplefinNotice', () => {
     expect(isSimplefinNotice('History was capped at 90 days')).toBe(true);
     expect(isSimplefinNotice('Growth (old): Connection to institution failed')).toBe(false);
     expect(isSimplefinNotice('Discover it Card: Connection needs attention')).toBe(false);
+  });
+});
+
+/** The public demo Bridge's answer to `/accounts?balances-only=1`, without and
+ *  with `version=2`, as fetched 2026-11-18. */
+const demo = (v: 'v1' | 'v2') => JSON.parse(readFileSync(join(process.cwd(), 'shared', '__fixtures__', 'simplefin-demo', `${v}-balances-only.json`), 'utf8'));
+
+describe('normalizeAccountSet reads protocol v2 the way v1 read (#81)', () => {
+  it('matches an account to its connection when conn_id arrives as a number', () => {
+    const set = normalizeAccountSet({
+      connections: [{ conn_id: 7, name: 'Numeric Bank' }],
+      accounts: [{ id: 'a1', name: 'Checking', currency: 'USD', balance: '0', 'balance-date': 1, conn_id: 7 }],
+    });
+    expect(set.accounts[0].org?.name).toBe('Numeric Bank');
+  });
+
+  it('gives every v2 account the org v1 gave it: the connection name, not org_name', () => {
+    const v1 = normalizeAccountSet(demo('v1'));
+    const v2 = normalizeAccountSet(demo('v2'));
+    expect(v2.accounts.map((a) => a.id)).toEqual(v1.accounts.map((a) => a.id));
+    v2.accounts.forEach((a, i) => {
+      const old = v1.accounts[i].org!;
+      expect(a.org).toEqual({ name: old.name, domain: old.domain, url: old.url, 'sfin-url': old['sfin-url'] });
+      expect(a.org!.name).toBe('SimpleFIN Demo');
+      expect(a.conn_id).toBe('CON-SIMPLEFIN-DEMO');
+      expect(accountNameWords(a.name, a.org?.name)).toEqual(accountNameWords(v1.accounts[i].name, v1.accounts[i].org?.name));
+    });
+    expect(v2.connections).toEqual([{ connId: 'CON-SIMPLEFIN-DEMO', name: 'SimpleFIN Demo' }]);
+    expect(v1.connections).toBeUndefined();
+  });
+
+  it('leaves an org v2 already sent, and an account whose connection is not listed', () => {
+    const set = normalizeAccountSet({
+      connections: [{ conn_id: 'C1', name: 'Fidelity NetBenefits', org_url: 'not a url' }],
+      accounts: [
+        { id: 'a', name: 'A', currency: 'USD', balance: '0', 'balance-date': 1, conn_id: 'C1' },
+        { id: 'b', name: 'B', currency: 'USD', balance: '0', 'balance-date': 1, conn_id: 'C9' },
+        { id: 'c', name: 'C', currency: 'USD', balance: '0', 'balance-date': 1, conn_id: 'C1', org: { name: 'Kept' } },
+      ],
+    });
+    expect(set.accounts.map((a) => a.org)).toEqual([{ name: 'Fidelity NetBenefits' }, undefined, { name: 'Kept' }]);
+  });
+
+  it('names the connection on a connection error', () => {
+    const set = normalizeAccountSet({
+      errlist: [{ code: 'con.auth', msg: 'Authentication required', conn_id: 'C1' }],
+      connections: [{ conn_id: 'C1', name: 'Fidelity NetBenefits' }],
+      accounts: [],
+    });
+    expect(set.errors).toEqual(['Fidelity NetBenefits: Authentication required']);
   });
 });

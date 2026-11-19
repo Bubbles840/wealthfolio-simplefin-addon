@@ -1,7 +1,9 @@
 import { describe, it, expect } from 'vitest';
 import {
-  evaluateSelfCheck, formatSelfCheckBlock, SYNC_STALE_HOURS, FEED_STALE_DAYS,
+  evaluateSelfCheck, formatSelfCheckBlock, formatFindingsSummary, printsInFull, SYNC_STALE_HOURS, FEED_STALE_DAYS,
 } from './self-check.js';
+import { isSnoozable } from './findings.js';
+import type { ConnectionProblem } from './connection-problems.js';
 
 const NOW = new Date('2026-08-24T12:00:00Z');
 const hoursAgo = (h: number) => new Date(NOW.getTime() - h * 3_600_000).toISOString();
@@ -306,5 +308,29 @@ describe('accounts that share a name (1.57.1)', () => {
     ]);
     expect(findings[0].message).toMatch(/^CHECKING \(…1111\) has sent no new data/);
     expect(findings[1].label).toBe('CHECKING (…2222): no new data');
+  });
+});
+
+describe('connection problems in the daily report (#81)', () => {
+  const signin: ConnectionProblem = {
+    key: 'con.auth:C1', code: 'con.auth', kind: 'signin', connectionName: 'Fidelity NetBenefits', sfinAccountIds: ['a1'],
+    message: 'Fidelity NetBenefits: Authentication required', firstSeenAt: hoursAgo(2), lastSeenAt: hoursAgo(0),
+  };
+
+  it('is one problem per connection, printed in full, that can still be snoozed by its episode', () => {
+    const [f] = evaluateSelfCheck({ lastSuccessAt: hoursAgo(1), connectionProblems: [signin] }, NOW);
+    expect(f).toEqual({
+      kind: 'connection-problem', severity: 'problem',
+      key: `connection-problem:con.auth:C1@${signin.firstSeenAt}`,
+      label: 'Fidelity NetBenefits needs you to sign in again',
+      message: "Fidelity NetBenefits needs you to sign in again at SimpleFIN Bridge. Until you do, its accounts show the last figures SimpleFin got, not today's.",
+    });
+    expect(printsInFull(f)).toBe(true);
+    expect(isSnoozable(f)).toBe(true);
+    expect(formatFindingsSummary([f])).toContain('🚨 Fidelity NetBenefits needs you to sign in again at SimpleFIN Bridge');
+  });
+
+  it('says nothing without problems', () => {
+    expect(evaluateSelfCheck({ lastSuccessAt: hoursAgo(1), connectionProblems: [] }, NOW)).toEqual([]);
   });
 });

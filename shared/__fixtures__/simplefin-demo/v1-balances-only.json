@@ -1,0 +1,8 @@
+{
+  "errors": [],
+  "accounts": [
+    {"id": "Demo Savings", "name": "SimpleFIN Savings", "currency": "USD", "balance": "114965.51", "available-balance": "114965.51", "balance-date": 1795046400, "transactions": [], "holdings": [], "org": {"domain": "beta-bridge.simplefin.org", "name": "SimpleFIN Demo", "sfin-url": "https://beta-bridge.simplefin.org/simplefin", "url": "https://beta-bridge.simplefin.org", "id": "simplefin.demoorg"}},
+    {"id": "Demo Checking", "name": "SimpleFIN Checking", "currency": "USD", "balance": "25401.15", "available-balance": "25401.15", "balance-date": 1795046400, "transactions": [], "holdings": [], "org": {"domain": "beta-bridge.simplefin.org", "name": "SimpleFIN Demo", "sfin-url": "https://beta-bridge.simplefin.org/simplefin", "url": "https://beta-bridge.simplefin.org", "id": "simplefin.demoorg"}},
+    {"id": "Demo Empty Account", "name": "SimpleFIN Empty Account", "currency": "USD", "balance": "0.00", "available-balance": "0.00", "balance-date": 1795046400, "transactions": [], "holdings": [], "org": {"domain": "beta-bridge.simplefin.org", "name": "SimpleFIN Demo", "sfin-url": "https://beta-bridge.simplefin.org/simplefin", "url": "https://beta-bridge.simplefin.org", "id": "simplefin.demoorg"}}
+  ]
+}
