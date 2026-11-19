@@ -8,6 +8,7 @@ import type { AmazonLedger } from '../../shared/amazon-ledger.js';
 import { VENMO_LEDGER_SECRET_KEY, type VenmoLedger } from '../../shared/venmo-ledger.js';
 import { linkPairPreferInPlace, unlinkPairPreferInPlace, type InPlaceIo } from '../../shared/link-in-place.js';
 import type { UnlinkLeg, UnlinkResult } from '../../shared/link-pair.js';
+import { SIMPLEFIN_PROBLEMS_SECRET_KEY, parseConnectionProblems, type ConnectionProblemsRecord } from '../../shared/connection-problems.js';
 import { SIMPLEFIN_REQUESTS_SECRET_KEY } from '../../shared/simplefin-budget.js';
 import { TRANSFER_NAMES_SECRET_KEY, parseTransferNames, type TransferNames } from '../../shared/transfer-names.js';
 import { SKIPPED_TRANSACTIONS_SECRET_KEY, parseSkippedTransactions, type SkippedTransaction } from '../../shared/skipped-transactions.js';
@@ -409,6 +410,15 @@ export class RestSyncStore implements SyncStore {
    *  is the only side that can offer to map it. */
   async setUnmappedAccounts(list: UnmappedAccount[]): Promise<void> {
     await this.setJson('unmapped_accounts', list);
+  }
+
+  /** The SimpleFin connection problems record (#81), shared with the add-on.
+   *  A failed read rejects (the sync then writes nothing); an unparseable one is null. */
+  async getSimplefinProblems(): Promise<ConnectionProblemsRecord | null> {
+    return parseConnectionProblems(await this.client.getAddonSecret(this.addonId, SIMPLEFIN_PROBLEMS_SECRET_KEY));
+  }
+  async setSimplefinProblems(record: ConnectionProblemsRecord): Promise<void> {
+    await this.setJson(SIMPLEFIN_PROBLEMS_SECRET_KEY, record);
   }
 
   /** Read-only here: the companion never sets this, it only honours what the

@@ -11,6 +11,7 @@ import { accountTxKey, detectTransferPairs, TRANSFER_MATCH_WINDOW_SECONDS } from
 import type { TransferCandidate } from './transfers.js';
 import { planReconciliation, IN_TRANSIT_COMMENT_PREFIX, isSecurityAsset } from './reconcile.js';
 import { isSimplefinNotice } from './simplefin-payload.js';
+import { findConnectionProblems, mergeConnectionProblems, shownConnectionProblems, type ConnectionProblem, type ConnectionProblemsRecord } from './connection-problems.js';
 import { accountTag, BALANCE_TOTAL_DAYS, balanceShowsTotal, feedPrices, toHoldingsSnapshot } from './holdings.js';
 import { loanBalanceOf, type LinkedLoan, type LoanLinks } from './loan-balances.js';
 import type { FeedTx, ExistingRow } from './reconcile.js';
@@ -587,6 +588,13 @@ export interface SyncResult {
    * restarted by hand often — re-announcing the same account indefinitely.
    */
   unmappedAccounts: UnmappedAccount[] | null;
+  /**
+   * The SimpleFin connection problems to show now (#81): sign-ins at once,
+   * anything else once it has lasted 24 hours. Absent when the run downloaded
+   * nothing, or could not read the stored record (then nothing was written
+   * either, so no episode restarts).
+   */
+  connectionProblems?: ConnectionProblem[];
   /**
    * Creates the host REFUSED — planned because no stored row carried that
    * transaction id, then rejected anyway by Wealthfolio's own date+amount
@@ -2517,6 +2525,20 @@ async function runSyncPass(
   }
   const linkedLoan = (sfinId: string): boolean =>
     !!loanLinks[sfinId] && (loansById === null || loansById.has(loanLinks[sfinId]));
+  let connectionProblems: ConnectionProblem[] | undefined;
+  let priorProblems: ConnectionProblemsRecord | null | undefined;
+  try {
+    priorProblems = store.getSimplefinProblems ? await store.getSimplefinProblems() : null;
+  } catch {
+    priorProblems = undefined; // unreadable: write nothing (ruling 6)
+  }
+  if (priorProblems !== undefined) {
+    const inUse = (id: string) => (!!mapping[id] || linkedLoan(id)) && !ignoredAccountIds.has(id);
+    const problemsAt = new Date();
+    const record = mergeConnectionProblems(priorProblems, findConnectionProblems(accountSet, inUse), problemsAt);
+    await store.setSimplefinProblems?.(record).catch(() => {});
+    connectionProblems = shownConnectionProblems(record, problemsAt);
+  }
   /** Bank transactions the user has said are not real (shared/skipped-transactions.ts),
    *  per account. A failed read imports everything, as before the list existed. */
   const skippedTxKeys = new Set(
@@ -5296,6 +5318,7 @@ async function runSyncPass(
   return {
     imported, skipped, errors, stuckTransferAlerts, importedTransactions,
     largeTransactionAlerts, balanceDriftAlerts, prunedDuplicates, unmappedAccounts,
+    ...(connectionProblems ? { connectionProblems } : {}),
     refusedCreates,
     holdingsSnapshots,
     ignoredByRules,

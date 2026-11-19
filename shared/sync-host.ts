@@ -10,6 +10,7 @@ import type { UnlinkLeg, UnlinkResult } from './link-pair.js';
 import type { HeldSecurity, SnapshotDay } from './dividends.js';
 import type { LinkedLoan, LoanBalance, LoanBalanceDecision, LoanLinks } from './loan-balances.js';
 import type { RelinkDecisions } from './relink.js';
+import type { ConnectionProblemsRecord } from './connection-problems.js';
 
 /** A Wealthfolio activity row, normalized across the SDK and REST shapes. */
 export interface HostActivity {
@@ -381,6 +382,19 @@ export interface SyncStore {
    * simply loses the banner, never the sync — `runSyncCore` guards the call.
    */
   setUnmappedAccounts?(list: UnmappedAccount[]): Promise<void>;
+  /**
+   * The SimpleFin connection problems the last download reported (#81), kept
+   * as the `simplefin_problems` secret. Both syncs read-merge-write it, so a
+   * problem's `firstSeenAt` survives across runs and across the two writers.
+   *
+   * Resolves null when the record is absent or does not parse (the sync then
+   * replaces it); REJECTS when the secret cannot be read, and the sync then
+   * writes nothing, because overwriting an unread record would restart every
+   * episode. Optional like `setUnmappedAccounts`: a host without it loses the
+   * record, never the sync.
+   */
+  getSimplefinProblems?(): Promise<ConnectionProblemsRecord | null>;
+  setSimplefinProblems?(record: ConnectionProblemsRecord): Promise<void>;
   /**
    * SimpleFin account ids the user has deliberately chosen NOT to sync.
    *

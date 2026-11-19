@@ -591,3 +591,19 @@ describe('subscription prefs (1.60)', () => {
     expect(data.subscription_news_sent).toBeUndefined();
   });
 });
+
+describe('SecretsStore SimpleFin connection problems (#81)', () => {
+  it('reads and writes the record under the key the companion shares, and nothing from garbage', async () => {
+    const { ctx, data } = makeCtxWithData();
+    const s = new SecretsStore(ctx);
+    expect(await s.getSimplefinProblems()).toBeNull();
+    const record = { checkedAt: '2026-11-18T15:00:00.000Z', problems: [{ key: 'con.auth:C1', code: 'con.auth', kind: 'signin' as const, sfinAccountIds: ['a1'], message: 'x', firstSeenAt: '2026-11-18T15:00:00.000Z', lastSeenAt: '2026-11-18T15:00:00.000Z' }] };
+    await s.setSimplefinProblems(record);
+    expect(JSON.parse(data['simplefin_problems'])).toEqual(record);
+    expect(await s.getSimplefinProblems()).toEqual(record);
+    data['simplefin_problems'] = '{nope';
+    expect(await s.getSimplefinProblems()).toBeNull();
+    await s.clearAll();
+    expect(data['simplefin_problems']).toBeUndefined();
+  });
+});
