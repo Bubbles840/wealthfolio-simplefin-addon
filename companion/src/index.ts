@@ -174,12 +174,13 @@ import type { GlyphStyle, InlineKeyboard } from '../../shared/telegram.js';
 import type { DismissalLedger } from './dismissals.js';
 import type { SyncHealth } from '../../shared/telegram.js';
 import { addonUnderstandsDividends, SIMPLEFIN_SYNC_VERSION, COMPANION_VERSION_SECRET_KEY, INSTALLED_ADDON_VERSION_SECRET_KEY, isNewerVersion } from '../../shared/version.js';
-import { getNativeWealthfolioSpending, getNativeWealthfolioSpendingBetween, getNativeWealthfolioBudgets, getNativeWealthfolioTopSpending, getNativeUncategorizedSpending, getNativeAccountIds, getNativeRuleCategorizedAmazonRows, getNativeCategorizedSpending, getNativeSpendingCategories, getNativeCategoryCatalog, getNativeSubcategorySpending, getNativeUncategorizedSpendingTotal, countRulePatternMatches, getNativeBudgetSpend, getNativeIncomeByMonthAccount, getNativeUncategorizedByMonthAccount, getNativeMerchantRows, getNativeDrillRows, getNativeFeesInterestByMonth, getNativeSpendDailyTotals, getNativeValuationByMonth, getNativeIncomeCategories } from './sqlite-native.js';
+import { getNativeWealthfolioSpending, getNativeWealthfolioSpendingBetween, getNativeWealthfolioBudgets, getNativeWealthfolioTopSpending, getNativeUncategorizedSpending, getNativeAccountIds, getNativeRuleCategorizedAmazonRows, getNativeCategorizedSpending, getNativeSpendingCategories, getNativeCategoryCatalog, getNativeSubcategorySpending, getNativeUncategorizedSpendingTotal, countRulePatternMatches, getNativeBudgetSpend, getNativeIncomeByMonthAccount, getNativeUncategorizedByMonthAccount, getNativeMerchantRows, getNativeDrillRows, getNativeFeesInterestByMonth, getNativeSpendDailyTotals, getNativeValuationByMonth, getNativeIncomeCategories, getNativeFeeReversalRows } from './sqlite-native.js';
 import { publishUncategorizedStatusForDbPath } from './uncategorized-status.js';
 import { getNativePastFilings } from './sqlite-guess.js';
 import { createCategorizeController, SPENDING_TAXONOMY_ID } from './categorize.js';
 import { createAmazonLabelMenu, type AmazonLabelMenu } from './amazon-labels.js';
 import { fileAmazonCharges } from './amazon-filing.js';
+import { fileFeeReversals } from './fee-reversal-filing.js';
 import { companionChangeSink, readCompanionChangeLog, recordCompanionChanges } from './change-log-host.js';
 import { editSyncOverrides, emptySyncOverrides, hasAccountOverride, hasTxOverride, loadSyncOverrides, notTransferEdit, syncOverridesOrEmpty, type SyncOverrides } from '../../shared/sync-overrides.js';
 import { TRANSFER_NAMES_SECRET_KEY } from '../../shared/transfer-names.js';
@@ -842,6 +843,29 @@ async function pollVenmoMail(source: MailSource, store: RestSyncStore, wfClient:
  * behaviour is precisely what wants fixing, and an order email can arrive days
  * after the charge it belongs to.
  */
+async function fileFeeReversalRefunds(wfClient: WealthfolioClient, run?: string, overrides: SyncOverrides = emptySyncOverrides()): Promise<void> {
+  const end = new Date();
+  const start = new Date(end.getFullYear(), end.getMonth(), end.getDate() - 90);
+  const mapping = parseSecretJson<Record<string, string>>(
+    await wfClient.getAddonSecret('simplefin-sync', 'account_mapping').catch(() => null),
+    'account_mapping',
+  ) ?? {};
+  const sfinOf = new Map(Object.entries(mapping).map(([sfin, wf]) => [wf, sfin]));
+  const changes: ChangeDraft[] = [];
+  const res = await fileFeeReversals({
+    rows: async () => getNativeFeeReversalRows(wealthfolioDbPath(), toDateString(start), toDateString(new Date(end.getFullYear(), end.getMonth(), end.getDate() + 1))),
+    assign: (activityId, categoryId) => wfClient.assignActivityCategory(activityId, SPENDING_TAXONOMY_ID, categoryId),
+    record: (draft) => changes.push(draft),
+    sfinAccountOf: (wfAccountId) => sfinOf.get(wfAccountId),
+    noAutoFile: (txKey) => hasTxOverride(overrides, txKey, 'noAutoFile'),
+    anyNoAutoFile: Object.keys(overrides.tx).some((key) => hasTxOverride(overrides, key, 'noAutoFile')),
+    log,
+    today: toDateString(end),
+  });
+  await recordCompanionChanges(wfClient, changes, run).catch((e) => log(`Change log skipped: ${formatError(e)}`));
+  if (res.filed > 0) log(`Filed ${res.filed} fee reversal(s) under the category of the fee they reverse.`);
+}
+
 async function fileAmazonLabelledCharges(wfClient: WealthfolioClient, run?: string, overrides: SyncOverrides = emptySyncOverrides()): Promise<void> {
   const dbPath = wealthfolioDbPath();
   const end = new Date();
@@ -1264,6 +1288,7 @@ async function runCompanionSyncOnce(opts: { force?: boolean; manual?: boolean })
     // the sync. Unreadable is empty: the filers then behave as they always did.
     const overrides = await syncOverridesOrEmpty((k) => wfClient.getAddonSecret('simplefin-sync', k));
     await fileAmazonLabelledCharges(wfClient, changeLog.run, overrides);
+    await fileFeeReversalRefunds(wfClient, changeLog.run, overrides);
 
     // Once, on Wealthfolio 3.10+: the card bookkeeping rows written as
     // WITHDRAWALs become TRANSFER_OUTs, which its Spending page ignores — before
