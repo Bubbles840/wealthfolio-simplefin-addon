@@ -24,6 +24,7 @@
 import { amazonLabelOf, changeDay, changeDayYear, changeMoney, type ChangeEntry } from './change-entries.js';
 import type { ChangeLogItem } from './change-log.js';
 import { changeLocalDay } from './change-view.js';
+import { FEE_REVERSAL_FILING_WHY, isFeeReversalWording } from './fee-reversal.js';
 import { IN_TRANSIT_COMMENT_PREFIX } from './reconcile.js';
 import {
   BALANCE_ADJUSTMENT_COMMENT_PREFIX, IN_TRANSIT_TIMEOUT_SECONDS, OPENING_BALANCES_CATEGORY, PENDING_SUFFIX,
@@ -41,6 +42,7 @@ export const TX_STORY_SPENDING = 'Spending.';
 export const TX_STORY_MONEY_IN = 'Money in.';
 /** A cash CREDIT marked REIMBURSEMENT (1.62): money in that Wealthfolio takes off spending. */
 export const TX_STORY_PAYBACK = 'A payback: it lowers your spending.';
+export const TX_STORY_FEE_REVERSAL = 'A refund of a bank fee, going by its wording: it lowers your spending.';
 /** A row whose note carries ` · Venmo: <note>` (3). */
 export const TX_STORY_VENMO_NOTE = 'Note from a Venmo email.';
 export const TX_STORY_NOT_FILED = "Not filed yet — it's on your needs-a-category list.";
@@ -127,6 +129,8 @@ export type TxFiler =
   | { kind: 'you'; at?: string; payback?: true }
   | { kind: 'amazon'; label: string }
   | { kind: 'opening' }
+  /** The sync's fee-reversal pass filed it under the fee's own category (#79). */
+  | { kind: 'fee' }
   /** The sync's own bookkeeping rows (a held transfer, a correction), filed under "Sync bookkeeping" so Wealthfolio leaves them out of spending. */
   | { kind: 'bookkeeping' }
   | { kind: 'hand' };
@@ -189,6 +193,12 @@ export const isCashType = (activityType: string): boolean => CASH_TYPES.has(acti
 export const isPaybackStoryRow = (row: Pick<TxStoryRow, 'activityType' | 'subtype' | 'accountType'>): boolean =>
   row.activityType.toUpperCase() === 'CREDIT' && (row.subtype ?? '').trim().toUpperCase() === 'REIMBURSEMENT'
   && (row.accountType ?? '').toUpperCase() === 'CASH';
+
+/** A fee reversal: a CREDIT marked REFUND on a cash or card account whose wording says a fee came back. */
+export const isFeeReversalStoryRow = (row: Pick<TxStoryRow, 'activityType' | 'subtype' | 'accountType' | 'note'>): boolean =>
+  row.activityType.toUpperCase() === 'CREDIT' && (row.subtype ?? '').trim().toUpperCase() === 'REFUND'
+  && ['CASH', 'CREDIT_CARD'].includes((row.accountType ?? '').toUpperCase())
+  && isFeeReversalWording(txDescription(row.note));
 
 /** Money out: the spending types, and interest charged on a card. */
 export function isOutflow(activityType: string, accountType?: string): boolean {
@@ -359,7 +369,7 @@ export function resolveFiler(f: FilerInput): TxFiler | null {
     const rule = inferFilingRule(f.rules, f.row, f.categoryId);
     return { kind: 'rule', pattern: rule ? rule.pattern : null };
   }
-  // A non-"Amazon: " auto filing reads as by hand: the Amazon filer is the only auto filer today.
+  // Any other auto filing reads as by hand: the Amazon and fee-reversal filers are the only automatic ones.
   const filing = [...(f.history ?? [])]
     .filter((e) => !e.undone && (
       ((e.kind === 'category-filed' || e.kind === 'opening-balance-filed') && afterCategoryId(e) === f.categoryId)
@@ -368,6 +378,7 @@ export function resolveFiler(f: FilerInput): TxFiler | null {
   if (filing?.kind === 'opening-balance-filed') return { kind: 'opening' };
   if (filing?.kind === 'bookkeeping') return { kind: 'bookkeeping' };
   if (filing?.actor === 'you') return { kind: 'you', at: filing.at };
+  if (filing?.why === FEE_REVERSAL_FILING_WHY) return { kind: 'fee' };
   if (filing?.why?.startsWith('Amazon: ')) return { kind: 'amazon', label: filing.why.slice('Amazon: '.length) };
   if (!filing && f.row.note.startsWith(STARTING_BALANCE_COMMENT_PREFIX)) {
     return f.categoryName === OPENING_BALANCES_CATEGORY ? { kind: 'opening' } : null;
@@ -396,6 +407,7 @@ export function encodeFiler(filer: TxFiler | null | undefined): string | undefin
     case 'you': return 'y';
     case 'amazon': return `a:${filer.label}`;
     case 'opening': return 'o';
+    case 'fee': return 'f';
     case 'bookkeeping': return 'b';
     case 'hand': return 'h';
   }
@@ -410,6 +422,7 @@ export function decodeFiler(code: unknown): TxFiler | null {
   if (code === 'y') return { kind: 'you' };
   if (code.startsWith('a:') && code.length > 2) return { kind: 'amazon', label: code.slice(2) };
   if (code === 'o') return { kind: 'opening' };
+  if (code === 'f') return { kind: 'fee' };
   if (code === 'b') return { kind: 'bookkeeping' };
   if (code === 'h') return { kind: 'hand' };
   return null;
@@ -434,6 +447,7 @@ function filedLine(name: string, filer: TxFiler | null | undefined): string {
     }
     case 'amazon': return `Filed under ${name} from an Amazon email.`;
     case 'opening': return `Filed under ${name} by the add-on — an opening balance isn't spending.`;
+    case 'fee': return `Filed under ${name} by the sync, the same category as the fee it reverses.`;
     case 'bookkeeping': return `Filed under ${name} by the sync as bookkeeping — it isn't spending.`;
     case 'hand': return `Filed under ${name} — set by hand.`;
   }
@@ -478,7 +492,7 @@ export function buildTxStory(facts: TxStoryFacts): TxStory {
       answer.push(`Half of a transfer: ${changeMoney(Math.abs(row.absCents))} ${out ? 'into' : 'from'} ${facts.partner.accountName}${when}.`);
     } else if (cash && (facts.partner === null || !isTransferType(row.activityType.toUpperCase()))) {
       // Only cash activity is spending or money in; a trade gets no line.
-      answer.push(out ? TX_STORY_SPENDING : isPaybackStoryRow(row) ? TX_STORY_PAYBACK : TX_STORY_MONEY_IN);
+      answer.push(out ? TX_STORY_SPENDING : isPaybackStoryRow(row) ? TX_STORY_PAYBACK : isFeeReversalStoryRow(row) ? TX_STORY_FEE_REVERSAL : TX_STORY_MONEY_IN);
     }
   }
 

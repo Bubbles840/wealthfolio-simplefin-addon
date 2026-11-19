@@ -15,6 +15,9 @@ export const FEE_REVERSAL_WORDS = /\b(?:waived|waiver|reversal|reversed|refund|r
 /** The subtype a fee reversal carries. Never REIMBURSEMENT (that means "payback"). */
 export const FEE_REVERSAL_SUBTYPE = 'REFUND';
 
+/** The `why` on the change entry the companion writes when it files a fee reversal under its fee's category (the story reads it). */
+export const FEE_REVERSAL_FILING_WHY = 'Same category as the fee it reverses';
+
 /** A fee word and a reversal word. */
 export function isFeeReversalWording(text: string): boolean {
   return FEE_WORDS.test(text) && FEE_REVERSAL_WORDS.test(text);
