@@ -606,4 +606,10 @@ describe('SecretsStore SimpleFin connection problems (#81)', () => {
     await s.clearAll();
     expect(data['simplefin_problems']).toBeUndefined();
   });
+
+  it('rejects when the secret cannot be read, so the sync writes nothing', async () => {
+    const { ctx } = makeCtxWithData();
+    (ctx.api.secrets as any).get = vi.fn(async () => { throw new Error('401'); });
+    await expect(new SecretsStore(ctx).getSimplefinProblems()).rejects.toThrow('401');
+  });
 });

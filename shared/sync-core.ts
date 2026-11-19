@@ -2256,7 +2256,8 @@ async function runSyncPass(
   const relinkOf = new Map(relinks.map((r) => [r.newId, r]));
   /** Loan accounts linked to a liability (shared/loan-balances.ts): not
    *  unmapped, and recorded after the accounts below. A failed read links none. */
-  const loanLinks: LoanLinks = (await store.getLoanLinks?.().catch(() => ({}))) ?? {};
+  let problemsInputsDegraded = false;
+  const loanLinks: LoanLinks = (await store.getLoanLinks?.().catch(() => { problemsInputsDegraded = true; return {}; })) ?? {};
   /** Old ids a confirmed re-link replaced: not a feed that is late, so nothing
    *  waits on them. One mapped elsewhere or linked to a loan since is not. */
   const replacedIds = retiredIds(relinks, mapping, loanLinks);
@@ -2269,7 +2270,7 @@ async function runSyncPass(
    *  per run; a failure degrades to "nothing ignored", which is the safe
    *  direction (it over-reports rather than hiding an account silently). */
   const ignoredAccountIds = new Set(
-    (await store.getIgnoredAccounts?.().catch(() => [])) ?? [],
+    (await store.getIgnoredAccounts?.().catch(() => { problemsInputsDegraded = true; return [] as string[]; })) ?? [],
   );
   // A retired id is expected to fall silent. One that reports transactions is
   // the old connection still at the Bridge, or a Yes given by mistake: say so
@@ -2527,17 +2528,26 @@ async function runSyncPass(
     !!loanLinks[sfinId] && (loansById === null || loansById.has(loanLinks[sfinId]));
   let connectionProblems: ConnectionProblem[] | undefined;
   let priorProblems: ConnectionProblemsRecord | null | undefined;
-  try {
-    priorProblems = store.getSimplefinProblems ? await store.getSimplefinProblems() : null;
-  } catch {
-    priorProblems = undefined; // unreadable: write nothing (ruling 6)
+  if (problemsInputsDegraded) {
+    // A degraded "in use" set would flip problems in and out (false "updating again").
+    console.warn('[simplefin-sync] connection problems skipped: the loan links or ignore list could not be read');
+  } else {
+    try {
+      priorProblems = store.getSimplefinProblems ? await store.getSimplefinProblems() : null;
+    } catch (e: any) {
+      console.warn('[simplefin-sync] connection problems not read: ' + (e?.message ?? e));
+    }
   }
   if (priorProblems !== undefined) {
     const inUse = (id: string) => (!!mapping[id] || linkedLoan(id)) && !ignoredAccountIds.has(id);
     const problemsAt = new Date();
     const record = mergeConnectionProblems(priorProblems, findConnectionProblems(accountSet, inUse), problemsAt);
-    await store.setSimplefinProblems?.(record).catch(() => {});
-    connectionProblems = shownConnectionProblems(record, problemsAt);
+    try {
+      await store.setSimplefinProblems?.(record);
+      connectionProblems = shownConnectionProblems(record, problemsAt);
+    } catch (e: any) {
+      console.warn('[simplefin-sync] connection problems not saved: ' + (e?.message ?? e));
+    }
   }
   /** Bank transactions the user has said are not real (shared/skipped-transactions.ts),
    *  per account. A failed read imports everything, as before the list existed. */

@@ -87,4 +87,25 @@ describe('runSyncCore — SimpleFin connection problems are remembered (#81)', (
     expect(skipped.connectionProblems).toBeUndefined();
     expect(fh.store.setSimplefinProblems).not.toHaveBeenCalled();
   });
+
+  it('logs, and says nothing, when the record cannot be saved', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const { fh } = setup([SIGNIN]);
+    (fh.store as any).setSimplefinProblems = vi.fn(async () => { throw new Error('403'); });
+    const result = await runSyncCore(fh.host, fh.store, {});
+    expect(result.connectionProblems).toBeUndefined();
+    expect(result.errors).toContain('SimpleFin: Fidelity NetBenefits: Authentication required');
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('connection problems not saved: 403'));
+    warn.mockRestore();
+  });
+
+  it('skips the record when the ignore list cannot be read', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const { fh } = setup([SIGNIN]);
+    (fh.store as any).getIgnoredAccounts = async () => { throw new Error('boom'); };
+    const result = await runSyncCore(fh.host, fh.store, {});
+    expect(fh.store.setSimplefinProblems).not.toHaveBeenCalled();
+    expect(result.connectionProblems).toBeUndefined();
+    warn.mockRestore();
+  });
 });
