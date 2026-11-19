@@ -82,6 +82,9 @@ export interface SimplefinAccount {
     url?: string;
     'sfin-url'?: string;
   };
+  /** The connection the account came through. Protocol v2 only; there
+   *  `normalizeAccountSet` fills `org` from it. */
+  conn_id?: string;
   /**
    * Positions, for an investment account. Absent on every bank and card
    * account, and absent from every fixture written before v1.50 — which is why
@@ -105,6 +108,13 @@ export interface SimplefinBridgeError {
   key: string;
 }
 
+/** A v2 connection. `name` is what v1 sent as `org.name` (checked against the
+ *  live demo Bridge). */
+export interface SimplefinConnection {
+  connId: string;
+  name: string;
+}
+
 export interface SimplefinAccountSet {
   /** Human-readable, one per DISTINCT failure, with the failing account named
    *  where the payload allowed it to be resolved. Built from `errorList` — see
@@ -116,6 +126,8 @@ export interface SimplefinAccountSet {
    *  fixtures and stored payloads that predate it stay valid. */
   errorList?: SimplefinBridgeError[];
   accounts: SimplefinAccount[];
+  /** The connections the payload listed (v2); absent when it listed none. */
+  connections?: SimplefinConnection[];
 }
 
 export interface AccountMapping {
