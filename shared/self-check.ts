@@ -22,6 +22,7 @@
  * through a Telegram send.
  */
 import { formatDollars } from './telegram.js';
+import { connectionProblemText, connectionProblemTitle, type ConnectionProblem } from './connection-problems.js';
 
 /** How long a sync can go missing before it is worth saying so. Comfortably
  *  past the 4-hour default schedule, so an ordinary skipped run — a container
@@ -48,6 +49,9 @@ export interface SelfCheckFinding {
     | 'sync-failing'
     | 'sync-stale'
     | 'unmapped-accounts'
+    /** #81: SimpleFin cannot update a connection. Printed in full, yet
+     *  snoozable by its episode (key carries firstSeenAt). */
+    | 'connection-problem'
     | 'feed-stale'
     | 'signals-unreadable'
     | 'version-skew'
@@ -113,6 +117,8 @@ export interface SelfCheckInput {
   /** SimpleFin accounts with no Wealthfolio mapping, already filtered of the
    *  ones the user chose to ignore. */
   unmappedAccountNames?: readonly string[];
+  /** SimpleFin connection problems already judged shown (#81). */
+  connectionProblems?: readonly ConnectionProblem[];
   /** Per-account feed freshness. `balanceDate` is a Unix SECONDS timestamp, as
    *  SimpleFin reports it; null = SimpleFin gave no date for this account.
    *  `drift` is bank − Wealthfolio in dollars, set by the sync only past the
@@ -183,6 +189,16 @@ export function evaluateSelfCheck(input: SelfCheckInput, now: Date): SelfCheckFi
         message: `no successful sync in ${Math.round(hours)}h`,
       });
     }
+  }
+
+  for (const p of input.connectionProblems ?? []) {
+    findings.push({
+      kind: 'connection-problem',
+      severity: 'problem',
+      key: `connection-problem:${p.key}@${p.firstSeenAt}`,
+      label: connectionProblemTitle(p),
+      message: connectionProblemText(p),
+    });
   }
 
   const unmapped = input.unmappedAccountNames ?? [];
@@ -332,7 +348,7 @@ export function escapeFindingText(text: string): string {
 export function printsInFull(f: SelfCheckFinding): boolean {
   // The tripwire too (1.62): the report disagreeing with Wealthfolio is
   // never folded into a count — the reader must see it, in Brief as in Full.
-  return f.severity === 'problem' || f.kind === 'signals-unreadable' || f.kind === 'spending-differs';
+  return f.severity === 'problem' || f.kind === 'signals-unreadable' || f.kind === 'spending-differs' || f.kind === 'connection-problem';
 }
 
 /**

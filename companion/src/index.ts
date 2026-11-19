@@ -150,13 +150,13 @@ export function createWealthfolioClient(apiUrl: string): WealthfolioClient {
     log,
   });
 }
-import { formatSelfCheckBlock, formatFindingsSummary, printsInFull } from '../../shared/self-check.js';
+import { formatSelfCheckBlock, formatFindingsSummary } from '../../shared/self-check.js';
 import { readInstalledAddonVersion } from './installed-addon.js';
 import { createSyncStatus, outcomeOf, startStatusServer, statusServerConfig } from './status-server.js';
 import { getLedgerFacts } from './ledger-facts.js';
 import { REFUSED_ALERTED_SECRET_KEY, parseAnnouncedRefusals, unannouncedRefusals, withAnnouncedRefusals } from '../../shared/refused-alerts.js';
 import { gatherFindings, readSyncHealth, updateSnoozes, type FindingsDeps } from './daily-findings.js';
-import { createFindingsMenu, SHOW_FINDINGS_BUTTON, type FindingsMenu } from './findings-menu.js';
+import { createFindingsMenu, needsFindingsButton, SHOW_FINDINGS_BUTTON, type FindingsMenu } from './findings-menu.js';
 import { withSnooze } from '../../shared/findings.js';
 
 /** When each ledger-check condition was first seen — what lets a card mismatch
@@ -2328,7 +2328,7 @@ export interface DailyDigest {
   /** For the Reports tab and push: the same report with every finding spelled
    *  out, since neither has a button to unfold them. */
   archive: string;
-  /** The "Show what to fix" button, when anything was folded. */
+  /** The "Show what to fix" button, when anything was folded or a printed finding can be snoozed. */
   keyboard?: InlineKeyboard;
 }
 
@@ -2475,7 +2475,6 @@ export async function composeDailyDigest(
   let archive = message;
   if (summary) message += `\n\n${summary}`;
   if (fullBlock) archive += `\n\n${fullBlock}`;
-  const folded = visible.filter((f) => !printsInFull(f)).length;
 
   const footer = opts.healthFooter === 'failures-only' && !health?.firstFailedAt
     ? ''
@@ -2505,8 +2504,8 @@ export async function composeDailyDigest(
     const hides = comingUp.cancelled.slice(0, 2).map(hideFromReportButton);
     if (hides.length > 0) rows.push(hides);
   }
-  // The 🧹 button only when something is actually folded behind it.
-  if (folded > 0) rows.push([SHOW_FINDINGS_BUTTON]);
+  // The 🧹 button when something is folded behind it, or a printed finding can be snoozed.
+  if (needsFindingsButton(visible)) rows.push([SHOW_FINDINGS_BUTTON]);
   return {
     text: message,
     archive,
