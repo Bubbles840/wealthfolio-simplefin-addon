@@ -6,6 +6,7 @@ import { learnedNameKeys, learnedTransferType } from './transfer-names.js';
 import { decideDividend, isDividendRow, isInvestmentAccountType, NO_DIVIDEND_READS, SNAPSHOT_WINDOW_DAYS, type DividendReads, type HeldSecurity, type PastActivity, type SnapshotDay } from './dividends.js';
 import { mapTransactionWithSource, type MappedType } from './mapper.js';
 import { REIMBURSEMENT_SUBTYPE } from './cash-flow-bucket.js';
+import { FEE_REVERSAL_SUBTYPE } from './fee-reversal.js';
 import { accountTxKey, detectTransferPairs, TRANSFER_MATCH_WINDOW_SECONDS } from './transfers.js';
 import type { TransferCandidate } from './transfers.js';
 import { planReconciliation, IN_TRANSIT_COMMENT_PREFIX, isSecurityAsset } from './reconcile.js';
@@ -2436,7 +2437,8 @@ async function runSyncPass(
      *  `since`): reconciliation leaves a stored row's type and subtype as they are. */
     createOnly?: true;
     /** Nothing decided this cash money-in row's type and the plain mapping says
-     *  DEPOSIT: a stored payback stays as stored (see `FeedTx.keepPayback`). */
+     *  DEPOSIT (or a fee reversal's CREDIT/REFUND, #79): a stored payback stays as
+     *  stored (see `FeedTx.keepPayback`). */
     keepPayback?: true;
     /** A dividend row this run named no security for: a stored dividend stays
      *  as stored (see `FeedTx.keepDividend`). */
@@ -2768,7 +2770,7 @@ async function runSyncPass(
       // `tx.description` is the bank's raw text — enrichment comes later.
       const bankFirst = bankFirstTransferOut(tx.description, amount, acctType, builtIn, otherAccountWords);
       // R13: from the bank text ALONE, before learned typing.
-      const keepPayback = !payback && !builtIn.fromRule && builtIn.type === 'DEPOSIT' && amount > 0 && (!acctType || acctType === 'CASH');
+      const keepPayback = !payback && !builtIn.fromRule && (builtIn.type === 'DEPOSIT' || !!builtIn.feeReversal) && amount > 0 && (!acctType || acctType === 'CASH');
       // Live, 2026-10-18: a savings -> Spend landing ("... TRANSFER CAPITAL ONE ACH
       // WEB PAYMENT") posted before the savings half and read as a plain deposit,
       // and 360 Checking's withdrawal to Performance Savings read as spending. A
@@ -2896,7 +2898,8 @@ async function runSyncPass(
       // Never paired: pairing would type it a transfer and link it again — or,
       // for a payback, turn it into a transfer leg.
       // (A stored payback a learned name matched stays out too, R13.)
-      if (notTransfer || payback || heldAsPayback) continue;
+      // A refund of a fee is never a transfer half either (#79).
+      if (notTransfer || payback || heldAsPayback || builtIn.feeReversal) continue;
       // A rule's type is never overridden by pair detection, which is why ruled
       // rows sit out of it — except a rule that already says "transfer, this way".
       // Pairing assigns that very type, so all it adds is the link; leaving such a
@@ -3282,7 +3285,7 @@ async function runSyncPass(
       ...(inTransit ? { inTransit: true } : {}),
       ...(needsReview ? { needsReview: true } : {}),
       ...(createOnly ? { createOnly: true as const } : {}),
-      ...(keepPayback && type === 'DEPOSIT' && !inTransit ? { keepPayback: true as const } : {}),
+      ...(keepPayback && (type === 'DEPOSIT' || (type === 'CREDIT' && subtype === FEE_REVERSAL_SUBTYPE)) && !inTransit ? { keepPayback: true as const } : {}),
       ...(assetId ? { assetId } : {}),
       ...(keepDividend ? { keepDividend } : {}),
       // Carried so `changed()` can compare it against the stored row — a rule
