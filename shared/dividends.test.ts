@@ -161,14 +161,24 @@ describe('a position bought and sold between two dividends', () => {
     { date: '2027-02-10', positionCount: 2 }, { date: '2027-02-25', positionCount: 1 }, { date: '2027-03-12', positionCount: 1 },
   ];
 
-  it('reads snapshots on or within 60 days before the dividend: the last before a sale first, then newest first', () => {
-    expect(snapshotDatesToRead(days, '2027-03-10')).toEqual(['2027-02-10', '2027-02-25', '2027-01-20']);
+  it('reads snapshots on or within 60 days before the dividend: the last before a sale first, then newest first, then the one in force when the window opens', () => {
+    expect(snapshotDatesToRead(days, '2027-03-10')).toEqual(['2027-02-10', '2027-02-25', '2027-01-20', '2026-12-01']);
     expect(snapshotDatesToRead(days, 'not a date')).toEqual([]);
   });
 
-  it('reads at most eight', () => {
+  it('reads at most eight, the one in force when the window opens last of all', () => {
     const many = Array.from({ length: 20 }, (_, i) => ({ date: `2027-02-${String(i + 1).padStart(2, '0')}`, positionCount: 3 }));
     expect(snapshotDatesToRead(many, '2027-03-01')).toHaveLength(8);
+    expect(snapshotDatesToRead([{ date: '2026-12-01', positionCount: 3 }, ...many], '2027-03-01')).not.toContain('2026-12-01');
+  });
+
+  it('reads the snapshot in force when the window opens however old it is, since one is written only when holdings change', () => {
+    // The window for a dividend on 2027-03-10 opens on 2027-01-09.
+    const sparse = [{ date: '2026-03-02', positionCount: 2 }, { date: '2026-11-30', positionCount: 2 }, { date: '2027-02-25', positionCount: 1 }];
+    expect(snapshotDatesToRead(sparse, '2027-03-10')).toEqual(['2027-02-25', '2026-11-30']);
+    expect(snapshotDatesToRead([{ date: '2026-11-30', positionCount: 2 }], '2027-03-10')).toEqual(['2026-11-30']);
+    // One dated the day the window opens is in it already.
+    expect(snapshotDatesToRead([{ date: '2026-11-30', positionCount: 2 }, { date: '2027-01-09', positionCount: 2 }], '2027-03-10')).toEqual(['2027-01-09']);
   });
 
   it('lists snapshots from a snapshot listing, skipping malformed ones', () => {
