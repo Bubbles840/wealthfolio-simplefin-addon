@@ -290,9 +290,37 @@ nothing.
 - Positive amounts on a credit-card account import as **Credit** (a refund,
   netted against spending) unless they look like a card payment — "payment",
   "autopay", "thank you", "e-pay" — which become Transfer In.
+- A bank fee coming back ("OVERDRAFT FEE REFUND", "Monthly Maintenance Fee
+  Waived", "LATE PAYMENT FEE REVERSAL") imports as a **Credit** marked Refund on
+  a cash or card account, never as income, a card payment or half of a
+  transfer. The text needs a fee word (`fee`, `service charge`, `late charge`)
+  and a word saying it came back (waived, reversal, refund, rebate,
+  reimbursement, adjustment, or "credit" right after the fee word, as in
+  "LATE FEE CREDIT"; a deposit labelled "ACH CREDIT" stays a deposit). A
+  transaction rule overrides it. With the companion, it is filed under the
+  category of the fee it reverses: same account, same amount, up to 30 days
+  before, closest first. One you already put in a spending category is left
+  alone, and Undo in the change log takes the filing off for good.
 - Cash-transfer legs are deliberately imported with **no asset**, which is what
   lets Wealthfolio book the cash movement and pair the two legs. See
   `companion/upstream-pr.md` for the underlying upstream issue.
+
+### When SimpleFin can't update a connection
+
+SimpleFIN Bridge keeps serving a connection's last figures when the bank needs
+you to sign in again, so its accounts look current. The add-on and companion
+ask the Bridge (protocol version 2; Lunch Flow is asked as before) which
+connection has a problem, and say so:
+- **Sign in again**: a banner on Home at once, with a link to the Bridge, and
+  "not updating" next to the affected accounts in Settings → Accounts.
+- **Anything else** (an account SimpleFin could not read, say): the same, once
+  it has lasted a day, so a one-off "try again later" stays quiet.
+- With the companion: a Telegram notice when a problem starts and another when
+  it clears, a line in the daily report while it lasts (snoozable), a Home
+  Assistant alert, and a count on the status page.
+
+A problem on an account you don't sync is left out. The add-on hides a record
+more than two days old. The figures update again once SimpleFin does.
 
 ### Ignore rules
 
@@ -489,7 +517,8 @@ are different versions, naming the fix (reload, upload the zip, or pull the imag
 Under **Settings → Home Assistant**, the companion can also send alerts to Home
 Assistant, through its notify service (with a long-lived access token) or a
 webhook. Problem alerts are sent: sync failing, balance drift, unlinked
-transfers, large transactions, new accounts, refusals and duplicates removed. A
+transfers, large transactions, new accounts, SimpleFin connection problems,
+refusals and duplicates removed. A
 notice for each import is off until you switch it on. Alerts the add-on raises
 wait for the companion's next pass, within 5 minutes.
 
@@ -537,8 +566,11 @@ Running the companion headless? Set `STATUS_PORT` (say `8099`) and it answers
 { "version": "1.71.0", "ok": true, "running": false,
   "lastRun": { "startedAt": "…", "finishedAt": "…", "outcome": "synced",
                "imported": 3, "skipped": 120, "error": null },
-  "lastSyncedAt": "…" }
+  "lastSyncedAt": "…", "connectionProblems": 0 }
 ```
+
+`connectionProblems` counts the SimpleFin connection problems being shown, as
+of the last run that read the feed. It is absent until one has.
 
 Each `outcome` and the status it returns:
 - `synced`: 200.

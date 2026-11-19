@@ -35,6 +35,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
   The snapshot and price changes are the add-on's (the companion writes no
   snapshots); the dividend change is in both halves.
+- **A bank fee coming back is a refund, not income (#79).** "OVERDRAFT FEE
+  REFUND", "Monthly Maintenance Fee Waived", "LATE PAYMENT FEE REVERSAL" and
+  the like now import as a Credit marked Refund on cash and card accounts,
+  which Wealthfolio takes off spending, instead of a deposit (income) or a card
+  payment. Ones still in the fetch window are retyped on the next sync, and the
+  change log says "Retyped". A transaction rule still wins, and a payback stays
+  a payback. With the companion, each is also filed under the category of the
+  fee it reverses (same account, same amount, up to 30 days before), with Undo
+  in the change log; one you or a rule already put in a spending category is
+  never touched. An ATM rebate of another bank's fee has no fee row to copy
+  from: file it once, or add a rule. Update both halves: an older add-on or
+  companion types these back to deposits.
+- **SimpleFin's connection problems are shown, not hidden (#81).** Both halves
+  now ask SimpleFIN Bridge for protocol version 2, which names the bank
+  connection behind each problem (Lunch Flow is asked exactly as before). A
+  connection that needs you to sign in again at the Bridge gets a banner on
+  Home at once, with a link to the Bridge, and its accounts are marked "not
+  updating" in Settings → Accounts. Other problems show once they have lasted a
+  day. The companion sends a Telegram notice when one starts and when it
+  clears, lists it in the daily report until then (snooze it there if you
+  know), sends a Home Assistant alert, and counts them on the status page.
+  Until you sign in again, the add-on can only show the last figures SimpleFin
+  got.
 
 ### Changed
 - **The Amazon "Category for anything unrecognized" can be a subcategory
