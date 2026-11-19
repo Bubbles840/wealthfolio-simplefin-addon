@@ -46,11 +46,17 @@
  * for the account at all. Never onto a shared asset the person prices by hand,
  * where the import would write that cost as the day's price.
  *
+ * A snapshot that matches what Wealthfolio already holds (the same assets, share
+ * counts, the costs SimpleFin sent, and cash) is not written (#83,
+ * shared/holdings.ts `sameAsHeld`): Wealthfolio sets the account's net
+ * contribution to 0 on every snapshot it saves, and a write also resets a cost
+ * basis entered by hand. The day's feed prices are still written.
+ *
  * Nothing here fails the sync: a failed holdings read skips the account's
  * snapshot for this sync (writing it without knowing which holdings are on
  * per-account assets would move them back), and a failed price is logged.
  */
-import { carriedCost, sameCurrency, scopedSymbol, type FeedPrice, type HoldingsSnapshot } from '../../shared/holdings';
+import { carriedCost, sameAsHeld, sameCurrency, scopedSymbol, type FeedPrice, type HoldingsSnapshot } from '../../shared/holdings';
 import type { HoldingsSyncOutcome } from '../../shared/sync-host';
 
 /** How long a MARKET asset must have had no quote before it is priced from the feed. */
@@ -67,6 +73,8 @@ export interface HeldAsset {
   costBasis?: { local?: number | null } | null;
   /** The currency `costBasis.local` and `price` are in. */
   localCurrency?: string | null;
+  /** `cash` for a cash line, else `security` / `alternativeAsset`. */
+  holdingType?: string | null;
 }
 
 const modeOf = (h: HeldAsset | undefined) => h?.instrument?.pricingMode ?? undefined;
@@ -171,8 +179,8 @@ async function sharedIsUnpriced(
  *  3. One import check over the snapshot, with those holdings' per-account
  *     symbols added: the assets that exist, and their ids. A holding on its
  *     per-account asset whose shared asset now has a market quote moves back.
- *  4. The snapshot is written unless the date already has one, except on the
- *     day a holding first moves: a snapshot is one row per account and date in
+ *  4. The snapshot is written unless it says what Wealthfolio already holds, or
+ *     the date already has one, except on the day a holding first moves: a snapshot is one row per account and date in
  *     Wealthfolio, so writing again replaces the day's positions. A move back
  *     shows from the next day's snapshot.
  *  5. The feed's price is written on each per-account asset when it changed.
@@ -210,6 +218,8 @@ export async function syncHoldingsWithFeedPrices(
    *  price for today: they stay there at their last price. Written back onto the
    *  shared asset, which nothing prices, they would be worth $0. */
   const kept = new Set<string>();
+  /** The whole holdings read, cash lines included; null when none was made. */
+  let read: HeldAsset[] | null = null;
   if (tag && snapshot.positions.length > 0) {
     let holdings: HeldAsset[];
     try {
@@ -217,6 +227,7 @@ export async function syncHoldingsWithFeedPrices(
     } catch (e: any) {
       throw new Error(`could not read the account's holdings: ${e?.message ?? e}`);
     }
+    read = holdings ?? [];
     const usable = (holdings ?? []).filter((h) => h.instrument?.id && h.instrument.symbol);
     held = new Map(usable.map((h): [string, HeldAsset] => [symbolKey(h.instrument!.symbol), h]));
     heldById = new Map(usable.map((h): [string, HeldAsset] => [h.instrument!.id, h]));
@@ -310,6 +321,26 @@ export async function syncHoldingsWithFeedPrices(
     }
   }
 
+  // 4. (decided before the positions are built.) Only a real change of asset
+  // forces a write: `moving` holds every holding on, or moving to, its
+  // per-account asset, so one staying there must not.
+  const firstMove = [...moving].some((k) => !ids.has(symbolKey(scoped(priced.get(k)!.symbol))));
+  const unchanged = read !== null && sameAsHeld(
+    snapshot.positions.map((p) => {
+      const key = symbolKey(p.symbol);
+      const own = moving.has(key) || kept.has(key);
+      return {
+        assetId: ids.get(own ? symbolKey(scoped(p.symbol)) : key),
+        quantity: p.quantity,
+        currency: p.currency,
+        ...(p.avgCost ? { sentAvgCost: p.avgCost } : {}),
+      };
+    }),
+    snapshot.cashBalances,
+    read,
+  );
+  const write = !unchanged && (firstMove || !check.existingDates.some((d) => dayOf(d) === snapshot.date));
+
   const costUnknown: string[] = [];
   // A holding moving back to its shared asset today: the account does not hold
   // that asset, so its mode comes from one profile read. Only on that day.
@@ -354,10 +385,9 @@ export async function syncHoldingsWithFeedPrices(
     .map((s) => s.symbol);
 
   // 4.
-  const firstMove = [...moving].some((k) => !ids.has(symbolKey(scoped(priced.get(k)!.symbol))));
   let imported = 0;
   let skipped = 0;
-  if (check.existingDates.some((d) => dayOf(d) === snapshot.date) && !firstMove) {
+  if (!write) {
     skipped = 1;
   } else {
     const result = await io.importSnapshots(wfAccountId, [written]);
