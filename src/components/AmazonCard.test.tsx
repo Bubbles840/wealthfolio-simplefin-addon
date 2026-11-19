@@ -289,6 +289,84 @@ describe('AmazonCard', () => {
       .toEqual({ Shirts: 'Shopping / Clothing' });
   });
 
+  describe('the category for anything unrecognized (#80)', () => {
+    const configured = (defaultCategory: string) => vi.fn(async () => ({
+      host: 'imap.gmail.com', user: 'r@g.com', password: 'x', defaultCategory,
+    })) as any;
+    const fallback = () => screen.getByLabelText(/Category for anything unrecognized/i) as HTMLSelectElement;
+    const values = (select: HTMLSelectElement) => [...select.options].map((o) => o.value);
+
+    it('offers the same list as the label rows: subcategories as Parent / Child, no bookkeeping', async () => {
+      const props = makeProps({
+        companionVersion: AMAZON_SUBCATEGORIES_SINCE,
+        categories: [...catalog('Shopping', 'Housing', 'Sync bookkeeping', 'Opening balances'), sub('Clothing', 'Shopping')],
+      });
+      props.store.getAmazonConfig = configured('Shopping');
+      render(<Harness {...props} />);
+      await screen.findByDisplayValue('r@g.com');
+      expect(values(fallback())).toEqual(['Housing', 'Shopping', 'Shopping / Clothing']);
+
+      fireEvent.change(fallback(), { target: { value: 'Shopping / Clothing' } });
+      fireEvent.click(screen.getByRole('button', { name: /Save Amazon Settings/i }));
+      await waitFor(() => expect(props.store.setAmazonConfig).toHaveBeenCalled());
+      expect((props.store.setAmazonConfig as any).mock.calls[0][0].defaultCategory).toBe('Shopping / Clothing');
+    });
+
+    it('offers top-level categories only while the companion is older, and no bookkeeping either', async () => {
+      const props = makeProps({
+        companionVersion: '1.73.0',
+        categories: [...catalog('Shopping', 'Housing', 'Sync bookkeeping'), sub('Rent', 'Housing')],
+      });
+      props.store.getAmazonConfig = configured('Shopping');
+      render(<Harness {...props} />);
+      await screen.findByDisplayValue('r@g.com');
+      expect(values(fallback())).toEqual(['Housing', 'Shopping']);
+    });
+
+    it('shows an old bare subcategory name as the option it files under, and saves it untouched', async () => {
+      const props = makeProps({
+        companionVersion: AMAZON_SUBCATEGORIES_SINCE,
+        categories: [...catalog('Shopping'), sub('Home Goods', 'Shopping')],
+      });
+      props.store.getAmazonConfig = configured('Home Goods');
+      render(<Harness {...props} />);
+      await screen.findByDisplayValue('r@g.com');
+      expect(fallback().value).toBe('Shopping / Home Goods');
+
+      fireEvent.click(screen.getByRole('button', { name: /Save Amazon Settings/i }));
+      await waitFor(() => expect(props.store.setAmazonConfig).toHaveBeenCalled());
+      expect((props.store.setAmazonConfig as any).mock.calls[0][0].defaultCategory).toBe('Home Goods');
+    });
+
+    it('keeps a stored value that is not an option, as stored', async () => {
+      // A subcategory with an older companion; a category since deleted.
+      for (const [companionVersion, stored, list] of [
+        ['1.73.0', 'Home Goods', ['Home Goods', 'Shopping']],
+        [AMAZON_SUBCATEGORIES_SINCE, 'Gone', ['Gone', 'Shopping', 'Shopping / Home Goods']],
+      ] as const) {
+        const props = makeProps({ companionVersion, categories: [...catalog('Shopping'), sub('Home Goods', 'Shopping')] });
+        props.store.getAmazonConfig = configured(stored);
+        const { unmount } = render(<Harness {...props} />);
+        await screen.findByDisplayValue('r@g.com');
+        expect(fallback().value).toBe(stored);
+        expect(values(fallback())).toEqual(list);
+        unmount();
+      }
+    });
+
+    it('flags an old bare name two subcategories share, as a label row does', async () => {
+      const props = makeProps({
+        companionVersion: AMAZON_SUBCATEGORIES_SINCE,
+        categories: [...catalog('Hobbies', 'Shopping'), sub('Clothing', 'Hobbies'), sub('Clothing', 'Shopping')],
+      });
+      props.store.getAmazonConfig = configured('Clothing');
+      render(<Harness {...props} />);
+      await screen.findByDisplayValue('r@g.com');
+      expect(fallback().value).toBe('Clothing');
+      expect(screen.getByText(/fits 2 categories, pick the one you mean/i)).toBeTruthy();
+    });
+  });
+
   it('explains that this cannot double-count a purchase', async () => {
     // The first question anyone asks: emails arrive before the charge, so does
     // the purchase get counted twice? It does not — order emails only label a

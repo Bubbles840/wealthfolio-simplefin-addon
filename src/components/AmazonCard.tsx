@@ -193,18 +193,30 @@ export function AmazonCard({
   const [status, setStatus] = useState<StatusMessage | null>(null);
 
   const labelNames = Object.keys(labels).sort((a, b) => a.localeCompare(b));
-  // The fallback stays top-level: it catches whatever no rule knows, and a
-  // broad category is the honest home for that.
-  const options = categories.filter((c) => !c.parent).map((c) => c.name);
-  // A label can go to a subcategory, stored as `Parent / Child`, once the
+  // A category can be a subcategory, stored as `Parent / Child`, once the
   // companion can file under one.
   const subcategories = companionFilesAmazonSubcategories(companionVersion);
+  // The label rows and the fallback offer the same list (#80): the fallback is
+  // also where a label with no rule starts, and someone who keeps e.g. a
+  // "Shopping / Amazon" subcategory wants unrecognized orders there too.
   // Never the sync's own bookkeeping categories: Amazon charges are spending.
-  const labelOptions = subcategories
-    ? [...new Set(categories
-      .filter((c) => c.name !== SYNC_BOOKKEEPING_CATEGORY && c.name !== OPENING_BALANCES_CATEGORY)
-      .map(amazonCategoryValue))].sort((a, b) => a.localeCompare(b))
-    : options;
+  const labelOptions = [...new Set(categories
+    .filter((c) => c.name !== SYNC_BOOKKEEPING_CATEGORY && c.name !== OPENING_BALANCES_CATEGORY)
+    .filter((c) => subcategories || !c.parent)
+    .map(amazonCategoryValue))].sort((a, b) => a.localeCompare(b));
+  /** How a stored category is shown in a dropdown. A legacy bare name is shown
+   *  as the option it files under, or flagged (`hit`) when it fits several. It
+   *  is shown as stored while the companion is older, so leaving the dropdown
+   *  alone can never save a path the companion cannot read. A value that is not
+   *  an option stays in the list, so leaving it alone never changes it. */
+  const shownAs = (stored: string) => {
+    const hit = findAmazonCategory(stored, categories);
+    const entry = hit.kind === 'found' ? hit.entry : undefined;
+    const current = entry && subcategories ? amazonCategoryValue(entry) : stored;
+    const list = labelOptions.includes(current) ? labelOptions : [current, ...labelOptions];
+    return { hit, entry, current, list };
+  };
+  const fallback = shownAs(defaultCategory);
   const unmatched = labelNames.filter(
     (l) => !resolveAmazonCategory(l, { defaultCategory, labelOverrides: overrides }).matched,
   ).length;
@@ -399,12 +411,16 @@ export function AmazonCard({
             <select
               id="sfin-amz-default"
               className="sfin-select"
-              value={defaultCategory}
+              value={fallback.current}
               onChange={(e) => patch({ defaultCategory: e.target.value })}
             >
-              {(options.includes(defaultCategory) ? options : [defaultCategory, ...options])
-                .map((name) => <option key={name} value={name}>{name}</option>)}
+              {fallback.list.map((name) => <option key={name} value={name}>{name}</option>)}
             </select>
+            {fallback.hit.kind === 'ambiguous' && (
+              <div className="sfin-subtle">
+                {`Fits ${fallback.hit.candidates.length} categories, pick the one you mean`}
+              </div>
+            )}
           </div>
         </div>
 
@@ -422,14 +438,7 @@ export function AmazonCard({
                 const resolved = resolveAmazonCategory(label, {
                   defaultCategory, labelOverrides: overrides,
                 });
-                // A value from an older build is a bare name: shown as the
-                // option it files under, or flagged when it fits several. Shown
-                // as stored while the companion is older, so leaving the row
-                // alone can never save a path it cannot read.
-                const hit = findAmazonCategory(resolved.category, categories);
-                const entry = hit.kind === 'found' ? hit.entry : undefined;
-                const current = entry && subcategories ? amazonCategoryValue(entry) : resolved.category;
-                const shown = labelOptions.includes(current) ? labelOptions : [current, ...labelOptions];
+                const { hit, entry, current, list: shown } = shownAs(resolved.category);
                 return (
                   <div
                     key={label}
