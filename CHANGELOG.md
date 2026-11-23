@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.77.0] - 2026-11-23
+
+Update both halves, together. Update the add-on in the app as usual (no new
+permissions) and pull the companion image. Both halves import fee reversals
+(#79) and Fidelity dividends (#85): while only one is updated, the two type
+the same row differently and change it back and forth on every sync. The
+daily report also flags halves on different versions. From before 1.70.0, use
+**Install from File** with this zip, as 1.70.0 says.
+
 ### Fixed
 - **A cost entered by hand on a holding is no longer wiped by the next sync
   (#83).** On accounts whose provider sends no cost (a deferred-comp plan, a
