@@ -9,6 +9,19 @@ describe('dividendTicker', () => {
     expect(dividendTicker('Dividend Received Fidelity Government Money Market (spaxx) (Cash)')).toBe('SPAXX');
   });
 
+  it('reads the ticker whichever sub-account Fidelity paid it into: margin and short as well as cash (#85)', () => {
+    // Real wording from #85, an IRA: Fidelity truncates the fund name itself.
+    expect(dividendTicker('DIVIDEND RECEIVED VANGUARD INDEX FUNDS VANGUARD MORNIN... (VTI) (Margin)')).toBe('VTI');
+    expect(dividendTicker('DIVIDEND RECEIVED VANGUARD TOTAL INTERNATIONAL STOCK I... (VXUS) (Margin)')).toBe('VXUS');
+    expect(dividendTicker('Dividend Received Vanguard Index Funds S&P 500 ETF USD (voo) (margin)')).toBe('VOO');
+    expect(dividendTicker('DIVIDEND RECEIVED MICROSOFT CORP (MSFT) (Short)')).toBe('MSFT');
+  });
+
+  it('reads nothing when the last label is not one of Fidelity\'s sub-accounts', () => {
+    expect(dividendTicker('DIVIDEND RECEIVED VANGUARD INDEX FUNDS S&P 500 ETF USD (VOO) (Pending)')).toBeNull();
+    expect(dividendTicker('DIVIDEND RECEIVED VANGUARD INDEX FUNDS S&P 500 ETF USD (VOO) (Marginal)')).toBeNull();
+  });
+
   it('reads nothing from a dividend that names no ticker, or from a line that is not a dividend', () => {
     expect(dividendTicker('Dividend Received')).toBeNull();
     expect(dividendTicker('REINVESTMENT VANGUARD INDEX FUNDS S&P 500 ETF USD (VOO) (Cash)')).toBeNull();
@@ -63,6 +76,12 @@ describe('decideDividend', () => {
     expect(await decide({ mapped: ruled('DIVIDEND'), description: 'Dividend Received' })).toEqual({ type: 'INTEREST' });
     expect(await decide({ mapped: ruled('DIVIDEND'), accountType: 'CASH' })).toEqual({ type: 'INTEREST' });
     expect(await decide({ mapped: ruled('DIVIDEND'), held: async () => [] })).toEqual({ type: 'INTEREST' });
+  });
+
+  it('books a margin-account dividend on the held security, with or without a DIVIDEND rule (#85)', async () => {
+    const margin = 'DIVIDEND RECEIVED VANGUARD INDEX FUNDS S&P 500 ETF USD (VOO) (Margin)';
+    expect(await decide({ description: margin })).toEqual({ type: 'DIVIDEND', assetId: 'a-voo' });
+    expect(await decide({ description: margin, mapped: ruled('DIVIDEND') })).toEqual({ type: 'DIVIDEND', assetId: 'a-voo' });
   });
 
   it('reads the holdings only when a dividend names a ticker', async () => {

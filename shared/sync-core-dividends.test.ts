@@ -86,6 +86,17 @@ describe('runSyncCore — dividends on their security', () => {
     expect(theRow(fh)).toMatchObject({ id: 'act-1', activityType: 'DIVIDEND', assetId: 'asset-voo' });
   });
 
+  it('moves a margin-account dividend an older version stored as a deposit onto its security (#85)', async () => {
+    const MARGIN = 'DIVIDEND RECEIVED VANGUARD INDEX FUNDS S&P 500 ETF USD (VOO) (Margin)';
+    const stored: HostActivity = {
+      id: 'act-1', accountId: 'wf-1', activityType: 'DEPOSIT', date: '2027-03-10', amount: 12.34,
+      comment: `${MARGIN} · tx-div`, sourceGroupId: null, metadata: null,
+    };
+    const fh = createFakeHost(seed(MARGIN, { existing: new Map([['wf-1', [stored]]]) }));
+    await runSyncCore(fh.host, fh.store, { dividendSecurities: true, force: true });
+    expect(theRow(fh)).toMatchObject({ id: 'act-1', activityType: 'DIVIDEND', assetId: 'asset-voo' });
+  });
+
   describe('a booked dividend on a later sync', () => {
     const booked = async (extra: Partial<FakeHostSeed> = {}) => {
       const s = seed(VOO, extra);
