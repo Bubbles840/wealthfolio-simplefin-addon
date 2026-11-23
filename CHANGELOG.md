@@ -62,6 +62,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   know), sends a Home Assistant alert, and counts them on the status page.
   Until you sign in again, the add-on can only show the last figures SimpleFin
   got.
+- **Fidelity dividends paid into the margin sub-account are dividends (#85).**
+  Fidelity ends each dividend line with the sub-account it was paid into, and
+  only `(Cash)` was read, so `(Margin)` lines (common in IRAs, which can't trade
+  on margin) came in as plain deposits. They counted toward Wealthfolio's
+  contribution limits and were missing from dividend income. `(Margin)` and
+  `(Short)` lines are now booked as a Dividend on their holding like `(Cash)`
+  ones, and a rule that types them DIVIDEND finds the holding too, instead of
+  booking interest. One already imported as a deposit moves onto its holding
+  when the sync reads it again: the next sync does the last two weeks, and
+  **Deep scan** on the Sync page the last 90 days. Change older ones by hand.
+  Both halves.
 
 ### Changed
 - **The Amazon "Category for anything unrecognized" can be a subcategory

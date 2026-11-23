@@ -44,9 +44,11 @@ export interface DividendPattern {
 
 export const DIVIDEND_PATTERNS: readonly DividendPattern[] = [
   {
-    // `DIVIDEND RECEIVED VANGUARD INDEX FUNDS S&P 500 ETF USD (VOO) (Cash)`
+    // `DIVIDEND RECEIVED VANGUARD INDEX FUNDS S&P 500 ETF USD (VOO) (Cash)`. The
+    // last label is the sub-account Fidelity paid it into: Cash, Margin (even
+    // in an IRA, #85) or Short. Any other label stays unread, a plain deposit.
     bank: 'Fidelity',
-    ticker: (d) => /^\s*DIVIDEND RECEIVED\b.*\(([A-Z][A-Z0-9.]{0,9})\)\s*\(Cash\)\s*$/i.exec(d)?.[1]?.toUpperCase() ?? null,
+    ticker: (d) => /^\s*DIVIDEND RECEIVED\b.*\(([A-Z][A-Z0-9.]{0,9})\)\s*\((?:Cash|Margin|Short)\)\s*$/i.exec(d)?.[1]?.toUpperCase() ?? null,
   },
 ];
 

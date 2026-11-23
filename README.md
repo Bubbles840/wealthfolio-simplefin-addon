@@ -353,7 +353,8 @@ same rules once it is updated to the same release as the add-on.
 
 A dividend whose bank text names the security is booked as a Wealthfolio
 **Dividend** on that holding, so the Income page shows which one paid it. Only a
-known wording counts (today Fidelity's `DIVIDEND RECEIVED … (VOO) (Cash)`), only
+known wording counts (today Fidelity's `DIVIDEND RECEIVED … (VOO) (Cash)`, or
+`(Margin)` or `(Short)` for those sub-accounts), only
 in an investment account, and only when exactly one security under that ticker
 is found: in the account's holdings; or, for a position already sold, in the
 account's own earlier activity (a dividend, a trade); or in its holdings
