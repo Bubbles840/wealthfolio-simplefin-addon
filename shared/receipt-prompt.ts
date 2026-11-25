@@ -14,7 +14,7 @@
  * Amounts are asked for as text, as printed: a number in JSON would let the
  * model round or reformat them.
  */
-import type { ReceiptTranscript } from './receipt.js';
+import type { FoundDiscount, ReceiptTranscript } from './receipt.js';
 
 const text = { type: 'string' } as const;
 
@@ -117,4 +117,61 @@ export function parseTranscript(content: string): ReceiptTranscript | null {
     total: t.total ?? '',
     payments: t.payments,
   };
+}
+
+/**
+ * A second, narrower question, asked only when the lines read the first time
+ * don't add up to the subtotal: a model reading a whole receipt sometimes
+ * leaves out a discount line ("0000123456 / 7654321 3.00-"), and asked for
+ * nothing but those it finds them. ./receipt.ts adds the ones the first answer
+ * missed (`withFoundDiscounts`), and the receipt still has to pass every check.
+ */
+export const DISCOUNT_SCHEMA = {
+  type: 'object',
+  properties: {
+    discounts: {
+      type: 'array',
+      items: {
+        type: 'object',
+        properties: { text, amount: text, appliesTo: text },
+        required: ['text', 'amount', 'appliesTo'],
+      },
+    },
+  },
+  required: ['discounts'],
+};
+
+export const DISCOUNT_PROMPT = [
+  'This image is a store receipt. List ONLY its discount lines, top to bottom: a line whose amount ends in "-"',
+  'or is negative, such as an instant saving or a coupon on one item. Copy what is printed; do not calculate anything.',
+  '- text: the line as printed, for example "0000123456 / 7654321". amount: the amount as printed.',
+  '- appliesTo: the item number the discount names: in "0000123456 / 7654321" the number after the "/". "" if it names none.',
+  'Do not list items, the subtotal, tax, totals, payments, or a summary of savings',
+  '("INSTANT SAVINGS", "TOTAL SAVINGS", "YOU SAVED"). An empty list when there are no discount lines.',
+].join('\n');
+
+/** The request body for the discounts-only question. */
+export function discountChatRequest(model: string, imageBase64: string) {
+  return {
+    model,
+    stream: false,
+    format: DISCOUNT_SCHEMA,
+    options: { temperature: 0 },
+    messages: [{ role: 'user', content: DISCOUNT_PROMPT, images: [imageBase64] }],
+  };
+}
+
+/** The discounts the model listed; null when the answer is not a list of them. */
+export function parseDiscounts(content: string): FoundDiscount[] | null {
+  let value: unknown;
+  try {
+    value = JSON.parse(content);
+  } catch {
+    return null;
+  }
+  const list = (value as { discounts?: unknown } | null)?.discounts;
+  if (!Array.isArray(list)) return null;
+  return list
+    .filter((d): d is Record<string, unknown> => !!d && typeof d === 'object')
+    .map((d) => ({ text: String(d.text ?? ''), amount: String(d.amount ?? ''), appliesTo: String(d.appliesTo ?? '') }));
 }

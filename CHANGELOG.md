@@ -14,6 +14,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   or more than 30 days before it, the proposal says so and offers a button to
   use the day it was sent. An older receipt sent on purpose is still filed as
   dated when confirmed.
+- **A receipt with an item discount is no longer refused as not adding up.**
+  - A discount now finds its item when the model kept the item's number only at
+    the start of its text ("7654321 LAMP") instead of in its own field.
+  - When the items read don't add up to the subtotal, the companion asks the
+    model a second time for the discount lines alone, adds any it missed under
+    the item each names, and checks the receipt again. A receipt that still
+    doesn't add up is refused as before.
 
 ## [1.77.0] - 2026-11-23
 

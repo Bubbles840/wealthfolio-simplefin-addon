@@ -14,8 +14,8 @@
  * and a button tap run concurrently inside it, so every read-modify-write of
  * the state goes through `withState`, one at a time.
  */
-import { buildReceipt, RECEIPT_PROBLEM_TEXT } from '../../shared/receipt.js';
-import { parseTranscript, receiptChatRequest } from '../../shared/receipt-prompt.js';
+import { buildReceipt, RECEIPT_PROBLEM_TEXT, withFoundDiscounts } from '../../shared/receipt.js';
+import { discountChatRequest, parseDiscounts, parseTranscript, receiptChatRequest } from '../../shared/receipt-prompt.js';
 import {
   categoryChatRequest, parseCategories, rememberedCategory, type CategoryChoice,
 } from '../../shared/receipt-categories.js';
@@ -260,7 +260,22 @@ export function createReceiptHost(deps: ReceiptHostDeps) {
       const json = await postJson(`${config.url}/api/chat`, receiptChatRequest(config.model, image), MODEL_TIMEOUT_MS);
       const transcript = parseTranscript(String(json?.message?.content ?? ''));
       const state = await readState();
-      const built = transcript ? buildReceipt(transcript, state.rates) : null;
+      let built = transcript ? buildReceipt(transcript, state.rates) : null;
+      // A whole-receipt reading sometimes leaves out a discount line; asked for
+      // only those, the model finds it. The result must pass every check again.
+      if (transcript && built && !built.ok && built.problem === 'lines-dont-add-up') {
+        try {
+          const answer = await postJson(`${config.url}/api/chat`, discountChatRequest(config.model, image), MODEL_TIMEOUT_MS);
+          const found = parseDiscounts(String(answer?.message?.content ?? ''));
+          const fixed = found ? withFoundDiscounts(transcript, found) : null;
+          const again = fixed ? buildReceipt(fixed, state.rates) : null;
+          if (again?.ok) built = again;
+        } catch (err) {
+          // The computer went to sleep: read the photo again when it is back. Otherwise say which check failed.
+          if (!(await reachable(config))) throw err;
+          deps.log(`Receipt reader: asking for discounts failed: ${(err as Error).message}`);
+        }
+      }
       if (!built) {
         reply = { text: RECEIPT_COPY.unreadable };
       } else if (!built.ok) {
