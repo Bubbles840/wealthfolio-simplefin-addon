@@ -127,6 +127,9 @@ export interface ReceiptProposal {
   items: ProposalItem[];
   payments: ReceiptPayment[];
   taxBasis: TaxBasis;
+  /** The day the photo was sent (YYYY-MM-DD, the companion's time zone): a date read far from it may be a misread
+   *  (`dateLooksWrong`). Absent on proposals stored before it was kept. */
+  sentDay?: string;
   /** Set on Confirm: a card payment whose charge has not been imported yet waits. */
   confirmedAt?: string;
 }
@@ -240,8 +243,8 @@ export function giftAccountKey(p: Pick<ReceiptProposal, 'store' | 'payments'>): 
   return storeKey(p.store) || storeKey(p.payments.find((x) => x.kind === 'gift_card')?.label ?? '');
 }
 
-/** A checked receipt and its items' categories as a proposal. */
-export function newProposal(id: string, receipt: Receipt, categoryOf: readonly string[], now: Date): ReceiptProposal {
+/** A checked receipt and its items' categories as a proposal. `sentDay`: the day the photo was sent (`dayOf`). */
+export function newProposal(id: string, receipt: Receipt, categoryOf: readonly string[], now: Date, sentDay?: string): ReceiptProposal {
   return {
     id,
     store: receipt.store,
@@ -250,7 +253,34 @@ export function newProposal(id: string, receipt: Receipt, categoryOf: readonly s
     items: receipt.items.map((i: ReceiptItem, n) => ({ text: i.text, cents: i.cents + i.taxCents + i.chargeCents, categoryId: categoryOf[n] })),
     payments: receipt.payments,
     taxBasis: receipt.taxBasis,
+    ...(sentDay ? { sentDay } : {}),
   };
+}
+
+/** An instant's calendar day (YYYY-MM-DD) in the process's time zone (the companion's TZ). */
+export function dayOf(at: Date): string {
+  return `${at.getFullYear()}-${String(at.getMonth() + 1).padStart(2, '0')}-${String(at.getDate()).padStart(2, '0')}`;
+}
+
+/** How long before the photo was sent a receipt's date may be before it is questioned. */
+export const DATE_CHECK_DAYS = 30;
+
+/**
+ * Whether the date read looks like a misread: more than a day after the day
+ * the photo was sent, or more than `DATE_CHECK_DAYS` before it. A model has read a year and
+ * month wrong off a receipt that printed the date clearly elsewhere; filed as
+ * read, a gift-card row lands years back and a card charge is looked for on
+ * the wrong days. An old receipt sent on purpose is still filed as dated: this
+ * only asks.
+ */
+export function dateLooksWrong(p: Pick<ReceiptProposal, 'date' | 'sentDay'>): boolean {
+  if (!p.sentDay || p.date === p.sentDay) return false;
+  const day = (d: string) => Date.parse(`${d}T12:00:00Z`);
+  const read = day(p.date);
+  const sent = day(p.sentDay);
+  if (Number.isNaN(read) || Number.isNaN(sent)) return false;
+  // A day ahead is allowed: a store in a time zone ahead of the companion's prints tomorrow's date.
+  return read - sent > DAY_MS || sent - read > DATE_CHECK_DAYS * DAY_MS;
 }
 
 /** The proposal's rows: one per category, in the order each first appears. */
@@ -319,6 +349,10 @@ export function renderProposal(
   const total = p.payments.reduce((s, x) => s + x.cents, 0);
   const head = [`🧾 *${escapeMarkdown(p.store || 'Receipt')}* · ${p.date} · ${money(total)}`, ''];
   const tail = ['', ...p.payments.map((x) => escapeMarkdown(paymentLine(x, opts.giftAccountName))), escapeMarkdown(TAX_NOTE[p.taxBasis])];
+  const dateWrong = dateLooksWrong(p);
+  if (dateWrong) {
+    tail.push('', escapeMarkdown(`⚠️ I read the date as ${p.date}, but the photo was sent on ${p.sentDay}. If I misread it, tap "Use ${p.sentDay}".`));
+  }
   if (opts.duplicateOf) tail.push('', escapeMarkdown('⚠️ A receipt with the same date, total and payments was filed before.'));
   // Whole rows are left out past Telegram's limit, never cut mid-line: a cut can split a Markdown pair and the message is refused.
   const rows = proposalRows(p);
@@ -337,11 +371,14 @@ export function renderProposal(
   const text = [...head, ...body, ...tail].join('\n');
   return {
     text,
-    keyboard: { inline_keyboard: [[
-      { text: '✓ Confirm', callback_data: `${RECEIPT_CALLBACK_PREFIX}ok:${p.id}` },
-      { text: '✎ Change', callback_data: `${RECEIPT_CALLBACK_PREFIX}ch:${p.id}:0` },
-      { text: '✕ Cancel', callback_data: `${RECEIPT_CALLBACK_PREFIX}x:${p.id}` },
-    ]] },
+    keyboard: { inline_keyboard: [
+      ...(dateWrong ? [[{ text: `📅 Use ${p.sentDay}`, callback_data: `${RECEIPT_CALLBACK_PREFIX}sd:${p.id}` }]] : []),
+      [
+        { text: '✓ Confirm', callback_data: `${RECEIPT_CALLBACK_PREFIX}ok:${p.id}` },
+        { text: '✎ Change', callback_data: `${RECEIPT_CALLBACK_PREFIX}ch:${p.id}:0` },
+        { text: '✕ Cancel', callback_data: `${RECEIPT_CALLBACK_PREFIX}x:${p.id}` },
+      ],
+    ] },
   };
 }
 
@@ -429,7 +466,7 @@ export function renderChargePicker(p: ReceiptProposal, charges: readonly SpendRo
 export const fullyCategorized = (p: Pick<ReceiptProposal, 'items'>) => p.items.every((i) => i.categoryId !== NO_CATEGORY);
 
 export type ReceiptTap =
-  | { kind: 'confirm' | 'cancel' | 'back' | 'undo'; id: string }
+  | { kind: 'confirm' | 'cancel' | 'back' | 'undo' | 'sent-day'; id: string }
   | { kind: 'charge'; id: string; activityId: string }
   | { kind: 'items'; id: string; page: number }
   | { kind: 'item'; id: string; n: number }
@@ -447,6 +484,7 @@ export function parseReceiptTap(data: string): ReceiptTap | null {
     case 'x': return { kind: 'cancel', id };
     case 'bk': return { kind: 'back', id };
     case 'un': return { kind: 'undo', id };
+    case 'sd': return { kind: 'sent-day', id };
     case 'ch': return int(a) === null ? null : { kind: 'items', id, page: int(a)! };
     case 'it': return int(a) === null ? null : { kind: 'item', id, n: int(a)! };
     case 'pa':

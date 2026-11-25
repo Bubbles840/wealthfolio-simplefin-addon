@@ -768,6 +768,8 @@ the computer's home network or Tailscale address so the companion can reach it
 password: never forward its port to the internet. The bot files a receipt paid
 with one card, gift cards, or both; one paid in cash or with two cards is refused.
 A photo sent while the computer is asleep is read when it wakes, for up to 7 days.
+A date read more than 30 days before the day you sent the photo (or after it) is
+flagged on the proposal, with a button to use the day you sent it.
 
 ## Privacy
 
