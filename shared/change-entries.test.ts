@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
-  accountCreatedChange, connectionReplacedChange, amazonLabelChange, amazonLabelOf, balanceCorrectionChange, bankUpdateChange, bookkeepingChange, budgetSetChange,
-  categoryFiledChange, categoryRuleCreatedChange, CHANGE_KINDS, changeDay, changeMoney, duplicateRemovedChange,
+  accountCreatedChange, amazonLabelChange, amazonLabelOf, balanceCorrectionChange, bankUpdateChange, bookkeepingChange, budgetSetChange,
+  categoryFiledChange, categoryRuleCreatedChange, CHANGE_KINDS, changeDay, changeMoney, connectionReplacedChange, duplicateRemovedChange,
   importChange, mappingRuleCreatedChange, newEntryId, newRunId, openingBalanceFiledChange, paybackFiledChange, pendingRemovedChange,
   stampChange, startingBalanceChange, startingBalanceMovedChange, startingBalanceRemovedChange, transactionRemovedChange, transferLinkChange, transferTypeChange, venmoNoteChange,
 

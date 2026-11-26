@@ -102,34 +102,58 @@ export async function replaceConnection(
     }
 
     const b64 = credentialsB64(url);
-    let set: Awaited<ReturnType<typeof fetchAccounts>>;
+    // The test download's failures all leave the working connection alone.
+    const notListed = async (reason: string): Promise<ReplaceOutcome> => {
+      await store.clearNextAuthB64().catch(() => {});
+      return failed(notListedMessage(reason));
+    };
     try {
       await store.setNextAuthB64(b64);
+    } catch (e) {
+      await store.clearNextAuthB64().catch(() => {});
+      return failed(
+        `Couldn't save the new token's details in Wealthfolio: ${messageOf(e).replace(/\.$/, '')}. Your current connection is unchanged.`,
+      );
+    }
+    let set: Awaited<ReturnType<typeof fetchAccounts>>;
+    try {
       set = await fetchAccounts(url, new Date(Date.now() - 86_400_000), network, await store.getNextAuthB64Key());
     } catch (e) {
-      store.clearNextAuthB64().catch(() => {});
-      return failed(notListedMessage(messageOf(e)));
+      return notListed(messageOf(e));
     }
-    if (set.accounts.length === 0) {
-      store.clearNextAuthB64().catch(() => {});
-      return failed(notListedMessage(set.errors.join('; ') || 'the account list was empty'));
-    }
+    if (set.accounts.length === 0) return notListed(set.errors.join('; ') || 'the account list was empty');
 
-    const fromProvider = providerName(await tolerate(() => store.getAccessUrl(), null));
-    const names = await tolerate(() => store.getAccountNames(), {} as Record<string, string>);
+    const oldUrl = await tolerate(() => store.getAccessUrl(), null);
+    const fromProvider = providerName(oldUrl);
+    const names = await tolerate<Record<string, string> | null>(() => store.getAccountNames(), null);
     const mapping = (await tolerate(() => store.getAccountMapping(), null)) ?? {};
     const loanLinks = await tolerate(store.getLoanLinks?.bind(store), undefined);
 
-    await store.setAccessUrl(url);
-    await store.setAuthB64(b64);
+    try {
+      await store.setAccessUrl(url);
+    } catch (e) {
+      await store.clearNextAuthB64().catch(() => {});
+      throw e;
+    }
+    try {
+      await store.setAuthB64(b64);
+    } catch (e) {
+      // The new URL must not sit beside the old credentials: put the old one back.
+      if (oldUrl) await store.setAccessUrl(oldUrl).catch(() => {});
+      await store.clearNextAuthB64().catch(() => {});
+      throw e;
+    }
     await store.clearNextAuthB64().catch(() => {});
     await store.setConnectionReplacedAt(new Date().toISOString()).catch(() => {});
-    await store.setAccountNames({ ...names, ...Object.fromEntries(set.accounts.map((a) => [a.id, a.name])) }).catch(() => {});
+    // A names read that failed must not turn this merge into a wholesale replace.
+    if (names) {
+      await store.setAccountNames({ ...names, ...Object.fromEntries(set.accounts.map((a) => [a.id, a.name])) }).catch(() => {});
+    }
     const provider = providerName(url) ?? 'SimpleFIN';
     await Promise.resolve(store.recordChange?.(connectionReplacedChange({ fromProvider, toProvider: provider }))).catch(() => {});
 
     const missing = missingMappedAccounts(mapping, set.accounts, loanLinks);
-    const missingNames = missing.map((id) => names[id] ?? id);
+    const missingNames = missing.map((id) => names?.[id] ?? id);
     return {
       kind: 'replaced',
       provider,

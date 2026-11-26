@@ -63,19 +63,23 @@ function harness(
   };
   const store = new SecretsStore({ api: { secrets } } as any);
   const gets: any[] = [];
+  const atDownload: Array<Record<string, string | undefined>> = [];
   let g = 0;
   let p = 0;
   const request = vi.fn(async (req: any) => {
     const queue = req.method === 'POST' ? postReplies : getReplies;
     const i = req.method === 'POST' ? p++ : g++;
-    if (req.method !== 'POST') gets.push(req);
+    if (req.method !== 'POST') {
+      gets.push(req);
+      atDownload.push({ ...data });
+    }
     const reply = queue[Math.min(i, queue.length - 1)];
     if (reply instanceof Error) throw reply;
     return reply;
   });
   const network = { request } as unknown as NetworkAPI;
   const claimed = { current: null as ClaimedToken | null };
-  return { store, data, network, claimed, gets, request };
+  return { store, data, secrets, network, claimed, gets, atDownload, request };
 }
 const TOKEN = btoa(CLAIM_URL);
 const run = (h: ReturnType<typeof harness>, pasted = TOKEN) =>
@@ -90,6 +94,10 @@ describe('replaceConnection', () => {
     const out = await run(h);
     expect(out.kind).toBe('replaced');
     expect(h.gets[0].auth.secretKey).toBe('simplefin_auth_b64_next');
+    // Order: at the test download the working connection is still the old one.
+    expect(h.atDownload[0].simplefin_access_url).toBe(OLD_URL);
+    expect(h.atDownload[0].simplefin_auth_b64).toBe(btoa('old:secret1'));
+    expect(h.atDownload[0].simplefin_auth_b64_next).toBe(btoa('new:secret2'));
     expect(new URL(h.gets[0].url).host).toBe('beta-bridge.simplefin.org');
     expect(h.data.simplefin_access_url).toBe(NEW_URL);
     expect(h.data.simplefin_auth_b64).toBe(btoa('new:secret2'));
@@ -240,5 +248,59 @@ describe('replaceConnection', () => {
     expect(h.claimed.current).toBeNull();
     expect((await run(h, token)).kind).toBe('replaced');
     expect(h.request.mock.calls.filter(([r]: any) => r.method === 'POST')).toHaveLength(2);
+  });
+
+  const untouched = (h: ReturnType<typeof harness>) => {
+    const { simplefin_requests: _r, ...rest } = h.data;
+    expect(rest).toEqual(seed());
+  };
+  const rejectSetFor = (h: ReturnType<typeof harness>, key: string) => {
+    const real = h.secrets.set.getMockImplementation()!;
+    h.secrets.set.mockImplementation(async (k: string, v: string) => {
+      if (k === key) throw new Error('disk full');
+      return real(k, v);
+    });
+  };
+
+  it('rolls the access URL back when the credentials cannot be saved', async () => {
+    const h = harness(seed(), [accounts([acct('NEW-1', 'x')])]);
+    rejectSetFor(h, 'simplefin_auth_b64');
+    await expect(run(h)).rejects.toThrow('disk full');
+    untouched(h);
+    expect(h.claimed.current).not.toBeNull();
+    expect((await h.store.getChangeLog())!.entries).toEqual([]);
+  });
+
+  it('clears the temporary key when the access URL cannot be saved', async () => {
+    const h = harness(seed(), [accounts([acct('NEW-1', 'x')])]);
+    rejectSetFor(h, 'simplefin_access_url');
+    await expect(run(h)).rejects.toThrow('disk full');
+    untouched(h);
+    expect(h.claimed.current).not.toBeNull();
+  });
+
+  it("doesn't blame SimpleFIN when the temporary key cannot be saved", async () => {
+    const h = harness(seed(), [accounts([acct('NEW-1', 'x')])]);
+    rejectSetFor(h, 'simplefin_auth_b64_next');
+    const out = await run(h);
+    expect(out).toEqual({ kind: 'failed', message: "Couldn't save the new token's details in Wealthfolio: disk full. Your current connection is unchanged." });
+    untouched(h);
+    expect(h.request.mock.calls.map(([r]: any) => r.method)).toEqual(['POST']);
+  });
+
+  it('never replaces the names wholesale when they could not be read', async () => {
+    const h = harness(seed(), [accounts([acct('NEW-1', 'x')])]);
+    vi.spyOn(h.store, 'getAccountNames').mockRejectedValue(new Error('bad json'));
+    const out = await run(h);
+    expect(out.kind).toBe('replaced');
+    expect(h.data.account_names).toBe(seed().account_names);
+  });
+
+  it('still reports replaced when the change log cannot be written', async () => {
+    const h = harness(seed(), [accounts([acct('NEW-1', 'x')])]);
+    vi.spyOn(h.store, 'recordChange').mockRejectedValue(new Error('nope'));
+    expect((await run(h)).kind).toBe('replaced');
+    expect(h.data.simplefin_access_url).toBe(NEW_URL);
+    expect(h.data.simplefin_auth_b64).toBe(btoa('new:secret2'));
   });
 });
