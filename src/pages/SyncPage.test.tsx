@@ -142,7 +142,7 @@ describe('SyncPage', () => {
     expect(screen.getByRole('button', { name: /^SimpleFIN connection/, expanded: true })).toBeInTheDocument();
   });
 
-  it('offers nothing extra for a 402 or any other failure', async () => {
+  it('offers nothing extra for a 402', async () => {
     vi.mocked(runSync).mockRejectedValueOnce(Object.assign(new Error('SimpleFin /accounts failed: 402 — Payment required'), { status: 402 }));
     render(<SyncPage {...makeProps()} />);
     fireEvent.click(await screen.findByRole('button', { name: /sync now/i }));

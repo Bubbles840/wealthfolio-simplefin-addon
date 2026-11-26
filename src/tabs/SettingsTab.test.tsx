@@ -1149,11 +1149,31 @@ describe('SimpleFIN connection card', () => {
     await openMapper();
     const box = (await screen.findByText(/accounts failed: 403/)).closest('.sfin-error') as HTMLElement;
     const header = screen.getByRole('button', { name: /^SimpleFIN connection/ });
-    expect(header).toHaveTextContent('Stopped accepting this connection');
+    await waitFor(() => expect(header).toHaveTextContent('Stopped accepting this connection'));
     expect(header).toHaveAttribute('aria-expanded', 'false');
     fireEvent.click(within(box).getByRole('button', { name: 'Replace token' }));
     await waitFor(() =>
       expect(screen.getByRole('button', { name: /^SimpleFIN connection/ })).toHaveAttribute('aria-expanded', 'true'),
+    );
+  });
+
+  it('does not offer Replace token for a later mapping-save failure', async () => {
+    const { fetchAccounts } = await import('../utils/simplefin');
+    const props = connectable(makeProps());
+    (props.store as any).setAccountMapping = vi.fn(async () => { throw new Error('disk full'); });
+    render(<SyncPage {...props} />);
+    await switchTab(/settings/i);
+    await openMapper();
+    await screen.findByRole('button', { name: /save mapping/i });
+    vi.mocked(fetchAccounts).mockRejectedValueOnce(refused403());
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh from SimpleFin' }));
+    await screen.findByText(/accounts failed: 403/);
+    expect(screen.getByRole('button', { name: 'Replace token' })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: /save mapping/i }));
+    expect(await screen.findByText('disk full')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Replace token' })).toBeNull();
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: /^SimpleFIN connection/ })).not.toHaveTextContent('Stopped accepting'),
     );
   });
 
@@ -1168,6 +1188,18 @@ describe('SimpleFIN connection card', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Connect' }));
     expect(await screen.findByText(/✓ Connected through/)).toHaveAttribute('role', 'status');
     expect(screen.queryByText(/accounts failed: 403/)).toBeNull();
+  });
+
+  it('keeps a sync error that was not a refusal after the token is replaced', async () => {
+    vi.mocked(runSync).mockRejectedValueOnce(Object.assign(new Error('SimpleFin /accounts failed: 524'), { status: 524 }));
+    render(<SyncPage {...connectable(makeProps())} />);
+    fireEvent.click(await screen.findByRole('button', { name: /sync now/i }));
+    await screen.findByText(/accounts failed: 524/);
+    await switchTab(/settings/i);
+    await paste();
+    fireEvent.click(screen.getByRole('button', { name: 'Connect' }));
+    expect(await screen.findByText(/✓ Connected through/)).toHaveAttribute('role', 'status');
+    expect(screen.getByText(/accounts failed: 524/)).toBeInTheDocument();
   });
 
   it('turns Connect off while a sync runs', async () => {

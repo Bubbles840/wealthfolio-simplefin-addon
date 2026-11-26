@@ -202,10 +202,15 @@ export function SettingsTab({
    *  a preference with no visible off-switch is a trap. */
   const [ignoredAccounts, setIgnoredAccounts] = useState<string[]>([]);
   const [accountsLoading, setAccountsLoading] = useState(false);
-  const [accountsError, setAccountsError] = useState('');
+  const [accountsError, setAccountsErrorText] = useState('');
   const [mappingSaved, setMappingSaved] = useState(false);
   /** That error was SimpleFIN refusing the stored credentials (set by the Accounts refresh). */
   const [accountsErrorRefused, setAccountsErrorRefused] = useState(false);
+  /** Every write to the error goes through here, so the refused flag can never outlive its message. */
+  const setAccountsError = useCallback((message: string, refused = false) => {
+    setAccountsErrorText(message);
+    setAccountsErrorRefused(refused);
+  }, []);
   /** The connection's provider name: undefined until read, null when not connected. */
   const [provider, setProvider] = useState<string | null | undefined>(undefined);
   useEffect(() => {
@@ -217,7 +222,6 @@ export function SettingsTab({
   const onReplaced = (r: ReplacedConnection) => {
     setProvider(r.provider);
     setAccountsError('');
-    setAccountsErrorRefused(false);
     setSfAccounts(r.accounts);
     setSfAccountsHadErrors(r.hadErrors);
     setMappingSaved(false);
@@ -280,7 +284,6 @@ export function SettingsTab({
   const loadAccounts = useCallback(async () => {
     setAccountsLoading(true);
     setAccountsError('');
-    setAccountsErrorRefused(false);
     setMappingSaved(false);
     try {
       const accessUrl = await store.getAccessUrl();
@@ -313,12 +316,11 @@ export function SettingsTab({
       }).catch(() => {});
       onAccountsChanged?.();
     } catch (e: any) {
-      setAccountsError(e?.message ?? 'Could not reach SimpleFin');
-      setAccountsErrorRefused(isRefusedConnection(e));
+      setAccountsError(e?.message ?? 'Could not reach SimpleFin', isRefusedConnection(e));
     } finally {
       setAccountsLoading(false);
     }
-  }, [ctx, store, onAccountsChanged]);
+  }, [ctx, store, onAccountsChanged, setAccountsError]);
 
   const saveMapping = useCallback(async (m: AccountMapping, links: LoanLinks) => {
     setAccountsError('');
@@ -344,7 +346,7 @@ export function SettingsTab({
     } catch (e: any) {
       setAccountsError(e?.message ?? 'Failed to save account mapping');
     }
-  }, [store, ignoredAccounts, onAccountsChanged]);
+  }, [store, ignoredAccounts, onAccountsChanged, setAccountsError]);
 
   /** Undo the do-not-sync decision for every account it covers. Coarse on
    *  purpose: the list is short, and per-row undo would need the mapper to
@@ -357,7 +359,7 @@ export function SettingsTab({
       setAccountsError(e?.message ?? 'Could not update that preference');
       await store.getIgnoredAccounts().then(setIgnoredAccounts).catch(() => {});
     }
-  }, [store]);
+  }, [store, setAccountsError]);
 
   const changeInterval = useCallback(async (hours: number) => {
     setScheduleHours(hours);

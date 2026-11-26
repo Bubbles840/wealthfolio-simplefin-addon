@@ -1051,44 +1051,54 @@ describe('SimpleFin connection problems on Home (#81)', () => {
     expect(screen.queryByText(/isn't updating/)).toBeNull();
   });
 
-  describe('when the companion was refused', () => {
-    const REFUSED = { lastSuccessAt: null, firstFailedAt: '2026-11-24T10:00:00.000Z', lastFailedAt: '2026-11-26T10:00:00.000Z', lastError: 'SimpleFin /accounts failed: 403', alerted: true };
-    const LINE = 'Background sync stopped: SimpleFIN no longer accepts this connection.';
-    const health = (h: unknown, replacedAt: string | null = null) => {
-      const props = makeProps();
-      (props.store as any).getSyncHealth = vi.fn(async () => h);
-      (props.store as any).getConnectionReplacedAt = vi.fn(async () => replacedAt);
-      return props;
-    };
+});
 
-    it('shows a banner and opens the connection card from it', async () => {
-      render(<SyncPage {...health(REFUSED)} />);
-      expect(await screen.findByText(LINE)).toBeInTheDocument();
-      fireEvent.click(screen.getByRole('button', { name: 'Replace token' }));
-      expect(await screen.findByRole('tab', { name: 'Settings', selected: true })).toBeInTheDocument();
-      expect(screen.getByRole('button', { name: /^SimpleFIN connection/, expanded: true })).toBeInTheDocument();
-    });
+describe('when the companion was refused', () => {
+  const REFUSED = { lastSuccessAt: null, firstFailedAt: '2026-11-24T10:00:00.000Z', lastFailedAt: '2026-11-26T10:00:00.000Z', lastError: 'SimpleFin /accounts failed: 403', alerted: true };
+  const LINE = 'Background sync stopped: SimpleFIN no longer accepts this connection.';
+  const health = (h: unknown, replacedAt: string | null = null) => {
+    const props = makeProps();
+    (props.store as any).getSyncHealth = vi.fn(async () => h);
+    (props.store as any).getConnectionReplacedAt = vi.fn(async () => replacedAt);
+    return props;
+  };
 
-    it('hides once the connection was replaced after the last failure', async () => {
-      const props = health(REFUSED, '2026-11-26T11:00:00.000Z');
-      render(<SyncPage {...props} />);
-      await waitFor(() => expect((props.store as any).getConnectionReplacedAt).toHaveBeenCalled());
-      await screen.findByText(/Last synced/);
-      expect(screen.queryByText(LINE)).toBeNull();
-    });
+  it('shows a banner and opens the connection card from it', async () => {
+    render(<SyncPage {...health(REFUSED)} />);
+    expect(await screen.findByText(LINE)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Replace token' }));
+    expect(await screen.findByRole('tab', { name: 'Settings', selected: true })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /^SimpleFIN connection/, expanded: true })).toBeInTheDocument();
+  });
 
-    it('stays away for another failure, and after a success', async () => {
-      const other = health({ ...REFUSED, lastError: 'SimpleFin /accounts failed: 524' });
-      const { unmount } = render(<SyncPage {...other} />);
-      await waitFor(() => expect((other.store as any).getSyncHealth).toHaveBeenCalled());
-      await screen.findByText(/Last synced/);
-      expect(screen.queryByText(LINE)).toBeNull();
-      unmount();
-      const ok = health({ lastSuccessAt: '2026-11-26T10:00:00.000Z', firstFailedAt: null, lastFailedAt: null, lastError: null, alerted: false });
-      render(<SyncPage {...ok} />);
-      await waitFor(() => expect((ok.store as any).getSyncHealth).toHaveBeenCalled());
-      await screen.findByText(/Last synced/);
-      expect(screen.queryByText(LINE)).toBeNull();
-    });
+  it('hides once the connection was replaced after the last failure', async () => {
+    const props = health(REFUSED, '2026-11-26T11:00:00.000Z');
+    render(<SyncPage {...props} />);
+    await waitFor(() => expect((props.store as any).getConnectionReplacedAt).toHaveBeenCalled());
+    await screen.findByText(/Last synced/);
+    expect(screen.queryByText(LINE)).toBeNull();
+  });
+
+  it('stays away for another failure, and after a success', async () => {
+    const other = health({ ...REFUSED, lastError: 'SimpleFin /accounts failed: 524' });
+    const { unmount } = render(<SyncPage {...other} />);
+    await waitFor(() => expect((other.store as any).getSyncHealth).toHaveBeenCalled());
+    await screen.findByText(/Last synced/);
+    expect(screen.queryByText(LINE)).toBeNull();
+    unmount();
+    const ok = health({ lastSuccessAt: '2026-11-26T10:00:00.000Z' });
+    render(<SyncPage {...ok} />);
+    await waitFor(() => expect((ok.store as any).getSyncHealth).toHaveBeenCalled());
+    await screen.findByText(/Last synced/);
+    expect(screen.queryByText(LINE)).toBeNull();
+  });
+
+  it('hides an older companion\'s refused record (no lastFailedAt) once replaced after its firstFailedAt', async () => {
+    const { lastFailedAt: _omit, ...old } = REFUSED;
+    const props = health(old, '2026-11-25T10:00:00.000Z');
+    render(<SyncPage {...props} />);
+    await waitFor(() => expect((props.store as any).getConnectionReplacedAt).toHaveBeenCalled());
+    await screen.findByText(/Last synced/);
+    expect(screen.queryByText(LINE)).toBeNull();
   });
 });

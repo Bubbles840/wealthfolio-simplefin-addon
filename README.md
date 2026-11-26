@@ -27,7 +27,9 @@ live in **Settings** when you want them.
 You need Wealthfolio **3.8 or newer** (it works with 3.12) and a SimpleFin account with a one-time
 **setup token**. The token is exchanged once for a long-lived access URL, kept
 in Wealthfolio's encrypted secret storage; the token itself is not kept.
-A new token later (SimpleFIN stopped accepting the connection, or you moved to Lunch Flow) goes in **Settings → SimpleFIN connection**, with no Reset: see [Replacing the SimpleFIN token](#replacing-the-simplefin-token).
+A new token later (SimpleFIN stopped accepting the connection, or you moved to
+Lunch Flow) goes in **Settings → SimpleFIN connection**, with no Reset: see
+[Replacing the SimpleFIN token](#replacing-the-simplefin-token).
 
 **Using Lunch Flow instead of SimpleFin Bridge?** [Lunch Flow](https://www.lunchflow.app)
 runs a SimpleFIN server too: add an **Actual Budget** destination there, and
@@ -264,8 +266,9 @@ Open **Settings → SimpleFIN connection**, paste the new setup token and press
 notifications stay.
 
 The new token is tested first. If it lists no accounts, the current connection
-stays exactly as it was. If it fails, the same token can be tried again while
-the page stays open. Mapped accounts the new connection doesn't list are named,
+stays exactly as it was. If the test download or the save fails, the same
+token can be tried again while the page stays open; a token that was itself
+refused when claimed (for example a spent one) cannot be reused. Mapped accounts the new connection doesn't list are named,
 and the Accounts card opens on the new list, where the reconnection questions
 match them.
 
