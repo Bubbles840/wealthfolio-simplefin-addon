@@ -8,6 +8,7 @@ import {
   type RelinkDecisions,
 } from '../../shared/relink';
 import { IGNORE_RULES_SECRET_KEY, IgnoreRulesUnreadableError, IGNORE_PROBLEM_TEXT, ignoreRuleProblem, normalizeIgnoreRules, parseIgnoreRules, parseIgnoreRulesStrict, type IgnoreRule, type ParsedIgnoreRules } from '../../shared/ignore-rules';
+import type { SyncHealth } from '../../shared/telegram';
 import type { AddonContext } from '@wealthfolio/addon-sdk';
 import { AMAZON_LEDGER_SECRET_KEY } from '../../shared/amazon-ledger';
 import { VENMO_LEDGER_SECRET_KEY, type VenmoLedger } from '../../shared/venmo-ledger';
@@ -118,9 +119,17 @@ export interface AccountBalanceInfo {
   fetchedAt?: number;
 }
 
+/** The test credentials of a replacement token, kept apart from the working
+ *  ones until the new token has listed accounts. */
+export const NEXT_AUTH_B64_SECRET_KEY = 'simplefin_auth_b64_next';
+/** ISO time the SimpleFIN token was last replaced. */
+export const CONNECTION_REPLACED_AT_SECRET_KEY = 'simplefin_connection_replaced_at';
+
 const KEYS = {
   accessUrl: 'simplefin_access_url',
   authB64: 'simplefin_auth_b64',
+  nextAuthB64: NEXT_AUTH_B64_SECRET_KEY,
+  connectionReplacedAt: CONNECTION_REPLACED_AT_SECRET_KEY,
   accountMapping: 'account_mapping',
   accountNames: 'account_names',
   balanceInitialized: 'balance_initialized',
@@ -326,6 +335,21 @@ export class SecretsStore {
   }
   async setAuthB64(credentialsB64: string): Promise<void> {
     await this.ctx.api.secrets.set(KEYS.authB64, credentialsB64);
+  }
+  async getNextAuthB64Key(): Promise<string> {
+    return KEYS.nextAuthB64;
+  }
+  async setNextAuthB64(credentialsB64: string): Promise<void> {
+    await this.ctx.api.secrets.set(KEYS.nextAuthB64, credentialsB64);
+  }
+  async clearNextAuthB64(): Promise<void> {
+    await this.ctx.api.secrets.delete(KEYS.nextAuthB64);
+  }
+  async getConnectionReplacedAt(): Promise<string | null> {
+    return (await this.ctx.api.secrets.get(KEYS.connectionReplacedAt)) ?? null;
+  }
+  async setConnectionReplacedAt(iso: string): Promise<void> {
+    await this.ctx.api.secrets.set(KEYS.connectionReplacedAt, iso);
   }
 
   async getAccountMapping(): Promise<AccountMapping | null> {
@@ -948,7 +972,7 @@ export class SecretsStore {
   /** The companion's sync-health record — written ONLY by the companion, so a
    *  recent `lastSuccessAt` is the evidence that one is running (and sending
    *  the daily report). Null when absent or unreadable. */
-  async getSyncHealth(): Promise<{ lastSuccessAt?: string | null } | null> {
+  async getSyncHealth(): Promise<SyncHealth | null> {
     const raw = await this.ctx.api.secrets.get('sync_health');
     if (!raw) return null;
     try {

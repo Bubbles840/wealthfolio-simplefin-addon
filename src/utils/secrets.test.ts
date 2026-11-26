@@ -29,6 +29,36 @@ const makeCtxWithData = () => {
 const makeCtx = () => makeCtxWithData().ctx;
 
 describe('SecretsStore', () => {
+  it("keeps a new token's test credentials apart from the working ones", async () => {
+    const { ctx, data } = makeCtxWithData();
+    const s = new SecretsStore(ctx);
+    await s.setAuthB64('old');
+    await s.setNextAuthB64('new');
+    expect(await s.getNextAuthB64Key()).toBe('simplefin_auth_b64_next');
+    expect(data.simplefin_auth_b64).toBe('old');
+    expect(data.simplefin_auth_b64_next).toBe('new');
+    await s.clearNextAuthB64();
+    expect(data.simplefin_auth_b64_next).toBeUndefined();
+    expect(data.simplefin_auth_b64).toBe('old');
+  });
+
+  it('clearAll deletes the test credentials and the replaced-at time', async () => {
+    const { ctx, data } = makeCtxWithData();
+    const s = new SecretsStore(ctx);
+    await s.setNextAuthB64('new');
+    await s.setConnectionReplacedAt('2026-11-26T15:00:00.000Z');
+    expect(await s.getConnectionReplacedAt()).toBe('2026-11-26T15:00:00.000Z');
+    await s.clearAll();
+    expect(data.simplefin_auth_b64_next).toBeUndefined();
+    expect(await s.getConnectionReplacedAt()).toBeNull();
+  });
+
+  it("reads the companion's lastFailedAt with the rest of sync_health", async () => {
+    const { ctx, data } = makeCtxWithData();
+    data.sync_health = JSON.stringify({ lastSuccessAt: null, firstFailedAt: '2026-11-20T10:00:00.000Z', lastFailedAt: '2026-11-25T10:00:00.000Z', lastError: 'SimpleFin /accounts failed: 403', alerted: true });
+    expect(await new SecretsStore(ctx).getSyncHealth()).toMatchObject({ lastFailedAt: '2026-11-25T10:00:00.000Z', lastError: 'SimpleFin /accounts failed: 403' });
+  });
+
   it('defaults weekly capping ON and stores only the opt-out, under the key the companion reads', async () => {
     // Two independent writers share these secrets, so the key string is the
     // contract: the companion reads the literal 'cap_weekly_to_pool'. And the
