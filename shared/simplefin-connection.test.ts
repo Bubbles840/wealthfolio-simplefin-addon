@@ -69,6 +69,16 @@ describe('companionConnectionRefused', () => {
   ])('%s', (_name, health, replacedAt, shown) => {
     expect(companionConnectionRefused(health as any, replacedAt as any)).toBe(shown);
   });
+
+  it.each([
+    ['an add-on sync succeeded after the last failure', refused, '2026-11-25T12:00:00.000Z', false],
+    ['the add-on last succeeded before it', refused, '2026-11-25T09:00:00.000Z', true],
+    ['old companion: an add-on success after the first failure', { ...refused, lastFailedAt: undefined }, '2026-11-21T09:00:00.000Z', false],
+    ['an unreadable success time never hides it', refused, 'garbage', true],
+    ['no add-on success yet', refused, null, true],
+  ])('%s', (_name, health, lastAddonSuccessAt, shown) => {
+    expect(companionConnectionRefused(health as any, null, lastAddonSuccessAt as any)).toBe(shown);
+  });
 });
 
 it('the fix line is the one wording', () => {

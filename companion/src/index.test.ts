@@ -761,6 +761,59 @@ describe('runCompanionSync sync health', () => {
     } finally { vi.useRealTimers(); }
   });
 
+  it('stamps lastFailedAt with when the failing run read its connection, not when it failed', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      await useSecretsClient();
+      vi.setSystemTime(new Date('2026-11-25T10:00:00.000Z'));
+      vi.mocked(runSyncCore).mockImplementationOnce(async () => {
+        // A replace could land here: this run's failure is about what it read at 10:00.
+        vi.setSystemTime(new Date('2026-11-25T10:05:00.000Z'));
+        throw new Error('SimpleFin /accounts failed: 403');
+      });
+      await expect(runCompanionSync()).rejects.toThrow('403');
+      expect(JSON.parse(secrets.get('sync_health')!)).toMatchObject({
+        firstFailedAt: '2026-11-25T10:05:00.000Z', lastFailedAt: '2026-11-25T10:00:00.000Z',
+      });
+    } finally { vi.useRealTimers(); }
+  });
+
+  it("stamps the sync's own read of the connection, the one its download used", async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      await useSecretsClient();
+      vi.setSystemTime(new Date('2026-11-25T10:00:00.000Z'));
+      vi.mocked(runSyncCore).mockImplementationOnce(async (_host, store) => {
+        vi.setSystemTime(new Date('2026-11-25T10:02:00.000Z'));
+        await store.getAccessUrl();
+        vi.setSystemTime(new Date('2026-11-25T10:05:00.000Z'));
+        throw new Error('SimpleFin /accounts failed: 403');
+      });
+      await expect(runCompanionSync()).rejects.toThrow('403');
+      expect(JSON.parse(secrets.get('sync_health')!).lastFailedAt).toBe('2026-11-25T10:02:00.000Z');
+    } finally { vi.useRealTimers(); }
+  });
+
+  it('stamps the failure time when the run failed before it could read the connection', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      const { WealthfolioClient } = await import('./wealthfolio.js');
+      const client = new (WealthfolioClient as any)();
+      client.getAddonSecret = vi.fn(async (_a: string, key: string) => {
+        if (key === 'simplefin_access_url') {
+          vi.setSystemTime(new Date('2026-11-25T10:05:00.000Z'));
+          throw new Error('secret read failed');
+        }
+        return secrets.get(key) ?? null;
+      });
+      client.setAddonSecret = vi.fn(async (_a: string, key: string, val: string) => { secrets.set(key, val); });
+      vi.mocked(WealthfolioClient).mockImplementation(function () { return client; } as any);
+      vi.setSystemTime(new Date('2026-11-25T10:00:00.000Z'));
+      await expect(runCompanionSync()).rejects.toThrow('secret read failed');
+      expect(JSON.parse(secrets.get('sync_health')!).lastFailedAt).toBe('2026-11-25T10:05:00.000Z');
+    } finally { vi.useRealTimers(); }
+  });
+
   it('adds the replace-token line to the 24h alert when SimpleFIN refused the connection', async () => {
     const text = await alertTextAfterFailure('SimpleFin /accounts failed: 403');
     expect(text).toContain('Last error: SimpleFin /accounts failed: 403\nSimpleFIN no longer accepts this connection. Paste a new setup token in SimpleFin Sync → Settings → SimpleFIN connection; your mapping and rules stay.');

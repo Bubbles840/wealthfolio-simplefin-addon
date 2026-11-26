@@ -360,9 +360,13 @@ function parseSecretJson<T>(raw: string | null | undefined, label: string): T | 
  * records a success and clears any in-progress failure streak; a non-null
  * error starts (or continues) a streak, setting `firstFailedAt` only on the
  * FIRST failure so the 24h alert clock doesn't reset on every retry.
- * `lastFailedAt` is stamped on EVERY failure: it is what the add-on's Home
- * banner compares against `simplefin_connection_replaced_at`, so a failure
- * after a token replace brings the banner back. A success omits it.
+ * `lastFailedAt` is stamped on EVERY failure, as when the failing run read
+ * its connection (`connectionReadAt`, the access URL read its download used),
+ * or the failure's own time when it failed before reading it. It is what the
+ * add-on's Home banner compares against `simplefin_connection_replaced_at`: a
+ * run that read the connection after a token replace and failed brings the
+ * banner back, and one that read the old connection before the replace but
+ * failed after it does not. A success omits it.
  *
  * Documented limitation: this writes through the same authenticated wfClient
  * the sync itself uses. If login to Wealthfolio fails outright, there is no
@@ -374,7 +378,11 @@ function parseSecretJson<T>(raw: string | null | undefined, label: string): T | 
  * write error) must not replace the real sync error in the caller's catch
  * block, so every fallible step is individually guarded.
  */
-async function updateSyncHealth(wfClient: WealthfolioClient, error: Error | null): Promise<void> {
+async function updateSyncHealth(
+  wfClient: WealthfolioClient,
+  error: Error | null,
+  connectionReadAt: string | null = null,
+): Promise<void> {
   try {
     const raw = await wfClient.getAddonSecret('simplefin-sync', 'sync_health').catch(() => null);
     const health: SyncHealth = parseSecretJson<SyncHealth>(raw, 'sync_health') ?? {};
@@ -384,7 +392,7 @@ async function updateSyncHealth(wfClient: WealthfolioClient, error: Error | null
       : {
           lastSuccessAt: health.lastSuccessAt ?? null,
           firstFailedAt: health.firstFailedAt ?? now,
-          lastFailedAt: now,
+          lastFailedAt: connectionReadAt ?? now,
           lastError: error.message,
           alerted: health.alerted ?? false,
         };
@@ -1593,7 +1601,7 @@ async function runCompanionSyncOnce(opts: { force?: boolean; manual?: boolean })
     await updateSyncHealth(wfClient, null);
     return result;
   } catch (err) {
-    await updateSyncHealth(wfClient, err instanceof Error ? err : new Error(String(err)));
+    await updateSyncHealth(wfClient, err instanceof Error ? err : new Error(String(err)), store.connectionReadAt);
     throw err;
   } finally {
     await checkSyncHealthAlert(wfClient).catch(() => {});

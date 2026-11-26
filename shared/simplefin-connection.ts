@@ -68,16 +68,24 @@ export function missingMappedAccounts(
 }
 
 /**
- * Whether the companion's sync health shows a refused connection that no
- * replace has answered since its last failure.
+ * Whether the companion's sync health shows a refused connection that nothing
+ * has answered since its last failure: neither a replace, nor a successful
+ * sync (`lastAddonSuccessAt`, the add-on's `last_sync_at`: written only at the
+ * end of a sync that downloaded, by either half), which shows the stored
+ * connection works. So a record that outlived a Reset and a new Setup, or a
+ * retired companion, stops showing. An unreadable time never hides it.
  */
 export function companionConnectionRefused(
   health: Pick<SyncHealth, 'firstFailedAt' | 'lastFailedAt' | 'lastError'> | null | undefined,
   replacedAt: string | null | undefined,
+  lastAddonSuccessAt?: string | null,
 ): boolean {
   if (!health || typeof health.firstFailedAt !== 'string' || typeof health.lastError !== 'string') return false;
   if (!isRefusedConnection(health.lastError)) return false;
-  const replaced = Date.parse(replacedAt ?? '');
   const failed = Date.parse(health.lastFailedAt ?? health.firstFailedAt);
-  return !(Number.isFinite(replaced) && replaced > failed);
+  const after = (iso: string | null | undefined) => {
+    const t = Date.parse(iso ?? '');
+    return Number.isFinite(t) && t > failed;
+  };
+  return !(after(replacedAt) || after(lastAddonSuccessAt));
 }

@@ -103,6 +103,8 @@ export function SyncPage({ ctx, store, onReset, scheduler, initialSearch }: Prop
   const [errorRefused, setErrorRefused] = useState(false);
   /** The companion's last background failure was a refusal no replace has answered. */
   const [companionRefused, setCompanionRefused] = useState(false);
+  /** Bumped by every replace: a banner read that started before one is stale. */
+  const replaceGeneration = useRef(0);
   // The raw text behind a classified error (`SimplefinRequestError.detail`), held
   // separately so the box can show a readable message WITHOUT losing the diagnosis.
   const [errorDetail, setErrorDetail] = useState<string | undefined>(undefined);
@@ -395,7 +397,8 @@ export function SyncPage({ ctx, store, onReset, scheduler, initialSearch }: Prop
 
   const refreshLiveState = useCallback(() => {
     readSimplefinCount();
-    store.getLastSyncAt().then((d) => { if (d) setLastSyncAt(d); }).catch(() => {});
+    const lastSync = store.getLastSyncAt();
+    lastSync.then((d) => { if (d) setLastSyncAt(d); }).catch(() => {});
     store.getAccountBalances().then(setBalances).catch(() => {});
     store.getCompanionVersion().then(setCompanionVersion).catch(() => {});
     // Optional on the store so test doubles predating it keep working.
@@ -409,8 +412,19 @@ export function SyncPage({ ctx, store, onReset, scheduler, initialSearch }: Prop
     // never sees — it would take the whole refresh down with it.
     store.getUnmappedAccounts?.().then(setUnmappedAccounts).catch(() => {});
     store.getSimplefinProblems?.().then(setSimplefinProblems).catch(() => {});
-    Promise.all([store.getSyncHealth?.() ?? null, store.getConnectionReplacedAt?.() ?? null])
-      .then(([health, replacedAt]) => { if (mounted.current) setCompanionRefused(companionConnectionRefused(health, replacedAt)); })
+    // A read that started before a replace saw the old connection's record:
+    // applied after the replace, it would bring the banner straight back.
+    const generation = replaceGeneration.current;
+    Promise.all([
+      store.getSyncHealth?.() ?? null,
+      store.getConnectionReplacedAt?.() ?? null,
+      lastSync.catch(() => null),
+    ])
+      .then(([health, replacedAt, lastSyncDate]) => {
+        if (!mounted.current || generation !== replaceGeneration.current) return;
+        const lastSuccess = lastSyncDate && Number.isFinite(lastSyncDate.getTime()) ? lastSyncDate.toISOString() : null;
+        setCompanionRefused(companionConnectionRefused(health, replacedAt, lastSuccess));
+      })
       .catch(() => {});
     refreshDerivedSignals();
     // New report editions arrive behind the page's back too.
@@ -448,6 +462,7 @@ export function SyncPage({ ctx, store, onReset, scheduler, initialSearch }: Prop
   /** A replaced connection answers a refusal: the page's refused error goes, and
    *  the companion's refusal is answered until its next failure. */
   const onConnectionReplaced = useCallback(() => {
+    replaceGeneration.current += 1;
     if (errorRefused) clearError();
     setCompanionRefused(false);
   }, [errorRefused, clearError]);

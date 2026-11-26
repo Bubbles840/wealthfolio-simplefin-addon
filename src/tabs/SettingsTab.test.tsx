@@ -1318,6 +1318,24 @@ describe('SimpleFIN connection card', () => {
     expect(screen.getByText(/accounts failed: 524/)).toBeInTheDocument();
   });
 
+  it("doesn't let a banner read that started before the replace bring the refusal back", async () => {
+    let resolveHealth!: (h: unknown) => void;
+    const props = connectable(makeProps());
+    (props.store as any).getSyncHealth = vi.fn()
+      .mockImplementationOnce(() => new Promise((r) => { resolveHealth = r; }))
+      .mockResolvedValue(null);
+    (props.store as any).getConnectionReplacedAt = vi.fn(async () => null);
+    render(<SyncPage {...props} />);
+    await switchTab(/settings/i);
+    await paste();
+    fireEvent.click(screen.getByRole('button', { name: 'Connect' }));
+    expect(await screen.findByText(/^✓ Connected through SimpleFIN Bridge/)).toHaveAttribute('role', 'status');
+    resolveHealth({ firstFailedAt: '2026-11-24T10:00:00.000Z', lastFailedAt: '2026-11-26T10:00:00.000Z', lastError: 'SimpleFin /accounts failed: 403' });
+    await new Promise((r) => setTimeout(r, 20));
+    expect(screen.getByRole('button', { name: /^SimpleFIN connection/ })).toHaveTextContent('SimpleFIN Bridge');
+    expect(screen.getByRole('button', { name: /^SimpleFIN connection/ })).not.toHaveTextContent('Stopped accepting');
+  });
+
   it('turns Connect off while a sync runs', async () => {
     vi.mocked(runSync).mockImplementationOnce(() => new Promise(() => {}));
     render(<SyncPage {...connectable(makeProps())} />);

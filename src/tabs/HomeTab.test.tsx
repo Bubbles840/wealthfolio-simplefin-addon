@@ -1093,6 +1093,16 @@ describe('when the companion was refused', () => {
     expect(screen.queryByText(LINE)).toBeNull();
   });
 
+  it('hides once an add-on sync has succeeded since the last failure: the stored connection works', async () => {
+    const props = health(REFUSED);
+    props.store.getLastSyncAt = vi.fn(async () => new Date('2026-11-26T11:00:00.000Z'));
+    render(<SyncPage {...props} />);
+    await waitFor(() => expect((props.store as any).getSyncHealth).toHaveBeenCalled());
+    await screen.findByText(/Last synced/);
+    await new Promise((r) => setTimeout(r, 20));
+    expect(screen.queryByText(LINE)).toBeNull();
+  });
+
   it('hides an older companion\'s refused record (no lastFailedAt) once replaced after its firstFailedAt', async () => {
     const { lastFailedAt: _omit, ...old } = REFUSED;
     const props = health(old, '2026-11-25T10:00:00.000Z');
