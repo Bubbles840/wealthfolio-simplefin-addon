@@ -21,6 +21,7 @@ import cron from 'node-cron';
 import { readFileSync, existsSync } from 'fs';
 import { dirname, join } from 'path';
 import { profileIdFromEnv } from './profile-id.js';
+import { isRefusedConnection, REFUSED_CONNECTION_LINE } from '../../shared/simplefin-connection.js';
 import { SIMPLEFIN_REQUESTS_SECRET_KEY, requestsToday } from '../../shared/simplefin-budget.js';
 import { runSyncCore, descriptionFromComment, txIdFromComment } from '../../shared/sync-core.js';
 import type { SyncResult } from '../../shared/sync-core.js';
@@ -359,6 +360,9 @@ function parseSecretJson<T>(raw: string | null | undefined, label: string): T | 
  * records a success and clears any in-progress failure streak; a non-null
  * error starts (or continues) a streak, setting `firstFailedAt` only on the
  * FIRST failure so the 24h alert clock doesn't reset on every retry.
+ * `lastFailedAt` is stamped on EVERY failure: it is what the add-on's Home
+ * banner compares against `simplefin_connection_replaced_at`, so a failure
+ * after a token replace brings the banner back. A success omits it.
  *
  * Documented limitation: this writes through the same authenticated wfClient
  * the sync itself uses. If login to Wealthfolio fails outright, there is no
@@ -380,6 +384,7 @@ async function updateSyncHealth(wfClient: WealthfolioClient, error: Error | null
       : {
           lastSuccessAt: health.lastSuccessAt ?? null,
           firstFailedAt: health.firstFailedAt ?? now,
+          lastFailedAt: now,
           lastError: error.message,
           alerted: health.alerted ?? false,
         };
@@ -429,7 +434,8 @@ async function checkSyncHealthAlert(wfClient: WealthfolioClient): Promise<void> 
   const result = await sendTelegramMessage(
     tg.botToken,
     tg.chatId,
-    `⚠️ *SimpleFin Sync has been failing since ${shortDateTime(health.firstFailedAt)}*\nLast error: ${lastError}`,
+    `⚠️ *SimpleFin Sync has been failing since ${shortDateTime(health.firstFailedAt)}*\nLast error: ${lastError}`
+      + (isRefusedConnection(health.lastError) ? `\n${escapeMarkdown(REFUSED_CONNECTION_LINE)}` : ''),
   );
   if (!result.ok) {
     log(`Sync health alert failed to send, will retry next sync: ${result.description}`);

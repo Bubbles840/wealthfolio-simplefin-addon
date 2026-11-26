@@ -16,7 +16,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   doesn't list are named, and the mapper opens on the new list, where the
   reconnection questions match them. When SimpleFIN refuses the connection
   (401 or 403), the sync error, the Accounts refresh error and a Home banner
-  for the companion's failing sync each offer **Replace token**.
+  for the companion's failing sync each offer **Replace token**. With this release's companion, its Telegram "failing since" alert says the
+  same, and the Home banner stays away after a replace until the companion fails
+  again.
 
 ### Fixed
 - **A receipt date read far from the day the photo was sent is questioned.** A

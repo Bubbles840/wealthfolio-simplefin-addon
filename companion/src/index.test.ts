@@ -715,6 +715,63 @@ describe('runCompanionSync sync health', () => {
     expect(secondHealth.lastError).toBe('SimpleFin: still down');
   });
 
+  async function useSecretsClient() {
+    const { WealthfolioClient } = await import('./wealthfolio.js');
+    const client = new (WealthfolioClient as any)();
+    client.getAddonSecret = vi.fn(async (_a: string, key: string) => secrets.get(key) ?? null);
+    client.setAddonSecret = vi.fn(async (_a: string, key: string, val: string) => { secrets.set(key, val); });
+    vi.mocked(WealthfolioClient).mockImplementation(function () { return client; } as any);
+  }
+
+  async function alertTextAfterFailure(message: string): Promise<string> {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      vi.setSystemTime(new Date('2026-11-26T12:00:00.000Z'));
+      secrets.set('telegram_config', JSON.stringify({ botToken: 'tok', chatId: '1', enabled: true, digestRows: 'all' }));
+      secrets.set('sync_health', JSON.stringify({
+        lastSuccessAt: null, firstFailedAt: '2026-11-25T10:00:00.000Z', lastError: 'old error', alerted: false,
+      }));
+      vi.mocked(runSyncCore).mockRejectedValueOnce(new Error(message));
+      await useSecretsClient();
+      const fetchMock = vi.fn(async () => ({ json: async () => ({ ok: true }) }));
+      vi.stubGlobal('fetch', fetchMock);
+      await expect(runCompanionSync()).rejects.toThrow(message);
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      const [, sentBody] = fetchMock.mock.calls[0] as unknown as [string, { body: string }];
+      return JSON.parse(sentBody.body).text;
+    } finally { vi.useRealTimers(); }
+  }
+
+  it('stamps lastFailedAt on every failure, keeps firstFailedAt, and leaves it out on success', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      await useSecretsClient();
+      vi.setSystemTime(new Date('2026-11-25T10:00:00.000Z'));
+      vi.mocked(runSyncCore).mockRejectedValueOnce(new Error('SimpleFin /accounts failed: 403'));
+      await expect(runCompanionSync()).rejects.toThrow('403');
+      vi.setSystemTime(new Date('2026-11-25T16:00:00.000Z'));
+      vi.mocked(runSyncCore).mockRejectedValueOnce(new Error('SimpleFin /accounts failed: 403'));
+      await expect(runCompanionSync()).rejects.toThrow('403');
+      expect(JSON.parse(secrets.get('sync_health')!)).toMatchObject({
+        firstFailedAt: '2026-11-25T10:00:00.000Z', lastFailedAt: '2026-11-25T16:00:00.000Z', lastError: 'SimpleFin /accounts failed: 403',
+      });
+      vi.setSystemTime(new Date('2026-11-25T22:00:00.000Z'));
+      await runCompanionSync();
+      expect(JSON.parse(secrets.get('sync_health')!)).toEqual({ lastSuccessAt: '2026-11-25T22:00:00.000Z' });
+    } finally { vi.useRealTimers(); }
+  });
+
+  it('adds the replace-token line to the 24h alert when SimpleFIN refused the connection', async () => {
+    const text = await alertTextAfterFailure('SimpleFin /accounts failed: 403');
+    expect(text).toContain('Last error: SimpleFin /accounts failed: 403\nSimpleFIN no longer accepts this connection. Paste a new setup token in SimpleFin Sync → Settings → SimpleFIN connection; your mapping and rules stay.');
+  });
+
+  it('leaves the 24h alert as it was for any other failure', async () => {
+    const text = await alertTextAfterFailure('SimpleFin /accounts failed: 402');
+    expect(text.endsWith('Last error: SimpleFin /accounts failed: 402')).toBe(true);
+    expect(text).not.toContain('no longer accepts');
+  });
+
   it('sends exactly one 24h-failure Telegram alert and marks the streak alerted', async () => {
     secrets.set('telegram_config', JSON.stringify({ botToken: 'tok', chatId: '1', enabled: true, digestRows: 'all' }));
     secrets.set('sync_health', JSON.stringify({
