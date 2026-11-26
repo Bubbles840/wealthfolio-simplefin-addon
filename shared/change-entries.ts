@@ -39,7 +39,7 @@ export type ChangeKind =
   | 'starting-balance' | 'starting-balance-moved' | 'starting-balance-removed' | 'balance-correction'
   | 'amazon-label' | 'venmo-note' | 'category-filed' | 'opening-balance-filed' | 'payback-filed'
   | 'category-rule-created' | 'mapping-rule-created'
-  | 'account-created'
+  | 'account-created' | 'connection-replaced'
   | 'budget-set'
   | 'bookkeeping';
 
@@ -50,7 +50,7 @@ export const CHANGE_KINDS: readonly ChangeKind[] = [
   'starting-balance', 'starting-balance-moved', 'starting-balance-removed', 'balance-correction',
   'amazon-label', 'venmo-note', 'category-filed', 'opening-balance-filed', 'payback-filed',
   'category-rule-created', 'mapping-rule-created',
-  'account-created',
+  'account-created', 'connection-replaced',
   'budget-set',
   'bookkeeping',
 ];
@@ -786,6 +786,21 @@ export function accountCreatedChange(f: AccountCreatedFacts): ChangeDraft {
     subject: {},
     summary: 'Created a Wealthfolio account',
     after: { wfAccountId: f.wfId, sfinAccountId: f.sfinId, accountType: f.accountType },
+    undoable: false,
+  };
+}
+
+export interface ConnectionReplacedFacts { fromProvider: string | null; toProvider: string }
+
+/** Provider names only: the access URL and its credentials never enter the log. */
+export function connectionReplacedChange(f: ConnectionReplacedFacts): ChangeDraft {
+  return {
+    actor: 'you',
+    kind: 'connection-replaced',
+    subject: {},
+    summary: 'Replaced the SimpleFIN connection',
+    before: { provider: f.fromProvider },
+    after: { provider: f.toProvider },
     undoable: false,
   };
 }

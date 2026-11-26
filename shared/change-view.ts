@@ -45,6 +45,7 @@ const GROUP_OF: Record<string, ChangeGroup> = {
   'category-rule-created': 'rules',
   'mapping-rule-created': 'rules',
   'account-created': 'rules',
+  'connection-replaced': 'rules',
   // A budget is a category's: found where its filings are.
   'budget-set': 'categories',
   bookkeeping: 'background',
