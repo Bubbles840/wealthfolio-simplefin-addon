@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
-  CHARGE_WINDOW_DAYS, DEFAULT_RECEIPT_MODEL, droppedByPrune, giftCardAccounts, modelHostUrlProblem, modelProblem, parseReceiptHostStatus, RECEIPT_LIMITS, confirmedFilings, giftAccountKey, giftCardWrite, matchingCharges,
+  CHARGE_WINDOW_DAYS, DATE_CHECK_DAYS, dateLooksWrong, dayOf, DEFAULT_RECEIPT_MODEL, droppedByPrune, giftCardAccounts, modelHostUrlProblem, modelProblem, parseReceiptHostStatus, RECEIPT_LIMITS, confirmedFilings, giftAccountKey, giftCardWrite, matchingCharges,
   moveItem, newProposal, parseReceiptReaderConfig, parseReceiptState, parseReceiptTap, proposalRows, proposalRowsByPayment,
   pruneReceiptState, receiptFingerprint, receiptReaderConfigForEditing, renderCategoryPicker, renderGiftAccountPicker,
   renderChargePicker, renderItemPicker, renderProposal, splitLines, undoKeyboard, fullyCategorized, NO_CATEGORY,
@@ -175,6 +175,39 @@ describe('the buttons', () => {
 
   it('refuses data that is not this flow\'s or is damaged', () => {
     expect(['cz:ok:x', 'cz:rc:', 'cz:rc:ok:', 'cz:rc:ch:id:x', 'cz:rc:set:id:1', 'cz:rc:zz:id'].map(parseReceiptTap)).toEqual([null, null, null, null, null, null]);
+  });
+});
+
+describe('a date far from the day the photo was sent', () => {
+  const at = (date: string, sentDay?: string) => ({ ...proposal(), date, ...(sentDay ? { sentDay } : {}) });
+
+  it('is questioned only more than a day after the sent day or more than the window before it', () => {
+    expect(DATE_CHECK_DAYS).toBe(30);
+    expect([
+      dateLooksWrong(at('2027-03-15', '2027-03-15')),
+      dateLooksWrong(at('2027-02-13', '2027-03-15')),
+      dateLooksWrong(at('2027-02-12', '2027-03-15')),
+      dateLooksWrong(at('2027-03-16', '2027-03-15')),
+      dateLooksWrong(at('2027-03-17', '2027-03-15')),
+      dateLooksWrong(at('2024-03-12', '2027-03-15')),
+      dateLooksWrong(at('2024-03-12')),
+    ]).toEqual([false, false, true, false, true, true, false]);
+  });
+
+  it('shows a warning and a button for the sent day, and neither once the date fits', () => {
+    const wrong = renderProposal(at('2024-03-12', '2027-03-15'), CATS);
+    expect(wrong.text).toContain('⚠️ I read the date as 2024-03-12, but the photo was sent on 2027-03-15.');
+    expect(wrong.keyboard.inline_keyboard[0]).toEqual([{ text: '📅 Use 2027-03-15', callback_data: 'cz:rc:sd:abcd1234' }]);
+    expect(parseReceiptTap('cz:rc:sd:abcd1234')).toEqual({ kind: 'sent-day', id: 'abcd1234' });
+    const fine = renderProposal(at('2027-03-14', '2027-03-15'), CATS);
+    expect(fine.text).not.toContain('⚠️');
+    expect(fine.keyboard.inline_keyboard).toHaveLength(1);
+  });
+
+  it('keeps the day the photo was sent on a new proposal, in the local calendar', () => {
+    expect(newProposal('a', receipt(), [UUID(1), UUID(3), UUID(4)], NOW, '2027-03-15').sentDay).toBe('2027-03-15');
+    expect(proposal()).not.toHaveProperty('sentDay');
+    expect(dayOf(new Date(2027, 0, 5, 23, 59))).toBe('2027-01-05');
   });
 });
 

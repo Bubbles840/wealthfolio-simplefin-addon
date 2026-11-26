@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **A receipt date read far from the day the photo was sent is questioned.** A
+  model misread a receipt's year and month, and the receipt was filed years
+  back. When the date read is more than a day after the day the photo was sent,
+  or more than 30 days before it, the proposal says so and offers a button to
+  use the day it was sent. An older receipt sent on purpose is still filed as
+  dated when confirmed.
+
 ## [1.77.0] - 2026-11-23
 
 Update both halves, together. Update the add-on in the app as usual (no new

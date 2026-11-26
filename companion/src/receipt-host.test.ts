@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { categoryChoices, createReceiptHost, RECEIPT_COPY, type ReceiptHostDeps, type ReceiptUi } from './receipt-host.js';
 import {
-  RECEIPT_CONFIG_SECRET_KEY, RECEIPT_STATE_SECRET_KEY, RECEIPT_STATUS_SECRET_KEY, NO_CATEGORY, parseReceiptState, type ReceiptCategory, type SplitLine,
+  dayOf, RECEIPT_CONFIG_SECRET_KEY, RECEIPT_STATE_SECRET_KEY, RECEIPT_STATUS_SECRET_KEY, NO_CATEGORY, parseReceiptState, type ReceiptCategory, type SplitLine,
 } from '../../shared/receipt-flow.js';
 import type { ReceiptTranscript } from '../../shared/receipt.js';
 import type { ActivityWrite } from '../../shared/sync-host.js';
@@ -253,6 +253,32 @@ describe('filing', () => {
     // What it taught goes too: a corrected resend is not a duplicate, and its items are asked about again.
     const after = state(h);
     expect([after.filed.length, after.filings.length, after.fingerprints.length]).toEqual([0, 0, 0]);
+  });
+
+  it('questions a date far from the day the photo was sent, and files on the sent day when tapped', async () => {
+    const h = harness();
+    h.set({ transcript: { ...TILL, date: '2024-03-12' } });
+    await proposed(h);
+    const sent = dayOf(NOW);
+    expect(h.sent[0].text).toContain('⚠️ I read the date as 2024-03-12');
+    expect(h.sent[0].keyboard?.inline_keyboard[0][0].callback_data).toBe('cz:rc:sd:p1');
+    const t = await tap(h, 'cz:rc:sd:p1');
+    expect(state(h).proposals[0].date).toBe(sent);
+    expect(t.edits[0].text).not.toContain('⚠️');
+    await tap(h, 'cz:rc:ok:p1');
+    expect(h.splits.map((x) => x.id)).toEqual(['charge-1']);
+  });
+
+  it('says a receipt was filed before once its date is moved to the day it was filed on', async () => {
+    const h = harness();
+    h.set({ transcript: { ...TILL, date: dayOf(NOW) } });
+    await proposed(h);
+    await tap(h, 'cz:rc:ok:p1');
+    h.set({ transcript: { ...TILL, date: '2024-03-12' } });
+    await proposed(h);
+    expect(h.sent.at(-1)!.text).not.toMatch(/filed before/);
+    const t = await tap(h, 'cz:rc:sd:p1');
+    expect(t.edits[0].text).toMatch(/filed before/);
   });
 
   it('keeps what other receipts taught when one is undone', async () => {

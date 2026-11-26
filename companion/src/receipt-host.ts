@@ -23,7 +23,7 @@ import {
   NO_CATEGORY, RECEIPT_CALLBACK_PREFIX, RECEIPT_LIMITS, RECEIPT_CONFIG_SECRET_KEY, RECEIPT_STATE_SECRET_KEY, RECEIPT_STATUS_SECRET_KEY,
   modelProblem, parseReceiptHostStatus,
   confirmedFilings, droppedByPrune, filedSummary, fullyCategorized, giftAccountKey, giftCardAccounts, giftCardWrite, matchingCharges, money, moveItem,
-  newProposal, parseReceiptReaderConfig, parseReceiptState, parseReceiptTap, proposalRowsByPayment, pruneReceiptState,
+  dayOf, newProposal, parseReceiptReaderConfig, parseReceiptState, parseReceiptTap, proposalRowsByPayment, pruneReceiptState,
   receiptFingerprint, renderCategoryPicker, renderChargePicker, renderGiftAccountPicker, renderItemPicker, renderProposal,
   splitLines, undoKeyboard,
   type ReceiptCategory, type ReceiptProposal, type ReceiptReaderConfig, type ReceiptState, type SplitLine,
@@ -247,12 +247,12 @@ export function createReceiptHost(deps: ReceiptHostDeps) {
         }
         return;
       }
-      if ((await readOne(config, head.fileId, head.fileUniqueId)) === 'offline') return;
+      if ((await readOne(config, head.fileId, head.fileUniqueId, head.receivedAt)) === 'offline') return;
     }
   }
 
   /** Reads one photo and proposes it, and it leaves the queue — unless the model host went away mid-read ('offline'). */
-  async function readOne(config: ReceiptReaderConfig, fileId: string, fileUniqueId: string): Promise<'done' | 'offline'> {
+  async function readOne(config: ReceiptReaderConfig, fileId: string, fileUniqueId: string, receivedAt: string): Promise<'done' | 'offline'> {
     const dequeue = (s: ReceiptState) => ({ ...s, queue: s.queue.filter((q) => q.fileUniqueId !== fileUniqueId) });
     let reply: { text: string; keyboard?: InlineKeyboard };
     try {
@@ -269,7 +269,8 @@ export function createReceiptHost(deps: ReceiptHostDeps) {
       } else {
         const receipt = built.receipt;
         const categoryOf = await categorize(config, receipt.store, receipt.items.map((i) => i.text), state);
-        const proposal = newProposal(deps.randomId(), receipt, categoryOf, deps.now());
+        const sent = new Date(receivedAt);
+        const proposal = newProposal(deps.randomId(), receipt, categoryOf, deps.now(), Number.isNaN(sent.getTime()) ? undefined : dayOf(sent));
         const duplicateOf = state.fingerprints.some((f) => f.key === receiptFingerprint(proposal));
         await withState((s) => ({
           state: { ...dequeue(s), proposals: [...s.proposals, proposal], rates: [...s.rates.filter((r) => !receipt.printedRates.includes(r)), ...receipt.printedRates] },
@@ -459,6 +460,18 @@ export function createReceiptHost(deps: ReceiptHostDeps) {
       case 'back':
         await show(renderProposal(p, cats, { giftAccountName: await giftAccountName(p, state) }));
         return;
+      case 'sent-day': {
+        if (!p.sentDay) {
+          await ui.answer(RECEIPT_COPY.gone);
+          return;
+        }
+        const next = { ...p, date: p.sentDay };
+        await save(next);
+        // A new date is a new fingerprint: a receipt already filed on that day says so now.
+        const duplicateOf = state.fingerprints.some((f) => f.key === receiptFingerprint(next));
+        await show(renderProposal(next, cats, { duplicateOf, giftAccountName: await giftAccountName(next, state) }));
+        return;
+      }
       case 'items':
         await show(renderItemPicker(p, cats, tap.page));
         return;
