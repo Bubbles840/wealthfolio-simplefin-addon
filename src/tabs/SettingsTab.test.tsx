@@ -1,9 +1,10 @@
 import { render, screen, fireEvent, waitFor, within } from '@testing-library/react';
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { SyncPage } from '../pages/SyncPage';
 import { importChange, stampChange } from '../../shared/change-entries';
 import { runSync } from '../utils/sync';
 import { RELINKS_SINCE } from '../../shared/version';
+import { replaceClaim } from '../utils/connect';
 
 /**
  * Integration-level, on purpose — moved here wholesale from SyncPage.test.tsx
@@ -1025,6 +1026,8 @@ describe('SettingsTab', () => {
 });
 
 describe('SimpleFIN connection card', () => {
+  // The claim outlives the card (it is module-level), so each case starts without one.
+  beforeEach(() => { replaceClaim.current = null; });
   const connectable = (props: ReturnType<typeof makeProps>) => {
     Object.assign(props.store, {
       setAccountNames: vi.fn(async () => {}),
@@ -1080,7 +1083,7 @@ describe('SimpleFIN connection card', () => {
     vi.mocked(fetchAccounts).mockResolvedValueOnce({
       errors: [],
       accounts: [
-        { id: 'NEW-1', name: 'Growth', currency: 'USD', balance: '1.00', 'balance-date': 1700000000 },
+        { id: 'sfin-1', name: 'Growth', currency: 'USD', balance: '1.00', 'balance-date': 1700000000 },
         { id: 'NEW-2', name: 'Spend', currency: 'USD', balance: '2.00', 'balance-date': 1700000000 },
       ],
     } as any);
@@ -1090,7 +1093,7 @@ describe('SimpleFIN connection card', () => {
     await paste();
     fireEvent.click(screen.getByRole('button', { name: 'Connect' }));
     expect(await screen.findByText(
-      "✓ Connected through SimpleFIN Bridge. 2 mapped accounts aren't in this connection: Growth, Spend. If your bank lists them under new names, map them in the Accounts card above.",
+      "✓ Connected through SimpleFIN Bridge. 1 mapped account isn't in this connection: Spend. If your bank lists it under a new name, map it in the Accounts card above.",
     )).toHaveAttribute('role', 'status');
     expect((props.store as any).setAccessUrl).toHaveBeenCalledWith(NEW_URL);
     expect(vi.mocked(fetchAccounts).mock.calls[0][0]).toBe(NEW_URL);
@@ -1101,6 +1104,119 @@ describe('SimpleFIN connection card', () => {
     expect(await screen.findByRole('button', { name: /^Save mapping/i })).toBeInTheDocument();
     expect(fetchAccounts).toHaveBeenCalledTimes(1);
     expect(screen.getByLabelText('New setup token')).toHaveValue('');
+  });
+
+  const noneMapped = () => ({
+    errors: [],
+    accounts: [
+      { id: 'NEW-1', name: 'Growth', currency: 'USD', balance: '1.00', 'balance-date': 1700000000 },
+      { id: 'NEW-2', name: 'Spend', currency: 'USD', balance: '2.00', 'balance-date': 1700000000 },
+    ],
+  }) as any;
+  const CONFIRM = "None of your 2 mapped accounts are in this SimpleFIN Bridge connection. If you're moving to another SimpleFIN account or provider, press Connect anyway and map the accounts next. Otherwise your current connection stays as it is.";
+
+  it('asks before a connection with none of the mapped accounts, and swaps on Connect anyway', async () => {
+    const { claimToken, fetchAccounts } = await import('../utils/simplefin');
+    vi.mocked(claimToken).mockClear();
+    vi.mocked(fetchAccounts).mockResolvedValueOnce(noneMapped()).mockResolvedValueOnce(noneMapped());
+    const props = connectable(makeProps());
+    render(<SyncPage {...props} />);
+    await switchTab(/settings/i);
+    await paste();
+    fireEvent.click(screen.getByRole('button', { name: 'Connect' }));
+    expect(await screen.findByText(CONFIRM)).toHaveAttribute('role', 'status');
+    expect((props.store as any).setAccessUrl).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('button', { name: 'Connect anyway' }));
+    expect(await screen.findByText(/^✓ Connected through SimpleFIN Bridge\. 2 mapped accounts aren't in this connection/)).toHaveAttribute('role', 'status');
+    expect(screen.queryByText(CONFIRM)).toBeNull();
+    expect((props.store as any).setAccessUrl).toHaveBeenCalledTimes(1);
+    expect(claimToken).toHaveBeenCalledTimes(1);
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: /^Accounts/ })).toHaveAttribute('aria-expanded', 'true'),
+    );
+  });
+
+  it('Cancel leaves the connection alone and keeps the token', async () => {
+    const { fetchAccounts } = await import('../utils/simplefin');
+    vi.mocked(fetchAccounts).mockResolvedValueOnce(noneMapped());
+    const props = connectable(makeProps());
+    render(<SyncPage {...props} />);
+    await switchTab(/settings/i);
+    await paste();
+    fireEvent.click(screen.getByRole('button', { name: 'Connect' }));
+    await screen.findByText(CONFIRM);
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+    expect(screen.queryByText(CONFIRM)).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Connect anyway' })).toBeNull();
+    expect((props.store as any).setAccessUrl).not.toHaveBeenCalled();
+    expect(screen.getByLabelText('New setup token')).toHaveValue('dG9rZW4=');
+  });
+
+  it('drops a pending confirm when the token box is edited', async () => {
+    const { fetchAccounts } = await import('../utils/simplefin');
+    vi.mocked(fetchAccounts).mockResolvedValueOnce(noneMapped());
+    render(<SyncPage {...connectable(makeProps())} />);
+    await switchTab(/settings/i);
+    await paste();
+    fireEvent.click(screen.getByRole('button', { name: 'Connect' }));
+    await screen.findByText(CONFIRM);
+    fireEvent.change(screen.getByLabelText('New setup token'), { target: { value: 'b3RoZXI=' } });
+    expect(screen.queryByText(CONFIRM)).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Connect anyway' })).toBeNull();
+  });
+
+  it('keeps the claim when the card closes, so the same token is claimed once', async () => {
+    const { claimToken, fetchAccounts } = await import('../utils/simplefin');
+    vi.mocked(claimToken).mockClear();
+    vi.mocked(fetchAccounts).mockRejectedValueOnce(Object.assign(new Error('SimpleFin /accounts failed: 500'), { status: 500 }));
+    render(<SyncPage {...connectable(makeProps())} />);
+    await switchTab(/settings/i);
+    await paste();
+    fireEvent.click(screen.getByRole('button', { name: 'Connect' }));
+    await screen.findByText(/didn't list any accounts: SimpleFin \/accounts failed: 500/);
+    // Collapsing unmounts the card's body, and so does leaving the tab.
+    fireEvent.click(screen.getByRole('button', { name: /^SimpleFIN connection/ }));
+    expect(screen.queryByLabelText('New setup token')).toBeNull();
+    await switchTab(/home/i);
+    await switchTab(/settings/i);
+    await paste();
+    fireEvent.click(screen.getByRole('button', { name: 'Connect' }));
+    expect(await screen.findByText(/^✓ Connected through SimpleFIN Bridge/)).toHaveAttribute('role', 'status');
+    expect(claimToken).toHaveBeenCalledTimes(1);
+  });
+
+  it("shows SimpleFIN's feed errors beside a successful replace", async () => {
+    const { fetchAccounts } = await import('../utils/simplefin');
+    vi.mocked(fetchAccounts).mockResolvedValueOnce({
+      errors: ['Chase: sign in again'],
+      accounts: [
+        { id: 'sfin-1', name: 'Growth', currency: 'USD', balance: '1.00', 'balance-date': 1700000000 },
+        { id: 'sfin-2', name: 'Spend', currency: 'USD', balance: '2.00', 'balance-date': 1700000000 },
+      ],
+    } as any);
+    render(<SyncPage {...connectable(makeProps())} />);
+    await switchTab(/settings/i);
+    await paste();
+    fireEvent.click(screen.getByRole('button', { name: 'Connect' }));
+    expect(await screen.findByText(/^✓ Connected through SimpleFIN Bridge/)).toHaveAttribute('role', 'status');
+    expect(screen.getByText('SimpleFin: Chase: sign in again').closest('.sfin-error')).not.toBeNull();
+  });
+
+  it('leaves an Accounts card that is already open open after a replace with missing accounts', async () => {
+    const { fetchAccounts } = await import('../utils/simplefin');
+    render(<SyncPage {...connectable(makeProps())} />);
+    await switchTab(/settings/i);
+    await openSection(/^Accounts/);
+    expect(screen.getByRole('button', { name: /^Accounts/ })).toHaveAttribute('aria-expanded', 'true');
+    vi.mocked(fetchAccounts).mockResolvedValueOnce({
+      errors: [],
+      accounts: [{ id: 'sfin-1', name: 'Growth', currency: 'USD', balance: '1.00', 'balance-date': 1700000000 }],
+    } as any);
+    await paste();
+    fireEvent.click(screen.getByRole('button', { name: 'Connect' }));
+    expect(await screen.findByText(/^✓ Connected through SimpleFIN Bridge\. 1 mapped account isn't/)).toBeInTheDocument();
+    await new Promise((r) => setTimeout(r, 20));
+    expect(screen.getByRole('button', { name: /^Accounts/ })).toHaveAttribute('aria-expanded', 'true');
   });
 
   it('says every mapped account is there, and leaves Accounts closed', async () => {

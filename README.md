@@ -267,10 +267,14 @@ notifications stay.
 
 The new token is tested first. If it lists no accounts, the current connection
 stays exactly as it was. If the test download or the save fails, the same
-token can be tried again while the page stays open; a token that was itself
-refused when claimed (for example a spent one) cannot be reused. Mapped accounts the new connection doesn't list are named,
-and the Accounts card opens on the new list, where the reconnection questions
-match them.
+token can be tried again while the page stays open. A token can't be reused
+if its claim was refused (for example a spent one), or if SimpleFIN refused
+the connection it gave: make a new one. Mapped accounts the new
+connection doesn't list are named, and the Accounts card opens on the new
+list, where the reconnection questions match them. If the new connection has
+none of your mapped accounts, the card asks first: press **Connect anyway** if
+you're moving to another SimpleFIN account or provider, and your current
+connection stays until you do.
 
 When SimpleFIN refuses the connection (401 or 403), **Replace token** appears
 under the sync error, under the Accounts refresh error, and in a Home banner

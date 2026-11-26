@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import type { NetworkAPI } from '@wealthfolio/addon-sdk';
-import { claimAccessUrl, credentialsB64, replaceConnection, replacedMessage, type ClaimedToken } from './connect';
+import { claimAccessUrl, credentialsB64, replaceClaim, replaceConnection, replacedMessage, type ClaimedToken } from './connect';
 import { SecretsStore } from './secrets';
 import { beginSync } from './write-lock';
 import { requireWealthfolioSecretKey } from '../../shared/__fixtures__/wealthfolio-secret-key';
@@ -50,6 +50,8 @@ type Reply = { status: number; headers: Record<string, string>; body: string };
 const accounts = (list: unknown[], errors: string[] = []): Reply =>
   ({ status: 200, headers: {}, body: JSON.stringify({ errors, accounts: list }) });
 const claimOk = (url = NEW_URL): Reply => ({ status: 200, headers: {}, body: url });
+/** A new list that still has one mapped account (ACT-1), so the swap needs no confirm. */
+const keepsOne = (...more: unknown[]): Reply => accounts([acct('ACT-1', 'Checking'), ...more]);
 
 function harness(
   data: Record<string, string>,
@@ -82,15 +84,16 @@ function harness(
   return { store, data, secrets, network, claimed, gets, atDownload, request };
 }
 const TOKEN = btoa(CLAIM_URL);
-const run = (h: ReturnType<typeof harness>, pasted = TOKEN) =>
-  replaceConnection(pasted, h.claimed, { store: h.store, network: h.network });
+const run = (h: ReturnType<typeof harness>, pasted = TOKEN, opts?: { confirmed?: boolean }) =>
+  replaceConnection(pasted, h.claimed, { store: h.store, network: h.network }, opts);
+const posts = (h: ReturnType<typeof harness>) => h.request.mock.calls.filter(([r]: any) => r.method === 'POST');
 
 describe('replaceConnection', () => {
   beforeEach(() => { vi.useFakeTimers({ toFake: ['Date'] }); vi.setSystemTime(NOW); });
   afterEach(() => { vi.useRealTimers(); });
 
   it('tests the new token under the temporary key, then swaps the connection and keeps everything else', async () => {
-    const h = harness(seed(), [accounts([acct('NEW-1', 'Checking 1234')])]);
+    const h = harness(seed(), [keepsOne(acct('NEW-1', 'Checking 1234'))]);
     const out = await run(h);
     expect(out.kind).toBe('replaced');
     expect(h.gets[0].auth.secretKey).toBe('simplefin_auth_b64_next');
@@ -121,13 +124,75 @@ describe('replaceConnection', () => {
   });
 
   it('names the mapped accounts the new connection lacks, loans included, by their stored names', async () => {
-    const h = harness(seed(), [accounts([acct('NEW-1', 'Checking 1234')])]);
+    const h = harness(seed(), [accounts([acct('ACT-2', 'Citi Card'), acct('NEW-1', 'Checking 1234')])]);
     const out = await run(h);
     expect(out).toMatchObject({
       kind: 'replaced',
-      missing: ['ACT-1', 'ACT-2', 'ACT-9'],
-      message: "✓ Connected through SimpleFIN Bridge. 3 mapped accounts aren't in this connection: Checking, Citi Card, Car Loan. If your bank lists them under new names, map them in the Accounts card above.",
+      missing: ['ACT-1', 'ACT-9'],
+      message: "✓ Connected through SimpleFIN Bridge. 2 mapped accounts aren't in this connection: Checking, Car Loan. If your bank lists them under new names, map them in the Accounts card above.",
     });
+  });
+
+  it('asks before a connection that has none of the mapped accounts, and writes nothing', async () => {
+    const h = harness(seed(), [accounts([acct('NEW-1', 'Checking 1234')])]);
+    const out = await run(h);
+    expect(out).toEqual({
+      kind: 'confirm',
+      provider: 'SimpleFIN Bridge',
+      message: "None of your 3 mapped accounts are in this SimpleFIN Bridge connection. If you're moving to another SimpleFIN account or provider, press Connect anyway and map the accounts next. Otherwise your current connection stays as it is.",
+    });
+    const { simplefin_requests: _requests, ...rest } = h.data;
+    expect(rest).toEqual(seed());
+    expect((await h.store.getChangeLog())!.entries).toEqual([]);
+    // Kept, so Connect anyway uses the same claim.
+    expect(h.claimed.current).not.toBeNull();
+  });
+
+  it('replaces once confirmed, reusing the claim: one POST in all', async () => {
+    const h = harness(seed(), [accounts([acct('NEW-1', 'Checking 1234')])]);
+    expect((await run(h)).kind).toBe('confirm');
+    const out = await run(h, TOKEN, { confirmed: true });
+    expect(out).toMatchObject({ kind: 'replaced', missing: ['ACT-1', 'ACT-2', 'ACT-9'] });
+    expect(h.data.simplefin_access_url).toBe(NEW_URL);
+    expect(h.data.simplefin_auth_b64).toBe(btoa('new:secret2'));
+    expect(posts(h)).toHaveLength(1);
+    // The test download ran again for the confirmed press.
+    expect(h.gets).toHaveLength(2);
+  });
+
+  it('words the confirm for one mapped account', async () => {
+    const data = { ...seed(), account_mapping: JSON.stringify({ 'ACT-1': 'wf-check', 'ACT-3': '' }) };
+    delete (data as Record<string, string>).loan_links;
+    const h = harness(data, [accounts([acct('NEW-1', 'x')])]);
+    expect(await run(h)).toEqual({
+      kind: 'confirm',
+      provider: 'SimpleFIN Bridge',
+      message: "Your mapped account isn't in this SimpleFIN Bridge connection. If you're moving to another SimpleFIN account or provider, press Connect anyway and map it next. Otherwise your current connection stays as it is.",
+    });
+  });
+
+  it('replaces straight away when only some mapped accounts are missing', async () => {
+    const h = harness(seed(), [keepsOne(acct('NEW-1', 'x'))]);
+    expect(await run(h)).toMatchObject({ kind: 'replaced', missing: ['ACT-2', 'ACT-9'] });
+    expect(h.data.simplefin_access_url).toBe(NEW_URL);
+  });
+
+  it('replaces straight away when nothing is mapped', async () => {
+    const data = { ...seed(), account_mapping: JSON.stringify({ 'ACT-1': '' }) };
+    delete (data as Record<string, string>).loan_links;
+    const h = harness(data, [accounts([acct('NEW-1', 'x')])]);
+    expect(await run(h)).toMatchObject({ kind: 'replaced', message: '✓ Connected through SimpleFIN Bridge. The next sync uses it.' });
+    expect(h.data.simplefin_access_url).toBe(NEW_URL);
+  });
+
+  it('forgets the claim once the swap is written', async () => {
+    const h = harness(seed(), [keepsOne()]);
+    expect((await run(h)).kind).toBe('replaced');
+    expect(h.claimed.current).toBeNull();
+  });
+
+  it('keeps the claim for the page, not the card: one module-level holder starts empty', () => {
+    expect(replaceClaim).toEqual({ current: null });
   });
 
   it('words one mapped account and none', () => {
@@ -149,13 +214,25 @@ describe('replaceConnection', () => {
   });
 
   it('leaves it untouched when the test download fails, and says why', async () => {
-    const h = harness(seed(), [{ status: 403, headers: {}, body: 'Forbidden' }]);
+    const h = harness(seed(), [{ status: 500, headers: {}, body: 'Server error' }]);
     const out = await run(h);
     expect(out.kind).toBe('failed');
-    expect((out as { message: string }).message).toContain("didn't list any accounts: SimpleFin /accounts failed: 403 — Forbidden. Your current connection is unchanged.");
+    expect((out as { message: string }).message).toContain("didn't list any accounts: SimpleFin /accounts failed: 500 — Server error. Your current connection is unchanged.");
     expect(h.data.simplefin_access_url).toBe(OLD_URL);
     expect(h.data.simplefin_auth_b64).toBe(btoa('old:secret1'));
     expect(h.data.simplefin_auth_b64_next).toBeUndefined();
+  });
+
+  it('says to make a new token when SimpleFIN refuses the new connection, and forgets the claim', async () => {
+    const h = harness(seed(), [{ status: 403, headers: {}, body: 'Forbidden.' }]);
+    const out = await run(h);
+    expect(out).toEqual({
+      kind: 'failed',
+      message: "SimpleFIN refused the new token's connection: SimpleFin /accounts failed: 403 — Forbidden. Your current connection is unchanged. Make a new setup token in SimpleFIN Bridge or Lunch Flow and paste that.",
+    });
+    expect(h.claimed.current).toBeNull();
+    const { simplefin_requests: _requests, ...rest } = h.data;
+    expect(rest).toEqual(seed());
   });
 
   it("quotes SimpleFIN's errors as the reason when they come with no accounts", async () => {
@@ -165,14 +242,14 @@ describe('replaceConnection', () => {
   });
 
   it('retries with the access URL it already claimed while the page stays open', async () => {
-    const h = harness(seed(), [{ status: 500, headers: {}, body: 'boom' }, accounts([acct('NEW-1', 'Checking 1234')])]);
+    const h = harness(seed(), [{ status: 500, headers: {}, body: 'boom' }, keepsOne(acct('NEW-1', 'Checking 1234'))]);
     expect((await run(h)).kind).toBe('failed');
     expect((await run(h)).kind).toBe('replaced');
-    expect(h.request.mock.calls.filter(([r]: any) => r.method === 'POST')).toHaveLength(1);
+    expect(posts(h)).toHaveLength(1);
   });
 
   it("shows SimpleFIN's errors beside a list that has accounts, without blocking", async () => {
-    const h = harness(seed(), [accounts([acct('NEW-1', 'Checking 1234')], ['Chase: sign in again'])]);
+    const h = harness(seed(), [accounts([acct('ACT-1', 'Checking'), acct('NEW-1', 'Checking 1234')], ['Chase: sign in again'])]);
     expect(await run(h)).toMatchObject({ kind: 'replaced', feedErrors: ['Chase: sign in again'], hadErrors: true });
   });
 
@@ -203,7 +280,7 @@ describe('replaceConnection', () => {
   it('records one change-log entry naming the providers, never the URL', async () => {
     const h = harness(
       seed(),
-      [accounts([acct('NEW-1', 'x')])],
+      [keepsOne(acct('NEW-1', 'x'))],
       [claimOk('https://new:secret2@www.lunchflow.app/simplefin')],
     );
     expect((await run(h, btoa('https://www.lunchflow.app/simplefin/claim/X'))).kind).toBe('replaced');
@@ -238,7 +315,7 @@ describe('replaceConnection', () => {
   it("passes on Wealthfolio's host-approval message and claims again on retry", async () => {
     const h = harness(
       seed(),
-      [accounts([acct('NEW-1', 'x')])],
+      [keepsOne(acct('NEW-1', 'x'))],
       [new Error("host 'www.lunchflow.app' is not approved"), claimOk('https://new:secret2@www.lunchflow.app/simplefin')],
     );
     const token = btoa('https://www.lunchflow.app/simplefin/claim/X');
@@ -247,7 +324,7 @@ describe('replaceConnection', () => {
     expect((first as { message: string }).message).toMatch(/paste the same token again/);
     expect(h.claimed.current).toBeNull();
     expect((await run(h, token)).kind).toBe('replaced');
-    expect(h.request.mock.calls.filter(([r]: any) => r.method === 'POST')).toHaveLength(2);
+    expect(posts(h)).toHaveLength(2);
   });
 
   const untouched = (h: ReturnType<typeof harness>) => {
@@ -263,7 +340,7 @@ describe('replaceConnection', () => {
   };
 
   it('rolls the access URL back when the credentials cannot be saved', async () => {
-    const h = harness(seed(), [accounts([acct('NEW-1', 'x')])]);
+    const h = harness(seed(), [keepsOne(acct('NEW-1', 'x'))]);
     rejectSetFor(h, 'simplefin_auth_b64');
     await expect(run(h)).rejects.toThrow('disk full');
     untouched(h);
@@ -272,7 +349,7 @@ describe('replaceConnection', () => {
   });
 
   it('clears the temporary key when the access URL cannot be saved', async () => {
-    const h = harness(seed(), [accounts([acct('NEW-1', 'x')])]);
+    const h = harness(seed(), [keepsOne(acct('NEW-1', 'x'))]);
     rejectSetFor(h, 'simplefin_access_url');
     await expect(run(h)).rejects.toThrow('disk full');
     untouched(h);
@@ -289,7 +366,7 @@ describe('replaceConnection', () => {
   });
 
   it('never replaces the names wholesale when they could not be read', async () => {
-    const h = harness(seed(), [accounts([acct('NEW-1', 'x')])]);
+    const h = harness(seed(), [keepsOne(acct('NEW-1', 'x'))]);
     vi.spyOn(h.store, 'getAccountNames').mockRejectedValue(new Error('bad json'));
     const out = await run(h);
     expect(out.kind).toBe('replaced');
@@ -297,7 +374,7 @@ describe('replaceConnection', () => {
   });
 
   it('still reports replaced when the change log cannot be written', async () => {
-    const h = harness(seed(), [accounts([acct('NEW-1', 'x')])]);
+    const h = harness(seed(), [keepsOne(acct('NEW-1', 'x'))]);
     vi.spyOn(h.store, 'recordChange').mockRejectedValue(new Error('nope'));
     expect((await run(h)).kind).toBe('replaced');
     expect(h.data.simplefin_access_url).toBe(NEW_URL);

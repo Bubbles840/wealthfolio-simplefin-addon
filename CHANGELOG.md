@@ -12,7 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   connection takes a new setup token (from SimpleFIN Bridge or Lunch Flow, or
   to move between them) and keeps the mapping, rules, change log and
   notifications. The new token is tested first: if it lists no accounts, the
-  current connection stays as it was. Mapped accounts the new connection
+  current connection stays as it was. If it has none of the mapped accounts, the card asks before it swaps. Mapped accounts the new connection
   doesn't list are named, and the mapper opens on the new list, where the
   reconnection questions match them. When SimpleFIN refuses the connection
   (401 or 403), the sync error, the Accounts refresh error and a Home banner
