@@ -834,6 +834,7 @@ export function SyncPage({ ctx, store, onReset, scheduler, initialSearch }: Prop
           telegramDraft={telegramDraft}
           auditSnapshot={auditSnapshot}
           onAuditChanged={reloadAudit}
+          syncing={syncing || healing}
         />
       </TabPanel>
 

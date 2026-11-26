@@ -18,6 +18,10 @@ import { NotificationsTab, type TelegramDraftState } from './NotificationsTab';
 import { ReceiptReaderConnect } from '../components/ReceiptReaderConnect';
 import { HomeAssistantConnect } from '../components/HomeAssistantConnect';
 import { fetchAccounts } from '../utils/simplefin';
+import { ConnectionCard } from '../components/ConnectionCard';
+import type { ReplacedConnection } from '../utils/connect';
+import { providerName } from '../../shared/simplefin-connection';
+import type { TabId } from '../components/Tabs';
 import type { SecretsStore, CategoryCatalogEntry, AccountBalanceInfo } from '../utils/secrets';
 import type { Scheduler } from '../utils/scheduler';
 import type { MappingRule, SimplefinAccount, AccountMapping } from '../../shared/types';
@@ -50,6 +54,7 @@ export const RULES_CHANGED_ELSEWHERE = 'Your rules changed elsewhere — reload 
 
 export const CARD = {
   accounts: 'accounts',
+  connection: 'connection',
   autoSync: 'auto-sync',
   docker: 'docker',
   amazon: 'amazon',
@@ -97,6 +102,13 @@ interface Props {
   auditSnapshot?: AuditSnapshotRead | null;
   /** 2c R2: after a fix on the Checks card, the page reads the snapshot again. */
   onAuditChanged?: () => void;
+  /** A sync or heal is running: replacing the connection waits for it. */
+  syncing?: boolean;
+  /** SimpleFIN refused the stored credentials (the page's sync health says so). */
+  connectionRefused?: boolean;
+  /** After a replace, the page re-reads what depends on the connection. */
+  onConnectionReplaced?: () => void;
+  onNavigate?: (tab: TabId, openCardId?: string) => void;
 }
 
 /**
@@ -115,6 +127,7 @@ interface Props {
 export function SettingsTab({
   ctx, store, scheduler, onReset, amazon, categories, isOpen, toggleCard,
   accountMapping, balances, sfinNames, wfNames, telegramDraft, onAccountsChanged, auditSnapshot, onAuditChanged, notUpdating,
+  syncing, connectionRefused, onConnectionReplaced,
 }: Props) {
   // The stored pool, for the card's collapsed summary. Read here and updated by
   // the card itself on Set / Clear: the companion's published status would lag
@@ -191,6 +204,27 @@ export function SettingsTab({
   const [accountsLoading, setAccountsLoading] = useState(false);
   const [accountsError, setAccountsError] = useState('');
   const [mappingSaved, setMappingSaved] = useState(false);
+  /** That error was SimpleFIN refusing the stored credentials (set by the Accounts refresh). */
+  const [accountsErrorRefused, setAccountsErrorRefused] = useState(false);
+  /** The connection's provider name: undefined until read, null when not connected. */
+  const [provider, setProvider] = useState<string | null | undefined>(undefined);
+  useEffect(() => {
+    store.getAccessUrl().then((u) => setProvider(providerName(u))).catch(() => {});
+  }, [store]);
+  const connectionSummary = connectionRefused || accountsErrorRefused
+    ? 'Stopped accepting this connection'
+    : provider === undefined ? undefined : (provider ?? 'Not connected');
+  const onReplaced = (r: ReplacedConnection) => {
+    setProvider(r.provider);
+    setAccountsError('');
+    setAccountsErrorRefused(false);
+    setSfAccounts(r.accounts);
+    setSfAccountsHadErrors(r.hadErrors);
+    setMappingSaved(false);
+    if (r.missing.length > 0 && !isOpen(CARD.accounts)) toggleCard(CARD.accounts);
+    onAccountsChanged?.();
+    onConnectionReplaced?.();
+  };
 
   useEffect(() => {
     Promise.all([
@@ -575,6 +609,16 @@ export function SettingsTab({
             </div>
           </>
         )}
+      </CollapsibleCard>
+
+      <CollapsibleCard
+        id={CARD.connection}
+        title="SimpleFIN connection"
+        summary={connectionSummary}
+        open={isOpen(CARD.connection)}
+        onToggle={() => toggleCard(CARD.connection)}
+      >
+        <ConnectionCard ctx={ctx} store={store} syncing={!!syncing} onReplaced={onReplaced} />
       </CollapsibleCard>
 
       {/* 2c: what Wealthfolio's Health page flags, from the companion's

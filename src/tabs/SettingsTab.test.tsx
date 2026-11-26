@@ -33,7 +33,10 @@ vi.mock('../utils/change-undo', async (importOriginal) => ({
 /** The Accounts card re-reads the live account list from the bridge. Mocked at
  *  the module boundary so the tests exercise the card's own logic (fetch →
  *  mapper → save) without a network call. */
-vi.mock('../utils/simplefin', () => ({
+vi.mock('../utils/simplefin', () => {
+  const NEW_URL = 'https://new:secret2@beta-bridge.simplefin.org/simplefin';
+  return {
+  claimToken: vi.fn(async () => NEW_URL),
   fetchAccounts: vi.fn(async () => ({
     errors: [],
     accounts: [
@@ -43,7 +46,10 @@ vi.mock('../utils/simplefin', () => ({
       { id: 'sfin-new', name: 'Robinhood Gold Card', currency: 'USD', balance: '-25.00', 'balance-date': 1700000000 },
     ],
   })),
-}));
+  };
+});
+
+const NEW_URL = 'https://new:secret2@beta-bridge.simplefin.org/simplefin';
 
 const makeProps = () => ({
   ctx: {
@@ -1015,5 +1021,130 @@ describe('SettingsTab', () => {
     expect(header).toHaveTextContent('Not set');
     fireEvent.click(header);
     expect(await screen.findByLabelText('Pool amount')).toBeInTheDocument();
+  });
+});
+
+describe('SimpleFIN connection card', () => {
+  const connectable = (props: ReturnType<typeof makeProps>) => {
+    Object.assign(props.store, {
+      setAccountNames: vi.fn(async () => {}),
+      setAccessUrl: vi.fn(async () => {}),
+      setAuthB64: vi.fn(async () => {}),
+      getNextAuthB64Key: vi.fn(async () => 'simplefin_auth_b64_next'),
+      setNextAuthB64: vi.fn(async () => {}),
+      clearNextAuthB64: vi.fn(async () => {}),
+      setConnectionReplacedAt: vi.fn(async () => {}),
+      recordChange: vi.fn(async () => {}),
+    });
+    return props;
+  };
+  const openConnection = () => openSection(/^SimpleFIN connection/);
+  const paste = async () => {
+    await openConnection();
+    fireEvent.change(await screen.findByLabelText('New setup token'), { target: { value: 'dG9rZW4=' } });
+  };
+
+  it('sits after Accounts, collapsed, and names the provider, never the URL', async () => {
+    const { container } = render(<SyncPage {...connectable(makeProps())} />);
+    await switchTab(/settings/i);
+    const header = await screen.findByRole('button', { name: /^SimpleFIN connection/ });
+    expect(header).toHaveAttribute('aria-expanded', 'false');
+    await waitFor(() => expect(header).toHaveTextContent('SimpleFIN Bridge'));
+    expect(header).not.toHaveTextContent('u:p');
+    const ids = [...container.querySelectorAll('[data-card-id]')].map((el) => el.getAttribute('data-card-id'));
+    expect(ids.slice(0, 2)).toEqual(['accounts', 'connection']);
+  });
+
+  it('says Not connected when there is no connection', async () => {
+    const props = connectable(makeProps());
+    props.store.getAccessUrl = vi.fn(async () => null);
+    render(<SyncPage {...props} />);
+    await switchTab(/settings/i);
+    const header = await screen.findByRole('button', { name: /^SimpleFIN connection/ });
+    await waitFor(() => expect(header).toHaveTextContent('Not connected'));
+  });
+
+  it('keeps Connect off until a token is pasted', async () => {
+    render(<SyncPage {...connectable(makeProps())} />);
+    await switchTab(/settings/i);
+    await openConnection();
+    const connect = await screen.findByRole('button', { name: 'Connect' });
+    expect(connect).toBeDisabled();
+    fireEvent.change(screen.getByLabelText('New setup token'), { target: { value: 'dG9rZW4=' } });
+    expect(connect).toBeEnabled();
+  });
+
+  it('swaps the connection and opens the mapper on the new list when mapped accounts are missing', async () => {
+    const { fetchAccounts } = await import('../utils/simplefin');
+    vi.mocked(fetchAccounts).mockClear();
+    vi.mocked(fetchAccounts).mockResolvedValueOnce({
+      errors: [],
+      accounts: [
+        { id: 'NEW-1', name: 'Growth', currency: 'USD', balance: '1.00', 'balance-date': 1700000000 },
+        { id: 'NEW-2', name: 'Spend', currency: 'USD', balance: '2.00', 'balance-date': 1700000000 },
+      ],
+    } as any);
+    const props = connectable(makeProps());
+    render(<SyncPage {...props} />);
+    await switchTab(/settings/i);
+    await paste();
+    fireEvent.click(screen.getByRole('button', { name: 'Connect' }));
+    expect(await screen.findByText(
+      "✓ Connected through SimpleFIN Bridge. 2 mapped accounts aren't in this connection: Growth, Spend. If your bank lists them under new names, map them in the Accounts card above.",
+    )).toHaveAttribute('role', 'status');
+    expect((props.store as any).setAccessUrl).toHaveBeenCalledWith(NEW_URL);
+    expect(vi.mocked(fetchAccounts).mock.calls[0][0]).toBe(NEW_URL);
+    expect(vi.mocked(fetchAccounts).mock.calls[0][3]).toBe('simplefin_auth_b64_next');
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: /^Accounts/ })).toHaveAttribute('aria-expanded', 'true'),
+    );
+    expect(await screen.findByRole('button', { name: /^Save mapping/i })).toBeInTheDocument();
+    expect(fetchAccounts).toHaveBeenCalledTimes(1);
+    expect(screen.getByLabelText('New setup token')).toHaveValue('');
+  });
+
+  it('says every mapped account is there, and leaves Accounts closed', async () => {
+    render(<SyncPage {...connectable(makeProps())} />);
+    await switchTab(/settings/i);
+    await paste();
+    fireEvent.click(screen.getByRole('button', { name: 'Connect' }));
+    expect(await screen.findByText(
+      '✓ Connected through SimpleFIN Bridge. All 2 mapped accounts are in this connection. The next sync uses it.',
+    )).toHaveAttribute('role', 'status');
+    expect(screen.getByRole('button', { name: /^Accounts/ })).toHaveAttribute('aria-expanded', 'false');
+  });
+
+  it('keeps the token and the working connection when the new one lists nothing', async () => {
+    const { fetchAccounts } = await import('../utils/simplefin');
+    const { notListedMessage } = await import('../utils/connect');
+    vi.mocked(fetchAccounts).mockResolvedValueOnce({ errors: [], accounts: [] });
+    const props = connectable(makeProps());
+    render(<SyncPage {...props} />);
+    await switchTab(/settings/i);
+    await paste();
+    fireEvent.click(screen.getByRole('button', { name: 'Connect' }));
+    expect(await screen.findByText(notListedMessage('the account list was empty'))).toBeInTheDocument();
+    expect((props.store as any).setAccessUrl).not.toHaveBeenCalled();
+    expect(screen.getByLabelText('New setup token')).toHaveValue('dG9rZW4=');
+  });
+
+  it('shows a thrown failure like any other and keeps the token', async () => {
+    const props = connectable(makeProps());
+    (props.store as any).setAccessUrl = vi.fn(async () => { throw new Error('disk full'); });
+    render(<SyncPage {...props} />);
+    await switchTab(/settings/i);
+    await paste();
+    fireEvent.click(screen.getByRole('button', { name: 'Connect' }));
+    expect(await screen.findByText('disk full')).toBeInTheDocument();
+    expect(screen.getByLabelText('New setup token')).toHaveValue('dG9rZW4=');
+  });
+
+  it('turns Connect off while a sync runs', async () => {
+    vi.mocked(runSync).mockImplementationOnce(() => new Promise(() => {}));
+    render(<SyncPage {...connectable(makeProps())} />);
+    fireEvent.click(await screen.findByRole('button', { name: /sync now/i }));
+    await switchTab(/settings/i);
+    await paste();
+    expect(screen.getByRole('button', { name: 'Connect' })).toBeDisabled();
   });
 });
