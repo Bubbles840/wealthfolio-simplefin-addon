@@ -17,6 +17,11 @@ import { addonHostEntriesFor, isSimplefinBridgeHost, requireSimplefinProviderHos
 export const SIMPLEFIN_UNREACHABLE_MESSAGE =
   "Couldn't reach SimpleFin — usually temporary, often after several syncs in quick succession. Try again shortly.";
 
+/** The claim's own unreachable line. The broker's raw rejection names the claim
+ *  URL, which IS the setup token, so it goes on `detail`, never the message. */
+export const CLAIM_UNREACHABLE_MESSAGE =
+  "Couldn't reach SimpleFin to use the setup token. It wasn't used, so try the same token again shortly.";
+
 /** Longest body excerpt folded into an HTTP error message. A 502 from a proxy
  *  can return an entire HTML page, and the whole thing in the error box is as
  *  unreadable as no message at all. The full text survives on `detail`. */
@@ -111,7 +116,7 @@ export async function claimToken(setupToken: string, network: NetworkAPI): Promi
   } catch (err) {
     const approval = hostNotApprovedMessage(err);
     if (approval) throw new Error(`${approval} The setup token wasn't used, so paste the same token again.`);
-    throw err;
+    throw new SimplefinRequestError(CLAIM_UNREACHABLE_MESSAGE, 'network', String((err as Error)?.message ?? err));
   }
   if (res.status === 403) {
     // The one failure everyone hits once: a setup token can be claimed

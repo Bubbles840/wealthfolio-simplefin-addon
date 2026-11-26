@@ -24,7 +24,14 @@ export function isSimplefinBridgeHost(hostname: string): boolean {
 }
 
 export function requireSimplefinProviderHost(url: string, label: string): void {
-  const { hostname } = new URL(url);
+  let hostname: string;
+  try {
+    ({ hostname } = new URL(url));
+  } catch {
+    // Never the input: WebKit and Firefox put it, credentials and all, in the
+    // TypeError's message, and this message reaches the UI.
+    throw new Error(`${label} is not a valid URL`);
+  }
   if (!isSimplefinProviderHost(hostname)) {
     throw new Error(`${label} must be hosted at ${SIMPLEFIN_PROVIDER_DOMAINS.join(' or ')} — got ${hostname}`);
   }
