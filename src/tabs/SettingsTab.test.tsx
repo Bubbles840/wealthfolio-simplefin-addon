@@ -1139,6 +1139,37 @@ describe('SimpleFIN connection card', () => {
     expect(screen.getByLabelText('New setup token')).toHaveValue('dG9rZW4=');
   });
 
+  const refused403 = () => Object.assign(new Error('SimpleFin /accounts failed: 403 — Forbidden'), { status: 403 });
+
+  it('a refused refresh offers Replace token beside the error, and says so in the card\'s summary', async () => {
+    const { fetchAccounts } = await import('../utils/simplefin');
+    vi.mocked(fetchAccounts).mockRejectedValueOnce(refused403());
+    render(<SyncPage {...connectable(makeProps())} />);
+    await switchTab(/settings/i);
+    await openMapper();
+    const box = (await screen.findByText(/accounts failed: 403/)).closest('.sfin-error') as HTMLElement;
+    const header = screen.getByRole('button', { name: /^SimpleFIN connection/ });
+    expect(header).toHaveTextContent('Stopped accepting this connection');
+    expect(header).toHaveAttribute('aria-expanded', 'false');
+    fireEvent.click(within(box).getByRole('button', { name: 'Replace token' }));
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: /^SimpleFIN connection/ })).toHaveAttribute('aria-expanded', 'true'),
+    );
+  });
+
+  it('clears the page\'s refused sync error once the token is replaced', async () => {
+    vi.mocked(runSync).mockRejectedValueOnce(refused403());
+    render(<SyncPage {...connectable(makeProps())} />);
+    fireEvent.click(await screen.findByRole('button', { name: /sync now/i }));
+    await screen.findByText(/accounts failed: 403/);
+    fireEvent.click(screen.getByRole('button', { name: 'Replace token' }));
+    await switchTab(/settings/i);
+    await paste();
+    fireEvent.click(screen.getByRole('button', { name: 'Connect' }));
+    expect(await screen.findByText(/✓ Connected through/)).toHaveAttribute('role', 'status');
+    expect(screen.queryByText(/accounts failed: 403/)).toBeNull();
+  });
+
   it('turns Connect off while a sync runs', async () => {
     vi.mocked(runSync).mockImplementationOnce(() => new Promise(() => {}));
     render(<SyncPage {...connectable(makeProps())} />);

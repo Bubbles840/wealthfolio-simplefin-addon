@@ -7,6 +7,7 @@ import {
   type ReplaceStore,
   type ReplacedConnection,
 } from '../utils/connect';
+import { REFUSED_CONNECTION_SHORT } from '../../shared/simplefin-connection';
 
 interface Props {
   ctx: AddonContext;
@@ -74,6 +75,18 @@ export function ConnectionCard({ ctx, store, syncing, onReplaced }: Props) {
           {success.feedErrors.length > 0 && <ErrorBox>SimpleFin: {success.feedErrors.join('; ')}</ErrorBox>}
         </div>
       )}
+    </>
+  );
+}
+
+/** Under an error SimpleFIN refused: what it means, and the way to the card that fixes it. */
+export function RefusedConnectionNote({ onReplace }: { onReplace: () => void }) {
+  return (
+    <>
+      <div>{REFUSED_CONNECTION_SHORT}</div>
+      <div style={{ marginTop: 8 }}>
+        <Button variant="outline" onClick={onReplace}>Replace token</Button>
+      </div>
     </>
   );
 }

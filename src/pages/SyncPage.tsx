@@ -7,6 +7,8 @@ import type { SyncResult } from '../utils/sync';
 import { fetchAccounts } from '../utils/simplefin';
 import { SyncStatus } from '../components/SyncStatus';
 import { Button, ErrorBox } from '../components/ui';
+import { RefusedConnectionNote } from '../components/ConnectionCard';
+import { companionConnectionRefused, isRefusedConnection } from '../../shared/simplefin-connection';
 import { TabBar, resolveStoredTab, type TabId } from '../components/Tabs';
 import { BudgetTab } from '../tabs/BudgetTab';
 import { TxStoryPanel, useTxStoryActions } from '../components/TxStory';
@@ -97,6 +99,10 @@ export function SyncPage({ ctx, store, onReset, scheduler, initialSearch }: Prop
   const [syncing, setSyncing] = useState(false);
   const [mapping, setMapping] = useState<AccountMapping>({});
   const [error, setError] = useState('');
+  /** `error` is SimpleFIN refusing the connection (401/403): it offers Replace token. */
+  const [errorRefused, setErrorRefused] = useState(false);
+  /** The companion's last background failure was a refusal no replace has answered. */
+  const [companionRefused, setCompanionRefused] = useState(false);
   // The raw text behind a classified error (`SimplefinRequestError.detail`), held
   // separately so the box can show a readable message WITHOUT losing the diagnosis.
   const [errorDetail, setErrorDetail] = useState<string | undefined>(undefined);
@@ -403,6 +409,9 @@ export function SyncPage({ ctx, store, onReset, scheduler, initialSearch }: Prop
     // never sees — it would take the whole refresh down with it.
     store.getUnmappedAccounts?.().then(setUnmappedAccounts).catch(() => {});
     store.getSimplefinProblems?.().then(setSimplefinProblems).catch(() => {});
+    Promise.all([store.getSyncHealth?.() ?? null, store.getConnectionReplacedAt?.() ?? null])
+      .then(([health, replacedAt]) => { if (mounted.current) setCompanionRefused(companionConnectionRefused(health, replacedAt)); })
+      .catch(() => {});
     refreshDerivedSignals();
     // New report editions arrive behind the page's back too.
     refreshInbox();
@@ -432,8 +441,16 @@ export function SyncPage({ ctx, store, onReset, scheduler, initialSearch }: Prop
 
   const clearError = useCallback(() => {
     setError('');
+    setErrorRefused(false);
     setErrorDetail(undefined);
   }, []);
+
+  /** A replaced connection answers a refusal: the page's refused error goes, and
+   *  the companion's refusal is answered until its next failure. */
+  const onConnectionReplaced = useCallback(() => {
+    if (errorRefused) clearError();
+    setCompanionRefused(false);
+  }, [errorRefused, clearError]);
 
   /** Re-read the mapping, the account names and Wealthfolio's accounts after
    *  Settings writes any of them. The page reads them once at mount, and
@@ -496,6 +513,7 @@ export function SyncPage({ ctx, store, onReset, scheduler, initialSearch }: Prop
    *  longer the headline. */
   const showThrownError = useCallback((e: any, fallback: string) => {
     setError(e?.message ?? fallback);
+    setErrorRefused(isRefusedConnection(e));
     const detail = typeof e?.detail === 'string' ? e.detail.trim() : '';
     // Never the message as its own "detail" — a disclosure that reveals the line
     // above it is pure noise.
@@ -730,7 +748,16 @@ export function SyncPage({ ctx, store, onReset, scheduler, initialSearch }: Prop
 
       {/* Both surfaces sit ABOVE the tab bar, outside every panel: they describe
           the page's last action, which can be started from any tab. */}
-      {error && <ErrorBox detail={errorDetail}>{error}</ErrorBox>}
+      {error && (
+        <ErrorBox
+          detail={errorDetail}
+          action={errorRefused
+            ? <RefusedConnectionNote onReplace={() => navigate('settings', SETTINGS_CARD.connection)} />
+            : undefined}
+        >
+          {error}
+        </ErrorBox>
+      )}
 
       {syncNotice && (
         <div className="sfin-callout" role="status">{syncNotice}</div>
@@ -753,6 +780,7 @@ export function SyncPage({ ctx, store, onReset, scheduler, initialSearch }: Prop
         <HomeTab
           connectionProblems={shownProblems}
           bridgeSite={bridgeSite}
+          companionConnectionRefused={companionRefused}
           linkedStory={alertLink?.story ? { activityId: alertLink.story } : undefined}
           ctx={ctx}
           store={store}
@@ -835,6 +863,9 @@ export function SyncPage({ ctx, store, onReset, scheduler, initialSearch }: Prop
           auditSnapshot={auditSnapshot}
           onAuditChanged={reloadAudit}
           syncing={syncing || healing}
+          connectionRefused={errorRefused || companionRefused}
+          onConnectionReplaced={onConnectionReplaced}
+          onNavigate={navigate}
         />
       </TabPanel>
 

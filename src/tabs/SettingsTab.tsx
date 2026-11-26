@@ -18,9 +18,9 @@ import { NotificationsTab, type TelegramDraftState } from './NotificationsTab';
 import { ReceiptReaderConnect } from '../components/ReceiptReaderConnect';
 import { HomeAssistantConnect } from '../components/HomeAssistantConnect';
 import { fetchAccounts } from '../utils/simplefin';
-import { ConnectionCard } from '../components/ConnectionCard';
+import { ConnectionCard, RefusedConnectionNote } from '../components/ConnectionCard';
 import type { ReplacedConnection } from '../utils/connect';
-import { providerName } from '../../shared/simplefin-connection';
+import { isRefusedConnection, providerName } from '../../shared/simplefin-connection';
 import type { TabId } from '../components/Tabs';
 import type { SecretsStore, CategoryCatalogEntry, AccountBalanceInfo } from '../utils/secrets';
 import type { Scheduler } from '../utils/scheduler';
@@ -127,7 +127,7 @@ interface Props {
 export function SettingsTab({
   ctx, store, scheduler, onReset, amazon, categories, isOpen, toggleCard,
   accountMapping, balances, sfinNames, wfNames, telegramDraft, onAccountsChanged, auditSnapshot, onAuditChanged, notUpdating,
-  syncing, connectionRefused, onConnectionReplaced,
+  syncing, connectionRefused, onConnectionReplaced, onNavigate,
 }: Props) {
   // The stored pool, for the card's collapsed summary. Read here and updated by
   // the card itself on Set / Clear: the companion's published status would lag
@@ -280,6 +280,7 @@ export function SettingsTab({
   const loadAccounts = useCallback(async () => {
     setAccountsLoading(true);
     setAccountsError('');
+    setAccountsErrorRefused(false);
     setMappingSaved(false);
     try {
       const accessUrl = await store.getAccessUrl();
@@ -313,6 +314,7 @@ export function SettingsTab({
       onAccountsChanged?.();
     } catch (e: any) {
       setAccountsError(e?.message ?? 'Could not reach SimpleFin');
+      setAccountsErrorRefused(isRefusedConnection(e));
     } finally {
       setAccountsLoading(false);
     }
@@ -556,7 +558,15 @@ export function SettingsTab({
           </div>
         )}
 
-        {accountsError && <ErrorBox>{accountsError}</ErrorBox>}
+        {accountsError && (
+          <ErrorBox
+            action={accountsErrorRefused && onNavigate
+              ? <RefusedConnectionNote onReplace={() => onNavigate('settings', CARD.connection)} />
+              : undefined}
+          >
+            {accountsError}
+          </ErrorBox>
+        )}
 
         {mappingLoadFailed ? (
           <ErrorBox>

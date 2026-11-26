@@ -129,6 +129,27 @@ describe('SyncPage', () => {
     expect(box.querySelector('details')!.textContent).toContain(raw);
   });
 
+  const refused = () => Object.assign(new Error('SimpleFin /accounts failed: 403 — Forbidden'), { status: 403, detail: 'Forbidden' });
+
+  it('offers Replace token under a sync error SimpleFIN refused, and it opens Settings → SimpleFIN connection', async () => {
+    vi.mocked(runSync).mockRejectedValueOnce(refused());
+    render(<SyncPage {...makeProps()} />);
+    fireEvent.click(await screen.findByRole('button', { name: /sync now/i }));
+    const box = (await screen.findByText(/accounts failed: 403/)).closest('.sfin-error')!;
+    expect(box).toHaveTextContent('SimpleFIN no longer accepts this connection. Replace the token to carry on; your mapping and rules stay.');
+    fireEvent.click(within(box as HTMLElement).getByRole('button', { name: 'Replace token' }));
+    expect(await screen.findByRole('tab', { name: 'Settings', selected: true })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /^SimpleFIN connection/, expanded: true })).toBeInTheDocument();
+  });
+
+  it('offers nothing extra for a 402 or any other failure', async () => {
+    vi.mocked(runSync).mockRejectedValueOnce(Object.assign(new Error('SimpleFin /accounts failed: 402 — Payment required'), { status: 402 }));
+    render(<SyncPage {...makeProps()} />);
+    fireEvent.click(await screen.findByRole('button', { name: /sync now/i }));
+    await screen.findByText(/accounts failed: 402/);
+    expect(screen.queryByRole('button', { name: 'Replace token' })).toBeNull();
+  });
+
   it('renders an error with no underlying detail exactly as before', async () => {
     // Every other error in the app is a plain Error. It must not grow an empty
     // "Technical details" disclosure that reveals nothing.

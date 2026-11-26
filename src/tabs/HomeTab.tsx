@@ -117,6 +117,8 @@ interface Props {
   paidBack?: PaidBackLedger;
   /** W11: what the last payback filed from the app said. */
   paybackNote?: string | null;
+  /** The companion's background sync was refused by SimpleFIN, and no replace has answered it. */
+  companionConnectionRefused?: boolean;
 }
 
 /**
@@ -136,7 +138,7 @@ export function HomeTab({
   isOpen, toggleCard, onBalancesChanged, onClearError, onError,
   companionVersion, telegramConfigured, amazonConfigured, checklistDismissed,
   onDismissChecklist, onNavigate, poolStatus, onOpenPool, renderTxStory, linkedStory, auditSnapshot, cashForecast,
-  payback, paidBack, paybackNote, connectionProblems, bridgeSite,
+  payback, paidBack, paybackNote, connectionProblems, bridgeSite, companionConnectionRefused,
 }: Props) {
   const checksToLook = checksToLookAt(auditSnapshot);
   // 1.62 (W5): the last sync found the report and Wealthfolio's Spending page
@@ -222,6 +224,19 @@ export function HomeTab({
       {renderTxStory && <WhyCard search={searchTx} renderStory={renderTxStory} />}
 
       <ConnectionProblemBanners problems={connectionProblems ?? []} bridgeSite={bridgeSite ?? null} />
+
+      {companionConnectionRefused && (
+        <div className="sfin-banner-warn">
+          <div className="sfin-banner-body">
+            <div>Background sync stopped: SimpleFIN no longer accepts this connection.</div>
+            <div className="sfin-banner-actions">
+              <Button variant="outline" onClick={() => onNavigate('settings', SETTINGS_CARD.connection)}>
+                Replace token
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* An account SimpleFin is offering that nothing is mapped to. First
           banner on the page because it is the only one that means data is
