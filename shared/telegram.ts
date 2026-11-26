@@ -1359,6 +1359,8 @@ export function formatDailySpendingDigest(
 export interface SyncHealth {
   lastSuccessAt?: string | null;
   firstFailedAt?: string;
+  /** When the most recent failure happened; absent on records an older companion wrote. */
+  lastFailedAt?: string;
   lastError?: string;
   alerted?: boolean;
 }
