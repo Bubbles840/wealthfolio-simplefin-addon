@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.78.0] - 2026-11-27
+
+Update both halves, together. Update the add-on in the app as usual (no new
+permissions) and pull the companion image. This companion's Telegram alert
+says how to replace a refused token, and it records when each failing sync ran,
+so the add-on can tell a failure after a replace from one before it. With an
+older companion, Replace token still works, but after a replace the Home
+banner stays hidden until the companion succeeds or is updated. From before
+1.70.0, use **Install from File** with this zip, as 1.70.0 says.
+
 ### Added
 - **Replace the SimpleFIN token without Reset.** Settings → SimpleFIN
   connection takes a new setup token (from SimpleFIN Bridge or Lunch Flow, or
