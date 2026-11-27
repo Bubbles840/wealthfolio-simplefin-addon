@@ -37,6 +37,14 @@ describe('requireSimplefinProviderHost', () => {
   it('lets a Lunch Flow URL through', () => {
     expect(() => requireSimplefinProviderHost('https://u:p@www.lunchflow.app/simplefin', 'SimpleFin access URL')).not.toThrow();
   });
+
+  it('says an unparseable URL is not valid without repeating it (WebKit and Firefox put the input in the parse error)', () => {
+    const bad = 'https://user:secret9@[bad/simplefin';
+    let message = '';
+    try { requireSimplefinProviderHost(bad, 'SimpleFin access URL'); } catch (e) { message = (e as Error).message; }
+    expect(message).toBe('SimpleFin access URL is not a valid URL');
+    expect(message).not.toContain('secret9');
+  });
 });
 
 describe('addonHostEntriesFor', () => {

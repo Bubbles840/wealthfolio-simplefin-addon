@@ -27,6 +27,9 @@ live in **Settings** when you want them.
 You need Wealthfolio **3.8 or newer** (it works with 3.12) and a SimpleFin account with a one-time
 **setup token**. The token is exchanged once for a long-lived access URL, kept
 in Wealthfolio's encrypted secret storage; the token itself is not kept.
+A new token later (SimpleFIN stopped accepting the connection, or you moved to
+Lunch Flow) goes in **Settings → SimpleFIN connection**, with no Reset: see
+[Replacing the SimpleFIN token](#replacing-the-simplefin-token).
 
 **Using Lunch Flow instead of SimpleFin Bridge?** [Lunch Flow](https://www.lunchflow.app)
 runs a SimpleFIN server too: add an **Actual Budget** destination there, and
@@ -146,8 +149,8 @@ The addon has three tabs: **Home**, **Reports** and **Settings**.
   corrections, filings and rules,
   each with why and, where there is one, what it was before. Undo or Redo
   most of it from the entry — no confirmation; a transfer the sync stopped
-  waiting on, bank updates, removed pending charges, background bookkeeping
-  and accounts created offer nothing.
+  waiting on, bank updates, removed pending charges, background bookkeeping,
+  accounts created and replaced connections offer nothing.
   Undoing something the sync decided also tells the sync not to decide it
   again (the card's **Your overrides** lists those, each with Remove). Most
   of it happens at once; undoing or redoing a transfer link or hold or a
@@ -251,6 +254,31 @@ The addon does not let a newly-linked account go unnoticed: Home shows
 a banner naming any SimpleFin account nothing is mapped to, and the companion
 names it in the daily Telegram report (or, with the daily report off,
 sends one notice per account the first time it sees it).
+
+### Replacing the SimpleFIN token
+
+You need a new token when SimpleFIN Bridge disabled the old one for over-use,
+when the app was disconnected in Bridge or Lunch Flow, when a newer token cut
+the old one off, or when you move between Bridge and Lunch Flow.
+
+Open **Settings → SimpleFIN connection**, paste the new setup token and press
+**Connect**. Nothing else is reset: your mapping, rules, change log and
+notifications stay.
+
+The new token is tested first. If it lists no accounts, the current connection
+stays exactly as it was. If the test download or the save fails, the same
+token can be tried again while the page stays open. A token can't be reused
+if its claim was refused (for example a spent one), or if SimpleFIN refused
+the connection it gave: make a new one. Mapped accounts the new
+connection doesn't list are named, and the Accounts card opens on the new
+list, where the reconnection questions match them. If the new connection has
+none of your mapped accounts, the card asks first: press **Connect anyway** if
+you're moving to another SimpleFIN account or provider, and your current
+connection stays until you do.
+
+When SimpleFIN refuses the connection (401 or 403), **Replace token** appears
+under the sync error, under the Accounts refresh error, and in a Home banner
+when the companion's background sync is the one failing.
 
 ## How it works
 

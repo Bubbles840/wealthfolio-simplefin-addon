@@ -7,6 +7,8 @@ import type { SyncResult } from '../utils/sync';
 import { fetchAccounts } from '../utils/simplefin';
 import { SyncStatus } from '../components/SyncStatus';
 import { Button, ErrorBox } from '../components/ui';
+import { RefusedConnectionNote } from '../components/ConnectionCard';
+import { companionConnectionRefused, isRefusedConnection } from '../../shared/simplefin-connection';
 import { TabBar, resolveStoredTab, type TabId } from '../components/Tabs';
 import { BudgetTab } from '../tabs/BudgetTab';
 import { TxStoryPanel, useTxStoryActions } from '../components/TxStory';
@@ -97,6 +99,12 @@ export function SyncPage({ ctx, store, onReset, scheduler, initialSearch }: Prop
   const [syncing, setSyncing] = useState(false);
   const [mapping, setMapping] = useState<AccountMapping>({});
   const [error, setError] = useState('');
+  /** `error` is SimpleFIN refusing the connection (401/403): it offers Replace token. */
+  const [errorRefused, setErrorRefused] = useState(false);
+  /** The companion's last background failure was a refusal no replace has answered. */
+  const [companionRefused, setCompanionRefused] = useState(false);
+  /** Bumped by every replace: a banner read that started before one is stale. */
+  const replaceGeneration = useRef(0);
   // The raw text behind a classified error (`SimplefinRequestError.detail`), held
   // separately so the box can show a readable message WITHOUT losing the diagnosis.
   const [errorDetail, setErrorDetail] = useState<string | undefined>(undefined);
@@ -389,7 +397,8 @@ export function SyncPage({ ctx, store, onReset, scheduler, initialSearch }: Prop
 
   const refreshLiveState = useCallback(() => {
     readSimplefinCount();
-    store.getLastSyncAt().then((d) => { if (d) setLastSyncAt(d); }).catch(() => {});
+    const lastSync = store.getLastSyncAt();
+    lastSync.then((d) => { if (d) setLastSyncAt(d); }).catch(() => {});
     store.getAccountBalances().then(setBalances).catch(() => {});
     store.getCompanionVersion().then(setCompanionVersion).catch(() => {});
     // Optional on the store so test doubles predating it keep working.
@@ -403,6 +412,20 @@ export function SyncPage({ ctx, store, onReset, scheduler, initialSearch }: Prop
     // never sees — it would take the whole refresh down with it.
     store.getUnmappedAccounts?.().then(setUnmappedAccounts).catch(() => {});
     store.getSimplefinProblems?.().then(setSimplefinProblems).catch(() => {});
+    // A read that started before a replace saw the old connection's record:
+    // applied after the replace, it would bring the banner straight back.
+    const generation = replaceGeneration.current;
+    Promise.all([
+      store.getSyncHealth?.() ?? null,
+      store.getConnectionReplacedAt?.() ?? null,
+      lastSync.catch(() => null),
+    ])
+      .then(([health, replacedAt, lastSyncDate]) => {
+        if (!mounted.current || generation !== replaceGeneration.current) return;
+        const lastSuccess = lastSyncDate && Number.isFinite(lastSyncDate.getTime()) ? lastSyncDate.toISOString() : null;
+        setCompanionRefused(companionConnectionRefused(health, replacedAt, lastSuccess));
+      })
+      .catch(() => {});
     refreshDerivedSignals();
     // New report editions arrive behind the page's back too.
     refreshInbox();
@@ -432,8 +455,17 @@ export function SyncPage({ ctx, store, onReset, scheduler, initialSearch }: Prop
 
   const clearError = useCallback(() => {
     setError('');
+    setErrorRefused(false);
     setErrorDetail(undefined);
   }, []);
+
+  /** A replaced connection answers a refusal: the page's refused error goes, and
+   *  the companion's refusal is answered until its next failure. */
+  const onConnectionReplaced = useCallback(() => {
+    replaceGeneration.current += 1;
+    if (errorRefused) clearError();
+    setCompanionRefused(false);
+  }, [errorRefused, clearError]);
 
   /** Re-read the mapping, the account names and Wealthfolio's accounts after
    *  Settings writes any of them. The page reads them once at mount, and
@@ -496,6 +528,7 @@ export function SyncPage({ ctx, store, onReset, scheduler, initialSearch }: Prop
    *  longer the headline. */
   const showThrownError = useCallback((e: any, fallback: string) => {
     setError(e?.message ?? fallback);
+    setErrorRefused(isRefusedConnection(e));
     const detail = typeof e?.detail === 'string' ? e.detail.trim() : '';
     // Never the message as its own "detail" — a disclosure that reveals the line
     // above it is pure noise.
@@ -730,7 +763,16 @@ export function SyncPage({ ctx, store, onReset, scheduler, initialSearch }: Prop
 
       {/* Both surfaces sit ABOVE the tab bar, outside every panel: they describe
           the page's last action, which can be started from any tab. */}
-      {error && <ErrorBox detail={errorDetail}>{error}</ErrorBox>}
+      {error && (
+        <ErrorBox
+          detail={errorDetail}
+          action={errorRefused
+            ? <RefusedConnectionNote onReplace={() => navigate('settings', SETTINGS_CARD.connection)} />
+            : undefined}
+        >
+          {error}
+        </ErrorBox>
+      )}
 
       {syncNotice && (
         <div className="sfin-callout" role="status">{syncNotice}</div>
@@ -753,6 +795,7 @@ export function SyncPage({ ctx, store, onReset, scheduler, initialSearch }: Prop
         <HomeTab
           connectionProblems={shownProblems}
           bridgeSite={bridgeSite}
+          companionConnectionRefused={companionRefused}
           linkedStory={alertLink?.story ? { activityId: alertLink.story } : undefined}
           ctx={ctx}
           store={store}
@@ -834,6 +877,10 @@ export function SyncPage({ ctx, store, onReset, scheduler, initialSearch }: Prop
           telegramDraft={telegramDraft}
           auditSnapshot={auditSnapshot}
           onAuditChanged={reloadAudit}
+          syncing={syncing || healing}
+          connectionRefused={errorRefused || companionRefused}
+          onConnectionReplaced={onConnectionReplaced}
+          onNavigate={navigate}
         />
       </TabPanel>
 

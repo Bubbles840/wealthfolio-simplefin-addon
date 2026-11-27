@@ -45,6 +45,7 @@ const GROUP_OF: Record<string, ChangeGroup> = {
   'category-rule-created': 'rules',
   'mapping-rule-created': 'rules',
   'account-created': 'rules',
+  'connection-replaced': 'rules',
   // A budget is a category's: found where its filings are.
   'budget-set': 'categories',
   bookkeeping: 'background',
@@ -144,6 +145,12 @@ export function changeBeforeAfter(e: ChangeEntry): string | null {
     case 'budget-set': {
       const cents = isRecord(after) ? num(after.amountCents) : null;
       return cents === null ? null : `No budget → ${changeMoney(cents)} a month`;
+    }
+    case 'connection-replaced': {
+      // Provider names only: the entry never holds the access URL.
+      const to = isRecord(after) ? str(after.provider) : null;
+      if (to === null) return null;
+      return `${(isRecord(before) ? str(before.provider) : null) ?? 'Not connected'} → ${to}`;
     }
     default:
       return null;

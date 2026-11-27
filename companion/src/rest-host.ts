@@ -294,6 +294,13 @@ export async function syncHostFor(
 
 export class RestSyncStore implements SyncStore {
   private addonId = 'simplefin-sync';
+  /**
+   * When this store last read the access URL (ISO, the read's start), null
+   * until a read succeeds. The sync reads it again just before its download,
+   * so this is when the run read the connection it used: a failure is stamped
+   * with it, never with a later time (see `updateSyncHealth` in index.ts).
+   */
+  connectionReadAt: string | null = null;
 
   constructor(private client: WealthfolioClient) {}
 
@@ -312,7 +319,10 @@ export class RestSyncStore implements SyncStore {
   }
 
   async getAccessUrl(): Promise<string | null> {
-    return this.client.getAddonSecret(this.addonId, 'simplefin_access_url');
+    const startedAt = new Date().toISOString();
+    const accessUrl = await this.client.getAddonSecret(this.addonId, 'simplefin_access_url');
+    this.connectionReadAt = startedAt;
+    return accessUrl;
   }
 
   async getAuthB64Key(): Promise<string | null> {

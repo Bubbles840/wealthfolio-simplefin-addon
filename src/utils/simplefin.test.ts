@@ -105,9 +105,24 @@ describe('claimToken', () => {
     expect(err.message).not.toMatch(/tick/);
   });
 
-  it('passes any other request failure through unchanged', async () => {
-    const network = makeNetwork(() => Promise.reject(new Error('error sending request')));
-    await expect(claimToken(btoa('https://bridge.simplefin.org/claim/x'), network)).rejects.toThrow('error sending request');
+  it('says the token is unused when the claim never got through, keeping the claim URL off the message', async () => {
+    const claimUrl = 'https://bridge.simplefin.org/simplefin/claim/SECRET-CLAIM';
+    const raw = `error sending request for url (${claimUrl})`;
+    const network = makeNetwork(() => Promise.reject(new Error(raw)));
+    const err = await claimToken(btoa(claimUrl), network).catch((e) => e);
+    expect(err.message).toBe("Couldn't reach SimpleFin to use the setup token. It wasn't used, so try the same token again shortly.");
+    expect(err.message).not.toContain('SECRET-CLAIM');
+    expect(err).toBeInstanceOf(SimplefinRequestError);
+    expect(err.kind).toBe('network');
+    expect(err.detail).toBe(raw);
+  });
+
+  it('refuses an unparseable access URL without repeating it', async () => {
+    const body = 'https://user:secret9@[bad/simplefin';
+    const network = makeNetwork(() => okResponse(body));
+    const err = await claimToken(btoa('https://bridge.simplefin.org/claim/x'), network).catch((e) => e);
+    expect(err.message).toBe('SimpleFin access URL is not a valid URL');
+    expect(err.message).not.toContain('secret9');
   });
 });
 

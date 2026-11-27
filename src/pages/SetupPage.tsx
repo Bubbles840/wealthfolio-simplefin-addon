@@ -2,7 +2,8 @@ import React, { useRef, useState } from 'react';
 import type { AddonContext } from '@wealthfolio/addon-sdk';
 import type { AccountMapping, SimplefinAccount } from '../../shared/types';
 import type { LoanLinks } from '../../shared/loan-balances';
-import { claimToken, fetchAccounts } from '../utils/simplefin';
+import { fetchAccounts } from '../utils/simplefin';
+import { claimAccessUrl, credentialsB64 } from '../utils/connect';
 import { AccountMapper } from '../components/AccountMapper';
 import { Button, Card, ErrorBox, Input } from '../components/ui';
 import type { SecretsStore } from '../utils/secrets';
@@ -48,23 +49,15 @@ export function SetupPage({ ctx, store, onComplete }: Props) {
       if (refused) { setError(refused); return; }
       // A token can be claimed once: a retry after a failed download reuses
       // the access URL this token already gave, and only a new token is claimed.
-      const pasted = token.trim();
-      const accessUrl = claimed.current?.token === pasted
-        ? claimed.current.accessUrl
-        : await claimToken(pasted, ctx.api.network);
-      claimed.current = { token: pasted, accessUrl };
+      const claim = await claimAccessUrl(token, ctx.api.network, claimed.current);
+      claimed.current = claim;
+      const accessUrl = claim.accessUrl;
       await store.setAccessUrl(accessUrl);
 
       // Pre-compute base64(user:pass) and store as a secret so the brokered
       // network request can reference it via auth.secretKey (SDK only supports
       // Bearer auth injection; we rely on SimpleFin accepting the b64 value).
-      const parsedUrl = new URL(accessUrl);
-      const credString = `${parsedUrl.username}:${parsedUrl.password}`;
-      const b64 = btoa(
-        encodeURIComponent(credString).replace(/%([0-9A-F]{2})/gi, (_, hex) =>
-          String.fromCharCode(parseInt(hex, 16)),
-        ),
-      );
+      const b64 = credentialsB64(accessUrl);
       await store.setAuthB64(b64);
       const authKey = await store.getAuthB64Key();
 

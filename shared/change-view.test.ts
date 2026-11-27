@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
-  amazonLabelChange, bankUpdateChange, bookkeepingChange, categoryFiledChange, CHANGE_KINDS, importChange,
+  amazonLabelChange, bankUpdateChange, bookkeepingChange, categoryFiledChange, CHANGE_KINDS, connectionReplacedChange, importChange,
   stampChange, startingBalanceMovedChange, transferLinkChange, transferTypeChange, venmoNoteChange, type ChangeDraft,
 } from './change-entries.js';
 import type { ChangeLogItem } from './change-log.js';
@@ -80,6 +80,10 @@ describe('words for one entry', () => {
       account: CHECKING, txKey: 'k', activityId: 'a', description: 'X', amountCents: -1, date: '2026-10-01',
       activityType: 'TRANSFER_OUT', previousType: null, held: true,
     }), 'New → TRANSFER_OUT (in transit)'],
+    ['a replaced connection', connectionReplacedChange({ fromProvider: 'SimpleFIN Bridge', toProvider: 'Lunch Flow' }),
+      'SimpleFIN Bridge → Lunch Flow'],
+    ['a connection made where there was none', connectionReplacedChange({ fromProvider: null, toProvider: 'Lunch Flow' }),
+      'Not connected → Lunch Flow'],
   ])('before → after for %s', (_name, draft, want) => {
     expect(changeBeforeAfter(item(draft, at(12, 9, 0)))).toBe(want);
   });

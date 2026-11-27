@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   accountCreatedChange, amazonLabelChange, amazonLabelOf, balanceCorrectionChange, bankUpdateChange, bookkeepingChange, budgetSetChange,
-  categoryFiledChange, categoryRuleCreatedChange, CHANGE_KINDS, changeDay, changeMoney, duplicateRemovedChange,
+  categoryFiledChange, categoryRuleCreatedChange, CHANGE_KINDS, changeDay, changeMoney, connectionReplacedChange, duplicateRemovedChange,
   importChange, mappingRuleCreatedChange, newEntryId, newRunId, openingBalanceFiledChange, paybackFiledChange, pendingRemovedChange,
   stampChange, startingBalanceChange, startingBalanceMovedChange, startingBalanceRemovedChange, transactionRemovedChange, transferLinkChange, transferTypeChange, venmoNoteChange,
 
@@ -35,7 +35,7 @@ describe('ids and stamps', () => {
   });
 
   it('lists every kind once', () => {
-    expect(new Set(CHANGE_KINDS).size).toBe(21);
+    expect(new Set(CHANGE_KINDS).size).toBe(22);
   });
 });
 
@@ -146,6 +146,8 @@ describe('summaries — one per kind, bank text raw', () => {
     ['mapping-rule-created', mappingRuleCreatedChange({
       rule: { pattern: 'Payment to Ccb', matchType: 'contains', activityType: 'TRANSFER_OUT' }, description: 'Payment to Ccb Credit Card',
     }), 'Added a transaction rule: "Payment to Ccb" is a transfer out'],
+    ['connection-replaced', connectionReplacedChange({ fromProvider: 'SimpleFIN Bridge', toProvider: 'Lunch Flow' }),
+      'Replaced the SimpleFIN connection'],
     ['account-created', accountCreatedChange({ sfinId: 'ACT-9c8d', wfId: 'wf-citi', name: 'Citi Card', accountType: 'CREDIT_CARD' }),
       'Created a Wealthfolio account'],
     ['budget-set', budgetSetChange({ targetId: 'bt-1', categoryId: 'cat-gro', categoryName: 'Groceries', amountCents: 42500 }),

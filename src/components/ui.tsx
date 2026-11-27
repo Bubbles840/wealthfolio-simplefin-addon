@@ -1142,10 +1142,11 @@ export function CollapsibleCard(props: Omit<DisclosureProps, 'variant'>) {
  * no id, and nothing to persist, and an error box that required a `useState` to
  * render would be a worse trade than the browser's own default styling.
  */
-export function ErrorBox({ children, detail }: { children: React.ReactNode; detail?: string }) {
+export function ErrorBox({ children, detail, action }: { children: React.ReactNode; detail?: string; action?: React.ReactNode }) {
   return (
     <div className="sfin-error" {...(detail ? { title: detail } : {})}>
       {children}
+      {action && <div style={{ marginTop: 8 }}>{action}</div>}
       {detail && (
         <details style={{ marginTop: 6 }}>
           <summary className="sfin-subtle" style={{ cursor: 'pointer' }}>Technical details</summary>
