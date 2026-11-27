@@ -164,10 +164,15 @@ function asDiscount(line: TranscriptLine): TranscriptLine {
   return m ? { ...line, kind: 'discount', appliesTo: m[1] } : line;
 }
 
-/** Whether an item line carries this item number: in its number field, or — a model
- *  sometimes leaves that field empty — at the start of its text ("7654321 LAMP"). */
+/** An item line's number: its number field, or — only when a model left that field
+ *  empty — the number at the start of its text ("7654321 LAMP"). */
+function itemNumberOf(line: Pick<TranscriptLine, 'number' | 'text'>): string | undefined {
+  return line.number?.trim() || /^\s*(\d+)\s/.exec(line.text ?? '')?.[1];
+}
+
+/** Whether an item line carries this item number (see itemNumberOf). */
 function hasItemNumber(line: Pick<TranscriptLine, 'number' | 'text'>, n: string): boolean {
-  return line.number?.trim() === n || /^\s*(\d+)\s/.exec(line.text ?? '')?.[1] === n;
+  return itemNumberOf(line) === n;
 }
 
 /** A discount line the discounts-only question found (./receipt-prompt.ts). */
@@ -189,10 +194,15 @@ export interface FoundDiscount {
 export function withFoundDiscounts(t: ReceiptTranscript, found: readonly FoundDiscount[]): ReceiptTranscript | null {
   const key = (named: string, cents: number) => `${named}|${cents}`;
   const have = new Map<string, number>();
+  // Counted against the item readReceipt takes each one off: the one it names, else
+  // the item above it (a quantity line or a line labelled like a summary is not one).
+  let above: string | undefined;
   for (const raw of t.lines ?? []) {
+    if (isQuantityLine(raw)) continue;
     const line = asDiscount(raw);
+    if (line.kind === 'item' && !isSummaryLabel(line.text)) above = itemNumberOf(line);
     const cents = amountCents(line.amount);
-    const named = line.appliesTo?.trim();
+    const named = line.appliesTo?.trim() || above;
     if (line.kind === 'discount' && named && cents !== null) have.set(key(named, cents), (have.get(key(named, cents)) ?? 0) + 1);
   }
   const lines = [...(t.lines ?? [])];
@@ -202,14 +212,15 @@ export function withFoundDiscounts(t: ReceiptTranscript, found: readonly FoundDi
     const amount = String(d.amount ?? '').trim().replace(/\s*[A-Za-z]+$/, '');
     const cents = amountCents(amount);
     if (!cents) continue;
-    // The item it names: the model's answer, else the number after the "/" in its text.
+    // The item it names: the number after the "/" in its text, which readReceipt reads it by;
+    // the model's answer only when the text has none.
     const itemAt = (n: string | undefined) => {
       let at = lines.length - 1;
       while (n && at >= 0 && !(lines[at].kind === 'item' && hasItemNumber(lines[at], n))) at--;
       return n ? at : -1;
     };
-    const named = [d.appliesTo?.trim(), asDiscount({ kind: 'discount', text: d.text, amount }).appliesTo?.trim()].find((n) => itemAt(n) >= 0);
-    if (!named) continue;
+    const named = asDiscount({ kind: 'discount', text: d.text, amount }).appliesTo?.trim() || d.appliesTo?.trim();
+    if (!named || itemAt(named) < 0) continue;
     const k = key(named, cents);
     if ((have.get(k) ?? 0) > 0) { have.set(k, have.get(k)! - 1); continue; }
     const at = itemAt(named);

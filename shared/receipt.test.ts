@@ -346,6 +346,31 @@ describe('withFoundDiscounts', () => {
   });
 });
 
+describe('withFoundDiscounts against discounts the reading already has', () => {
+  const coupon = { text: '0099 / 222', amount: '10.00-', appliesTo: '222' };
+
+  it('names the item from the text first, as the reading does, when the model names another', () => {
+    const lines = [till().lines[1], till().lines[3], till().lines[0], till().lines[2]];
+    expect(withFoundDiscounts(till({ lines }), [{ ...coupon, appliesTo: '111' }])).toBeNull();
+    expect(withFoundDiscounts(till({ lines: lines.slice(1) }), [{ text: '0099 / 999', amount: '10.00-', appliesTo: '111' }])).toBeNull();
+  });
+
+  it('counts a discount with no number against the item above it', () => {
+    const unnamed: TranscriptLine = { kind: 'discount', text: 'INST SV', amount: '10.00-', flag: 'A' };
+    const lines = [till().lines[0], till().lines[1], item('2 @ 5.00', '10.00'), unnamed, till().lines[2]];
+    expect(withFoundDiscounts(till({ lines }), [coupon])).toBeNull();
+    const underBread = [till().lines[0], unnamed, till().lines[1], till().lines[2]];
+    expect(withFoundDiscounts(till({ lines: underBread }), [coupon])).not.toBeNull();
+  });
+
+  it('does not match an item with its own number by the digits its text starts with', () => {
+    const lines = [till().lines[0], item('40 WATT BULB', '49.99', { number: '222', flag: 'A' }), till().lines[2],
+      { kind: 'discount' as const, text: '0099 / 40', amount: '10.00-', appliesTo: '40', flag: 'A' }];
+    expect(buildReceipt(till({ lines }))).toEqual({ ok: false, problem: 'lines-dont-add-up' });
+    expect(withFoundDiscounts(till({ lines: lines.slice(0, 3) }), [{ text: '0099 / 40', amount: '10.00-' }])).toBeNull();
+  });
+});
+
 describe('groupByCategory and rowsByPayment', () => {
   it('groups items by category with their tax and charges', () => {
     const r = built(till());
