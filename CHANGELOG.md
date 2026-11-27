@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.79.0] - 2026-11-27
+
+Both changes are in the companion, so pull the companion image. Update the
+add-on in the app as well (no new permissions), so the two halves report the
+same version; it changes nothing else. From before 1.78.0, read its notes too:
+Replace token needs both halves updated. From before 1.70.0, use **Install from
+File** with this zip, as 1.70.0 says.
+
 ### Fixed
 - **A receipt with an item discount is no longer refused as not adding up.**
   - A discount now finds its item when the model kept the item's number only at
