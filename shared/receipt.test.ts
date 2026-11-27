@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
-  amountCents, buildReceipt, groupByCategory, rateBasisPoints, rowsByPayment, shareCents, taxedItems,
+  amountCents, buildReceipt, groupByCategory, rateBasisPoints, rowsByPayment, shareCents, taxedItems, withFoundDiscounts,
   type Receipt, type ReceiptTranscript, type TranscriptLine,
 } from './receipt.js';
 
@@ -290,6 +290,84 @@ describe('buildReceipt', () => {
     const lines = [item('BREAD', '10.00'), item('PEN', '1.00', { flag: 'A' })];
     expect(buildReceipt(till({ lines, subtotal: '11.00', tax: '3.00', total: '14.00', taxLines: [] })))
       .toEqual({ ok: false, problem: 'tax-looks-wrong' });
+  });
+});
+
+describe('a discount naming an item whose number the reading kept only in its text', () => {
+  it('comes off that item, which is taxed after it', () => {
+    const lines = [
+      item('111 BREAD', '10.00'), item('222 LAMP', '49.99', { flag: 'A' }), item('333 SOAP', '25.00', { flag: 'A' }),
+      item('0099 / 222', '10.00', { flag: 'A' }),
+    ];
+    expect(built(till({ lines })).items.map((i) => [i.cents, i.taxCents])).toEqual([[1000, 0], [3999, 400], [2500, 250]]);
+  });
+
+  it('is not matched to a number inside the text', () => {
+    const lines = [item('BREAD 222', '10.00'), item('LAMP', '49.99', { flag: 'A' }), item('333 SOAP', '25.00', { flag: 'A' }), till().lines[3]];
+    expect(buildReceipt(till({ lines }))).toEqual({ ok: false, problem: 'lines-dont-add-up' });
+  });
+});
+
+describe('withFoundDiscounts', () => {
+  const missed = () => till({ lines: till().lines.slice(0, 3) });
+  const coupon = { text: '0099 / 222', amount: '10.00-A', appliesTo: '222' };
+
+  it('puts a discount the reading left out after the item it names, so the receipt adds up and is taxed after it', () => {
+    expect(buildReceipt(missed())).toEqual({ ok: false, problem: 'lines-dont-add-up' });
+    const fixed = withFoundDiscounts(missed(), [coupon])!;
+    expect(fixed.lines.map((l) => l.kind)).toEqual(['item', 'item', 'discount', 'item']);
+    expect(built(fixed).items.map((i) => [i.cents, i.taxCents])).toEqual([[1000, 0], [3999, 400], [2500, 250]]);
+  });
+
+  it('takes the item from the line text when the model left out the item number or gave one it never read', () => {
+    expect(withFoundDiscounts(missed(), [{ text: '0099 / 222', amount: '10.00-' }])!.lines[2].appliesTo).toBe('222');
+    expect(withFoundDiscounts(missed(), [{ text: '0099 / 222', amount: '10.00-', appliesTo: '0099' }])!.lines[2].appliesTo).toBe('222');
+  });
+
+  it('finds the item by a number the reading kept only at the start of its text', () => {
+    const lines = [item('111 BREAD', '10.00'), item('222 LAMP', '49.99', { flag: 'A' }), item('333 SOAP', '25.00', { flag: 'A' })];
+    expect(withFoundDiscounts(till({ lines }), [coupon])!.lines.map((l) => l.kind)).toEqual(['item', 'item', 'discount', 'item']);
+  });
+
+  it('adds none the reading already has, however it was labelled', () => {
+    expect(withFoundDiscounts(till(), [coupon])).toBeNull();
+    const asItem = till({ lines: [...till().lines.slice(0, 3), item('0099 / 222', '10.00')] });
+    expect(withFoundDiscounts(asItem, [coupon])).toBeNull();
+  });
+
+  it('adds a second equal discount on the same item once', () => {
+    const fixed = withFoundDiscounts(till(), [coupon, coupon])!;
+    expect(fixed.lines.filter((l) => l.kind === 'discount')).toHaveLength(2);
+  });
+
+  it('skips a discount naming no item, an item it never read, or no amount', () => {
+    const found = [{ text: 'COUPON', amount: '10.00-' }, { ...coupon, appliesTo: '999', text: '0099 / 999' }, { ...coupon, amount: '' }, { ...coupon, amount: '0.00' }];
+    expect(withFoundDiscounts(missed(), found)).toBeNull();
+  });
+});
+
+describe('withFoundDiscounts against discounts the reading already has', () => {
+  const coupon = { text: '0099 / 222', amount: '10.00-', appliesTo: '222' };
+
+  it('names the item from the text first, as the reading does, when the model names another', () => {
+    const lines = [till().lines[1], till().lines[3], till().lines[0], till().lines[2]];
+    expect(withFoundDiscounts(till({ lines }), [{ ...coupon, appliesTo: '111' }])).toBeNull();
+    expect(withFoundDiscounts(till({ lines: lines.slice(1) }), [{ text: '0099 / 999', amount: '10.00-', appliesTo: '111' }])).toBeNull();
+  });
+
+  it('counts a discount with no number against the item above it', () => {
+    const unnamed: TranscriptLine = { kind: 'discount', text: 'INST SV', amount: '10.00-', flag: 'A' };
+    const lines = [till().lines[0], till().lines[1], item('2 @ 5.00', '10.00'), unnamed, till().lines[2]];
+    expect(withFoundDiscounts(till({ lines }), [coupon])).toBeNull();
+    const underBread = [till().lines[0], unnamed, till().lines[1], till().lines[2]];
+    expect(withFoundDiscounts(till({ lines: underBread }), [coupon])).not.toBeNull();
+  });
+
+  it('does not match an item with its own number by the digits its text starts with', () => {
+    const lines = [till().lines[0], item('40 WATT BULB', '49.99', { number: '222', flag: 'A' }), till().lines[2],
+      { kind: 'discount' as const, text: '0099 / 40', amount: '10.00-', appliesTo: '40', flag: 'A' }];
+    expect(buildReceipt(till({ lines }))).toEqual({ ok: false, problem: 'lines-dont-add-up' });
+    expect(withFoundDiscounts(till({ lines: lines.slice(0, 3) }), [{ text: '0099 / 40', amount: '10.00-' }])).toBeNull();
   });
 });
 

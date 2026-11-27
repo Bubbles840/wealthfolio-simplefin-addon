@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { parseTranscript, receiptChatRequest, RECEIPT_PROMPT } from './receipt-prompt.js';
+import { discountChatRequest, DISCOUNT_PROMPT, parseDiscounts, parseTranscript, receiptChatRequest, RECEIPT_PROMPT } from './receipt-prompt.js';
 
 describe('the request', () => {
   it('sends the image with the schema, at temperature 0, without streaming', () => {
@@ -22,5 +22,19 @@ describe('parseTranscript', () => {
 
   it('refuses what is not a transcript', () => {
     expect(['not json', 'null', '{"lines":[]}', '{"payments":[]}'].map(parseTranscript)).toEqual([null, null, null, null]);
+  });
+});
+
+describe('the discounts-only question', () => {
+  it('sends the image with its own schema', () => {
+    const body = discountChatRequest('m', 'aGVsbG8=');
+    expect(body).toMatchObject({ model: 'm', stream: false, options: { temperature: 0 } });
+    expect(body.messages[0]).toMatchObject({ content: DISCOUNT_PROMPT, images: ['aGVsbG8='] });
+    expect(body.format.required).toEqual(['discounts']);
+  });
+
+  it('reads the list, and refuses what is not one', () => {
+    expect(parseDiscounts('{"discounts":[{"text":"1 / 2","amount":"3.00-"},null]}')).toEqual([{ text: '1 / 2', amount: '3.00-', appliesTo: '' }]);
+    expect(['not json', 'null', '{}', '{"discounts":{}}'].map(parseDiscounts)).toEqual([null, null, null, null]);
   });
 });

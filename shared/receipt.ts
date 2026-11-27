@@ -164,6 +164,72 @@ function asDiscount(line: TranscriptLine): TranscriptLine {
   return m ? { ...line, kind: 'discount', appliesTo: m[1] } : line;
 }
 
+/** An item line's number: its number field, or — only when a model left that field
+ *  empty — the number at the start of its text ("7654321 LAMP"). */
+function itemNumberOf(line: Pick<TranscriptLine, 'number' | 'text'>): string | undefined {
+  return line.number?.trim() || /^\s*(\d+)\s/.exec(line.text ?? '')?.[1];
+}
+
+/** Whether an item line carries this item number (see itemNumberOf). */
+function hasItemNumber(line: Pick<TranscriptLine, 'number' | 'text'>, n: string): boolean {
+  return itemNumberOf(line) === n;
+}
+
+/** A discount line the discounts-only question found (./receipt-prompt.ts). */
+export interface FoundDiscount {
+  text: string;
+  amount: string | number;
+  /** The item number it names; "" when it names none. */
+  appliesTo?: string;
+}
+
+/**
+ * The transcript with the discounts the first reading left out, each placed
+ * after the item it names; null when it left none out. A found discount the
+ * transcript already has (same item, same amount, however it was labelled) is
+ * not added twice, and one that names no item read the first time is skipped:
+ * which item it comes off decides the tax. `buildReceipt` still checks the
+ * result like any other transcript.
+ */
+export function withFoundDiscounts(t: ReceiptTranscript, found: readonly FoundDiscount[]): ReceiptTranscript | null {
+  const key = (named: string, cents: number) => `${named}|${cents}`;
+  const have = new Map<string, number>();
+  // Counted against the item readReceipt takes each one off: the one it names, else
+  // the item above it (a quantity line or a line labelled like a summary is not one).
+  let above: string | undefined;
+  for (const raw of t.lines ?? []) {
+    if (isQuantityLine(raw)) continue;
+    const line = asDiscount(raw);
+    if (line.kind === 'item' && !isSummaryLabel(line.text)) above = itemNumberOf(line);
+    const cents = amountCents(line.amount);
+    const named = line.appliesTo?.trim() || above;
+    if (line.kind === 'discount' && named && cents !== null) have.set(key(named, cents), (have.get(key(named, cents)) ?? 0) + 1);
+  }
+  const lines = [...(t.lines ?? [])];
+  let added = 0;
+  for (const d of found) {
+    // "3.00-A": the tax flag printed after the amount is not part of it.
+    const amount = String(d.amount ?? '').trim().replace(/\s*[A-Za-z]+$/, '');
+    const cents = amountCents(amount);
+    if (!cents) continue;
+    // The item it names: the number after the "/" in its text, which readReceipt reads it by;
+    // the model's answer only when the text has none.
+    const itemAt = (n: string | undefined) => {
+      let at = lines.length - 1;
+      while (n && at >= 0 && !(lines[at].kind === 'item' && hasItemNumber(lines[at], n))) at--;
+      return n ? at : -1;
+    };
+    const named = asDiscount({ kind: 'discount', text: d.text, amount }).appliesTo?.trim() || d.appliesTo?.trim();
+    if (!named || itemAt(named) < 0) continue;
+    const k = key(named, cents);
+    if ((have.get(k) ?? 0) > 0) { have.set(k, have.get(k)! - 1); continue; }
+    const at = itemAt(named);
+    lines.splice(at + 1, 0, { kind: 'discount', text: d.text, amount, appliesTo: named });
+    added++;
+  }
+  return added > 0 ? { ...t, lines } : null;
+}
+
 /** A summary label ("SUBTOTAL", "TOTAL", "TAX") that a model gave to a line: never an item. */
 const isSummaryLabel = (text: string) => /^\s*(sub\s*total|total|tax|total tax)\b/i.test(text);
 
@@ -279,7 +345,7 @@ export function buildReceipt(t: ReceiptTranscript, knownRates: readonly number[]
 function readReceipt(t: ReceiptTranscript, knownRates: readonly number[], dropSummaries: boolean, seen: { summaries: number }): ReceiptResult {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(t.date ?? '')) return { ok: false, problem: 'no-date' };
 
-  interface Working { text: string; number?: string; gross: number; cents: number; flag: string }
+  interface Working { text: string; number?: string; printed: TranscriptLine; gross: number; cents: number; flag: string }
   const items: Working[] = [];
   let charges = 0;
   let discounted = 0;
@@ -299,7 +365,7 @@ function readReceipt(t: ReceiptTranscript, knownRates: readonly number[], dropSu
       const number = line.number?.trim() || undefined;
       // A model sometimes repeats the item number at the start of the text.
       const text = number && line.text.trim().startsWith(`${number} `) ? line.text.trim().slice(number.length).trim() : line.text.trim();
-      items.push({ text, number, gross: cents, cents, flag: (line.flag ?? '').trim() });
+      items.push({ text, number, printed: line, gross: cents, cents, flag: (line.flag ?? '').trim() });
     } else if (line.kind === 'discount') {
       const named = line.appliesTo?.trim();
       // The receipt's own savings summary, listed although the prompt says not to: it repeats the discounts above it.
@@ -310,7 +376,7 @@ function readReceipt(t: ReceiptTranscript, knownRates: readonly number[], dropSu
       }
       discounted += cents;
       // A number that matches no item is a misread: guessing the line would tax the wrong price.
-      const target = named ? [...items].reverse().find((i) => i.number === named) : items.at(-1);
+      const target = named ? [...items].reverse().find((i) => hasItemNumber(i.printed, named)) : items.at(-1);
       if (!target) return { ok: false, problem: 'lines-dont-add-up' };
       target.cents -= cents;
       if (target.cents < 0) return { ok: false, problem: 'discount-too-large' };

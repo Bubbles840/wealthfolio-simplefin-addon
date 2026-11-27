@@ -789,7 +789,9 @@ while reading), and the bot proposes a category for each item for you to confirm
   an order page that prints no rate uses a rate an earlier receipt printed.
 
 The model only copies what is printed; the add-up checks are done in code, and a
-receipt that does not add up is never filed. Each filed receipt has an Undo
+receipt that does not add up is never filed. When the items it read miss the
+subtotal, it is asked a second time for the discount lines alone (a minute or so
+more), since a whole-receipt reading sometimes leaves one out. Each filed receipt has an Undo
 button. Set it up under **Settings → Receipt reader**: start Ollama listening on
 the computer's home network or Tailscale address so the companion can reach it
 (`OLLAMA_HOST=192.168.1.20:11434`), and `ollama pull qwen2.5vl:32b`. Ollama has no

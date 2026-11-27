@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **A receipt with an item discount is no longer refused as not adding up.**
+  - A discount now finds its item when the model kept the item's number only at
+    the start of its text ("7654321 LAMP") instead of in its own field.
+  - When the items read don't add up to the subtotal, the companion asks the
+    model a second time for the discount lines alone, adds any it missed under
+    the item each names, and checks the receipt again. A receipt that still
+    doesn't add up is refused as before.
+
 ## [1.78.0] - 2026-11-27
 
 Update both halves, together. Update the add-on in the app as usual (no new

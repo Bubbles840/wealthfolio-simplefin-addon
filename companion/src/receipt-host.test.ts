@@ -42,7 +42,7 @@ interface Harness {
   assigned: Array<[string, string]>;
   calls: string[];
   set: (o: {
-    online?: boolean; transcript?: ReceiptTranscript | string; categories?: string[]; rows?: SpendRow[];
+    online?: boolean; transcript?: ReceiptTranscript | string; discounts?: unknown; categories?: string[]; rows?: SpendRow[];
     spending?: string[]; fed?: string[]; refuseCreate?: boolean; now?: Date;
   }) => void;
 }
@@ -56,6 +56,7 @@ function harness(): Harness {
   const calls: string[] = [];
   let online = true;
   let transcript: ReceiptTranscript | string = TILL;
+  let discounts: unknown = [];
   let categories = ['groceries', 'home_lamps_lighting'];
   let rows: SpendRow[] = [charge()];
   let spending = ['card', 'gift-acct', 'checking'];
@@ -68,9 +69,16 @@ function harness(): Harness {
     if (!online) throw new Error('ECONNREFUSED');
     if (String(url).endsWith('/api/tags')) return new Response(JSON.stringify({ models: [{ name: 'm:latest' }] }), { status: 200 });
     const body = JSON.parse(String(init?.body));
-    const content = body.messages[0].images
-      ? (typeof transcript === 'string' ? transcript : JSON.stringify(transcript))
-      : JSON.stringify({ categories });
+    // 'fails': the model host errors on the discounts question; 'sleeps': the computer goes away during it.
+    if (body.format?.properties?.discounts && (discounts === 'fails' || discounts === 'sleeps')) {
+      if (discounts === 'sleeps') online = false;
+      throw new Error('timeout');
+    }
+    const content = body.format?.properties?.discounts
+      ? JSON.stringify({ discounts })
+      : body.messages[0].images
+        ? (typeof transcript === 'string' ? transcript : JSON.stringify(transcript))
+        : JSON.stringify({ categories });
     return new Response(JSON.stringify({ message: { content } }), { status: 200 });
   }) as unknown as typeof fetch;
   const deps: ReceiptHostDeps = {
@@ -108,6 +116,7 @@ function harness(): Harness {
     set: (o) => {
       if (o.online !== undefined) online = o.online;
       if (o.transcript !== undefined) transcript = o.transcript;
+      if (o.discounts !== undefined) discounts = o.discounts;
       if (o.categories) categories = o.categories;
       if (o.rows) rows = o.rows;
       if (o.spending) spending = o.spending;
@@ -185,6 +194,59 @@ describe('reading a photo', () => {
     await proposed(h);
     expect(h.sent[0].text).toMatch(/don't add up/);
     expect([state(h).queue.length, state(h).proposals.length]).toEqual([0, 0]);
+  });
+
+  // The lamp's 5.00 coupon left out of the reading: the lines come to 110.00, the subtotal says 105.00.
+  const MISSED: ReceiptTranscript = {
+    ...TILL,
+    lines: [
+      { kind: 'item', text: 'BREAD', amount: '10.00', number: '111' },
+      { kind: 'item', text: 'LAMP', amount: '100.00', number: '222', flag: 'A' },
+    ],
+    subtotal: '105.00', tax: '9.50', total: '114.50',
+    taxLines: [{ flag: 'A', rate: '10%', amount: '9.50' }],
+    payments: [{ label: 'VISA', amount: '114.50' }],
+  };
+  const chats = (h: Harness) => h.calls.filter((c) => c.endsWith('/api/chat')).length;
+
+  it('asks for the discounts alone when the lines miss the subtotal, and proposes the receipt once they add up', async () => {
+    const h = harness();
+    h.set({ transcript: MISSED, discounts: [{ text: '0000999 / 222', amount: '5.00-A', appliesTo: '222' }], rows: [charge({ absCents: 11450 })] });
+    await proposed(h);
+    expect(state(h).proposals).toHaveLength(1);
+    expect(chats(h)).toBe(3);
+    expect(h.sent[0].text).not.toMatch(/don't add up/);
+  });
+
+  it('still refuses the receipt when the discounts asked for do not make it add up', async () => {
+    const h = harness();
+    h.set({ transcript: MISSED, discounts: [{ text: '0000999 / 222', amount: '4.00-', appliesTo: '222' }] });
+    await proposed(h);
+    expect(h.sent[0].text).toMatch(/don't add up/);
+    expect(state(h).proposals).toHaveLength(0);
+    expect(chats(h)).toBe(2);
+  });
+
+  it('says which check failed when the discounts question fails', async () => {
+    const h = harness();
+    h.set({ transcript: MISSED, discounts: 'fails' });
+    await proposed(h);
+    expect(h.sent[0].text).toMatch(/don't add up/);
+    expect(state(h).queue).toHaveLength(0);
+  });
+
+  it('keeps the photo for later when the computer goes away during the discounts question', async () => {
+    const h = harness();
+    h.set({ transcript: MISSED, discounts: 'sleeps' });
+    await proposed(h);
+    expect(h.sent.some((m) => /don't add up|couldn't read/.test(m.text))).toBe(false);
+    expect(state(h).queue).toHaveLength(1);
+  });
+
+  it('does not ask for discounts when the lines add up', async () => {
+    const h = harness();
+    await proposed(h);
+    expect(chats(h)).toBe(2);
   });
 
   it('leaves items for the person when the category answer is unusable', async () => {
