@@ -16,6 +16,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     the item each names, and checks the receipt again. A receipt that still
     doesn't add up is refused as before.
 
+### Security
+- **Companion: the email-reading libraries are updated past their security
+  advisories.** mailparser 3.15 (with nodemailer 10 and html-to-text 10.0.1),
+  deepmerge-ts 8 and ip-address 10.7.6 clear `npm audit`'s high and moderate
+  findings in what the companion runs. Order and Venmo emails read as before.
+  node-cron stays on 3.x: its fix needs node-cron 4, and the advisory left
+  concerns a uuid function that node-cron never calls.
+
 ## [1.78.0] - 2026-11-27
 
 Update both halves, together. Update the add-on in the app as usual (no new
